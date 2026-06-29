@@ -1,0 +1,908 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model admin_audit_log {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  action      String
+  admin_id    String?  @db.Uuid
+  admin_email String?
+  target_id   String?
+  details     Json?    @default("{}")
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+}
+
+model admin_settings {
+  key        String    @id
+  value      Json      @default("\"\"")
+  updated_at DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model api_keys {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id      String    @db.Uuid
+  name         String
+  key_hash     String    @unique
+  key_prefix   String
+  last_used_at DateTime? @db.Timestamptz(6)
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  is_active    Boolean   @default(true)
+  users        users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id])
+}
+
+model api_logs {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  provider         String
+  endpoint         String
+  method           String?   @default("POST")
+  request_params   Json?
+  response_status  Int?
+  response_summary Json?
+  duration_ms      Int       @default(0)
+  error_message    String?
+  user_id          String?   @db.Uuid
+  search_id        String?   @db.Uuid
+  created_at       DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([created_at(sort: Desc)], map: "idx_api_logs_created_at")
+  @@index([provider], map: "idx_api_logs_provider")
+}
+
+model booking_emails {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id      String
+  recipient_email String
+  guest_name      String?
+  hotel_name      String?
+  room_name       String?
+  check_in        String?
+  check_out       String?
+  total_price     Decimal?  @db.Decimal
+  currency        String?   @default("PHP")
+  email_html      String?
+  sent_at         DateTime? @default(now()) @db.Timestamptz(6)
+  status          String?   @default("queued")
+  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([booking_id], map: "idx_booking_emails_booking_id")
+  @@index([status], map: "idx_booking_emails_status")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model booking_financial_events {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id      String          @db.Uuid
+  event_type      String
+  amount          Decimal         @db.Decimal(12, 2)
+  currency        String
+  provider        String
+  transaction_id  String?
+  metadata        Json?           @default("{}")
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  flight_bookings flight_bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([booking_id], map: "idx_booking_financial_events_booking_id")
+  @@index([transaction_id], map: "idx_booking_financial_events_transaction_id")
+}
+
+model booking_policy_snapshots {
+  id                                                             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id                                                     String              @unique(map: "uq_policy_per_booking")
+  policy_type                                                    booking_policy_type @default(non_refundable)
+  summary                                                        String?
+  refundable_tag                                                 String?
+  hotel_remarks                                                  String[]            @default([])
+  no_show_penalty                                                Decimal?            @default(0) @db.Decimal(10, 2)
+  early_departure_fee                                            Decimal?            @default(0) @db.Decimal(10, 2)
+  free_cancel_deadline                                           DateTime?           @db.Timestamptz(6)
+  raw_provider_response                                          Json                @default("{}")
+  captured_at                                                    DateTime            @default(now()) @db.Timestamptz(6)
+  api_version                                                    String?
+  raw_liteapi_response                                           Json                @default("{}")
+  bookings_booking_policy_snapshots_booking_idTobookings         bookings            @relation("booking_policy_snapshots_booking_idTobookings", fields: [booking_id], references: [booking_id], onDelete: Cascade, onUpdate: NoAction)
+  bookings_bookings_policy_snapshot_idTobooking_policy_snapshots bookings[]          @relation("bookings_policy_snapshot_idTobooking_policy_snapshots")
+  policy_tiers                                                   policy_tiers[]
+  refund_logs                                                    refund_logs[]
+
+  @@index([booking_id], map: "idx_policy_snapshot_booking")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model booking_sessions {
+  id                        String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                   String            @db.Uuid
+  provider                  String
+  flight                    Json              @default("{}")
+  passengers                Json              @default("[]")
+  contact                   Json              @default("{}")
+  status                    String            @default("pending")
+  expires_at                DateTime          @db.Timestamptz(6)
+  created_at                DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at                DateTime          @default(now()) @db.Timestamptz(6)
+  idempotency_key           String?
+  payment_intent_id         String?
+  capture_method            String?           @default("automatic")
+  is_refundable             Boolean?
+  is_changeable             Boolean?
+  refund_penalty_amount     Decimal?          @db.Decimal(10, 2)
+  refund_penalty_currency   String?
+  change_penalty_amount     Decimal?          @db.Decimal(10, 2)
+  change_penalty_currency   String?
+  policy_source             String?
+  policy_version            String?
+  policy_locked             Boolean           @default(false)
+  fare_policy               Json?
+  seat_service_ids          String[]
+  seat_total                Decimal?          @default(0) @db.Decimal
+  duffel_pre_order_id       String?
+  duffel_pre_order_pnr      String?
+  duffel_pre_order_tickets  String[]
+  duffel_pre_order_ticketed Boolean?
+  original_price            Decimal?          @db.Decimal
+  charged_price             Decimal?          @db.Decimal
+  markup_pct                Decimal?          @db.Decimal
+  currency                  String?
+  bag_service_ids           String[]
+  bag_total                 Decimal?          @default(0) @db.Decimal
+  flight_bookings           flight_bookings[]
+
+  @@index([expires_at], map: "idx_booking_sessions_expires_at")
+  @@index([idempotency_key, user_id], map: "idx_booking_sessions_idempotency")
+  @@index([status], map: "idx_booking_sessions_status")
+  @@index([user_id], map: "idx_booking_sessions_user_id")
+}
+
+model bookings {
+  id                                                                             String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id                                                                     String                    @unique
+  user_id                                                                        String                    @db.Uuid
+  property_name                                                                  String
+  property_image                                                                 String?
+  room_name                                                                      String
+  check_in                                                                       DateTime                  @db.Date
+  check_out                                                                      DateTime                  @db.Date
+  guests_adults                                                                  Int?                      @default(1)
+  guests_children                                                                Int?                      @default(0)
+  total_price                                                                    Decimal                   @db.Decimal(10, 2)
+  currency                                                                       String?                   @default("PHP")
+  holder_first_name                                                              String
+  holder_last_name                                                               String
+  holder_email                                                                   String
+  status                                                                         String?                   @default("confirmed")
+  special_requests                                                               String?
+  created_at                                                                     DateTime?                 @default(now()) @db.Timestamptz(6)
+  updated_at                                                                     DateTime?                 @default(now()) @db.Timestamptz(6)
+  cancellation_policy                                                            Json?
+  voucher_code                                                                   String?
+  discount_amount                                                                Decimal?                  @default(0) @db.Decimal(10, 2)
+  policy_type                                                                    String?                   @default("non_refundable")
+  policy_snapshot_id                                                             String?                   @db.Uuid
+  bundled_with_flight_id                                                         String?
+  payment_intent_id                                                              String?
+  provider                                                                       String                    @default("liteapi")
+  provider_metadata                                                              Json?
+  supplier_cost                                                                  Decimal?                  @db.Decimal(12, 2)
+  charged_price                                                                  Decimal?                  @db.Decimal(12, 2)
+  markup_pct                                                                     Decimal?                  @db.Decimal(6, 4)
+  hotel_id                                                                       String?
+  booking_policy_snapshots_booking_policy_snapshots_booking_idTobookings         booking_policy_snapshots? @relation("booking_policy_snapshots_booking_idTobookings")
+  booking_policy_snapshots_bookings_policy_snapshot_idTobooking_policy_snapshots booking_policy_snapshots? @relation("bookings_policy_snapshot_idTobooking_policy_snapshots", fields: [policy_snapshot_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([status], map: "idx_bookings_status")
+  @@index([user_id], map: "idx_bookings_user_id")
+}
+
+model dest_code_cache {
+  city_key    String   @id
+  dest_codes  String[] @default([])
+  hotel_codes String[] @default([])
+  fetched_at  DateTime @default(now()) @db.Timestamptz(6)
+  expires_at  DateTime @db.Timestamptz(6)
+
+  @@index([expires_at])
+}
+
+model device_push_tokens {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String?        @db.Uuid
+  expo_push_token String         @unique(map: "device_push_tokens_token_idx")
+  platform        push_platform? @default(ios)
+  app_version     String?
+  created_at      DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime       @default(now()) @db.Timestamptz(6)
+  users           users?         @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id], map: "device_push_tokens_user_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model email_logs {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id    String?
+  recipient     String
+  subject       String
+  email_type    String
+  status        String    @default("queued")
+  error_message String?
+  metadata      Json?     @default("{}")
+  created_at    DateTime  @default(now()) @db.Timestamptz(6)
+  sent_at       DateTime? @db.Timestamptz(6)
+
+  @@index([booking_id], map: "idx_email_logs_booking_id")
+  @@index([created_at(sort: Desc)], map: "idx_email_logs_created_at")
+  @@index([status], map: "idx_email_logs_status")
+}
+
+model etg_hotel_index {
+  hid             BigInt    @id
+  name            String
+  name_normalized String
+  lat             Float?    @default(0)
+  lng             Float?    @default(0)
+  country_code    String    @db.Char(2)
+  region_id       BigInt?
+  star_rating     Int?      @default(0) @db.SmallInt
+  indexed_at      DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([country_code, name_normalized], map: "etg_hotel_index_country_name")
+  @@index([name_normalized(ops: raw("gin_trgm_ops"))], map: "etg_hotel_index_name_trgm", type: Gin)
+}
+
+model etg_index_status {
+  country_code   String    @id @db.Char(2)
+  status         String    @default("pending")
+  hotel_count    Int?      @default(0)
+  last_seeded_at DateTime? @db.Timestamptz(6)
+  last_error     String?
+}
+
+model flight_booking_notes {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id      String          @db.Uuid
+  note            String
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  created_by      String?         @db.Uuid
+  flight_bookings flight_bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users           users?          @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+
+  @@index([booking_id], map: "idx_flight_booking_notes_booking_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model flight_bookings {
+  id                        String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                   String                     @db.Uuid
+  pnr                       String
+  provider                  String
+  total_price               Decimal                    @db.Decimal(12, 2)
+  status                    String                     @default("booked")
+  created_at                DateTime                   @default(now()) @db.Timestamptz(6)
+  currency                  String?                    @default("USD")
+  provider_order_id         String?
+  session_id                String?                    @db.Uuid
+  trip_type                 String?
+  payment_intent_id         String?
+  ticket_time_limit         DateTime?                  @db.Timestamptz(6)
+  cancellation_requested_at DateTime?                  @db.Timestamptz(6)
+  cancellation_completed_at DateTime?                  @db.Timestamptz(6)
+  refund_amount             Decimal?                   @db.Decimal(12, 2)
+  refund_penalty_amount     Decimal?                   @db.Decimal(12, 2)
+  refund_currency           String?
+  cancellation_log          Json                       @default("[]")
+  fare_policy               Json?
+  policy_snapshot_at        DateTime?                  @default(now()) @db.Timestamptz(6)
+  supplier_cancellation_id  String?
+  payment_currency          String?
+  supplier_currency         String?
+  fx_rate_snapshot          Decimal?                   @db.Decimal
+  supplier_cost             Decimal?                   @db.Decimal(12, 2)
+  charged_price             Decimal?                   @db.Decimal(12, 2)
+  markup_pct                Decimal?                   @db.Decimal(6, 4)
+  bundled_with_hotel_id     String?
+  duffel_order_id           String?
+  confirmed_price           Decimal?                   @db.Decimal(12, 2)
+  confirmed_currency        String?
+  ticket_numbers            Json?                      @default("[]")
+  booking_financial_events  booking_financial_events[]
+  flight_booking_notes      flight_booking_notes[]
+  booking_sessions          booking_sessions?          @relation(fields: [session_id], references: [id], onUpdate: NoAction)
+  flight_segments           flight_segments[]
+  passengers                passengers[]
+
+  @@index([pnr], map: "idx_flight_bookings_pnr")
+  @@index([status], map: "idx_flight_bookings_status")
+  @@index([user_id], map: "idx_flight_bookings_user_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model flight_deals {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  origin            String
+  destination       String
+  price             Decimal   @db.Decimal(10, 2)
+  currency          String?   @default("USD")
+  airline           String?
+  image_url         String?
+  departure_date    DateTime? @db.Date
+  return_date       DateTime? @db.Date
+  discount_tag      String?
+  updated_at        DateTime? @default(now()) @db.Timestamptz(6)
+  baseline_price    Decimal?  @db.Decimal(10, 2)
+  last_refreshed_at DateTime? @db.Timestamptz(6)
+  original_price    Decimal?  @db.Decimal(10, 2)
+  ends_in           String?
+  cabin_class       String    @default("economy")
+
+  @@unique([origin, destination, cabin_class])
+}
+
+model flight_results_cache {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  search_id       String          @db.Uuid
+  provider        String
+  offer_id        String
+  price           Decimal         @db.Decimal(12, 2)
+  currency        String          @default("USD")
+  airline         String
+  departure_time  DateTime        @db.Timestamptz(6)
+  arrival_time    DateTime        @db.Timestamptz(6)
+  duration        Int
+  raw             Json
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  stops           Int             @default(0)
+  remaining_seats Int?
+  refundable      Boolean         @default(false)
+  flight_searches flight_searches @relation(fields: [search_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([airline], map: "idx_flight_results_airline")
+  @@index([price], map: "idx_flight_results_price")
+  @@index([search_id], map: "idx_flight_results_search_id")
+}
+
+model flight_search_stats {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  origin           String
+  destination      String
+  min_price        Decimal?  @db.Decimal(12, 2)
+  avg_price        Decimal?  @db.Decimal(12, 2)
+  search_count     Int?      @default(1)
+  last_searched_at DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@unique([origin, destination])
+  @@index([search_count(sort: Desc)], map: "idx_flight_search_stats_popularity")
+  @@index([origin, destination], map: "idx_flight_search_stats_route")
+}
+
+model flight_searches {
+  id                   String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id              String?                @db.Uuid
+  origin               String
+  destination          String
+  departure_date       DateTime               @db.Date
+  return_date          DateTime?              @db.Date
+  adults               Int                    @default(1)
+  children             Int                    @default(0)
+  infants              Int                    @default(0)
+  cabin_class          String                 @default("economy")
+  created_at           DateTime               @default(now()) @db.Timestamptz(6)
+  flight_results_cache flight_results_cache[]
+  users                users?                 @relation(fields: [user_id], references: [id], onUpdate: NoAction)
+
+  @@index([departure_date], map: "idx_flight_searches_date")
+  @@index([origin, destination], map: "idx_flight_searches_route")
+  @@index([user_id], map: "idx_flight_searches_user_id")
+}
+
+model flight_segments {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id      String          @db.Uuid
+  airline         String
+  flight_number   String
+  origin          String
+  destination     String
+  departure       DateTime        @db.Timestamptz(6)
+  arrival         DateTime        @db.Timestamptz(6)
+  itinerary_index Int             @default(0)
+  cabin_class     String          @default("economy")
+  segment_index   Int             @default(0)
+  flight_bookings flight_bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([booking_id], map: "idx_flight_segments_booking_id")
+}
+
+model hotel_content {
+  hotel_id              String    @id
+  name                  String?
+  images                String[]  @default([])
+  star_rating           Int       @default(0) @db.SmallInt
+  lat                   Float     @default(0)
+  lng                   Float     @default(0)
+  fetched_at            DateTime  @default(now()) @db.Timestamptz(6)
+  address               String?
+  city                  String?
+  country               String?
+  description           String?
+  amenities             Json      @default("[]")
+  ratehawk_hid          String?
+  content_source        String?
+  last_attempt_at       DateTime? @db.Timestamptz(6)
+  check_in_time         String?
+  check_out_time        String?
+  review_rating         Decimal?  @db.Decimal(4, 2)
+  review_count          Int?
+  amenity_groups        Json      @default("[]")
+  important_information String?
+  room_groups           Json?     @default("[]")
+  google_place_id       String?
+  google_enriched_at    DateTime? @db.Timestamptz(6)
+
+  @@index([fetched_at])
+}
+
+model hotel_deals {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name              String
+  location          String
+  destination       String
+  country_code      String?   @default("")
+  rating            Decimal?  @default(0) @db.Decimal(3, 1)
+  stars             Int?      @default(0)
+  image_url         String?   @default("")
+  price             Decimal   @default(0) @db.Decimal(10, 2)
+  original_price    Decimal?  @default(0) @db.Decimal(10, 2)
+  currency          String?   @default("PHP")
+  discount_tag      String?   @default("")
+  discount_pct      Int?      @default(0)
+  check_in          DateTime? @db.Date
+  check_out         DateTime? @db.Date
+  badge             String?
+  hotel_code        String?   @unique @default("")
+  updated_at        DateTime? @default(now()) @db.Timestamptz(6)
+  city_key          String?
+  lat               Decimal?  @db.Decimal(9, 6)
+  lng               Decimal?  @db.Decimal(9, 6)
+  board_code        String?
+  refundable        Boolean?
+  baseline_price    Decimal?  @db.Decimal(10, 2)
+  last_refreshed_at DateTime? @db.Timestamptz(6)
+}
+
+model hotel_review_items {
+  id            BigInt   @id @default(autoincrement())
+  hotel_id      String
+  source_id     String
+  reviewer_name String?
+  review_date   String?
+  score         Decimal? @db.Decimal(4, 2)
+  pros          String?
+  cons          String?
+  traveler_type String?
+  language      String?
+  headline      String?
+  country       String?
+  synced_at     DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([hotel_id, source_id])
+  @@index([hotel_id])
+  @@index([hotel_id, score(sort: Desc)], map: "hotel_review_items_score_idx")
+}
+
+model hotel_reviews {
+  hotel_id      String   @id
+  rating        Decimal? @db.Decimal(4, 2)
+  reviews_count Int      @default(0)
+  synced_at     DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([synced_at])
+}
+
+model hotel_search_cache {
+  cache_key  String   @id
+  result     Json
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  expires_at DateTime @db.Timestamptz(6)
+
+  @@index([expires_at], map: "idx_hotel_search_cache_expires")
+}
+
+model hotel_search_stats {
+  city_key         String   @id
+  country_code     String   @default("")
+  search_count     Int      @default(1)
+  last_searched_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([search_count(sort: Desc), last_searched_at(sort: Desc)], map: "idx_hotel_search_stats_count")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model notifications {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id     String?  @db.Uuid
+  title       String
+  description String?
+  type        String
+  read        Boolean  @default(false)
+  metadata    Json?    @default("{}")
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime @default(now()) @db.Timestamptz(6)
+  users       users?   @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model onda_properties {
+  id             String    @id
+  name           String
+  address        String?
+  latitude       Float?
+  longitude      Float?
+  star_rating    Int?
+  thumbnail_url  String?
+  images         String[]  @default([])
+  amenities      String[]  @default([])
+  description    String?
+  status         String?
+  last_synced_at DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model passengers {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id      String          @db.Uuid
+  first_name      String
+  last_name       String
+  type            passenger_type
+  passport        String?
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  ticket_number   String?
+  seat_number     String?
+  flight_bookings flight_bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([booking_id], map: "idx_passengers_booking_id")
+}
+
+model password_reset_tokens {
+  user_id    String   @id @db.Uuid
+  token      String
+  expires_at DateTime @db.Timestamptz(6)
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model place_cache {
+  place_id  String   @id
+  data      Json
+  cached_at DateTime @default(now()) @db.Timestamptz(6)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model policy_tiers {
+  id                       String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  snapshot_id              String                   @db.Uuid
+  cancel_deadline          DateTime                 @db.Timestamptz(6)
+  penalty_amount           Decimal                  @default(0) @db.Decimal(10, 2)
+  penalty_type             String                   @default("fixed")
+  currency                 String?                  @default("PHP")
+  tier_order               Int                      @default(0)
+  booking_policy_snapshots booking_policy_snapshots @relation(fields: [snapshot_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  refund_logs              refund_logs[]
+
+  @@unique([snapshot_id, tier_order], map: "uq_tier_order")
+  @@index([snapshot_id, tier_order], map: "idx_policy_tiers_snapshot")
+}
+
+model popular_destinations {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  city          String
+  country       String
+  image_url     String?
+  average_price Decimal?  @db.Decimal(10, 2)
+  created_at    DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model price_alerts {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String    @db.Uuid
+  email           String
+  origin          String
+  destination     String
+  cabin_class     String    @default("economy")
+  adults          Int       @default(1)
+  current_price   Decimal?  @db.Decimal(12, 2)
+  currency        String    @default("USD")
+  target_price    Decimal?  @db.Decimal(12, 2)
+  is_active       Boolean   @default(true)
+  last_checked_at DateTime? @db.Timestamptz(6)
+  created_at      DateTime  @default(now()) @db.Timestamptz(6)
+  users           users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([origin, destination], map: "idx_price_alerts_route")
+  @@index([user_id], map: "idx_price_alerts_user")
+}
+
+model profiles {
+  id          String    @id @db.Uuid
+  email       String?
+  full_name   String?
+  phone       String?
+  avatar_url  String?
+  nationality String?
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime? @default(now()) @db.Timestamptz(6)
+  role        String?   @default("user")
+  banned_at   DateTime? @db.Timestamptz(6)
+  preferences Json      @default("{}")
+  users       users     @relation(fields: [id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([email], map: "idx_profiles_email")
+}
+
+model rate_limit_counters {
+  key      String   @id
+  count    Int      @default(0)
+  reset_at DateTime @db.Timestamptz(6)
+
+  @@index([reset_at])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model refund_logs {
+  id                       String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id               String
+  policy_snapshot_id       String?                   @db.Uuid
+  user_id                  String                    @db.Uuid
+  refund_type              String
+  requested_amount         Decimal                   @db.Decimal(10, 2)
+  approved_amount          Decimal?                  @db.Decimal(10, 2)
+  currency                 String?                   @default("PHP")
+  penalty_amount           Decimal?                  @default(0) @db.Decimal(10, 2)
+  applied_tier_id          String?                   @db.Uuid
+  status                   refund_status             @default(pending)
+  status_reason            String?
+  external_ref             String?
+  requested_at             DateTime                  @default(now()) @db.Timestamptz(6)
+  processed_at             DateTime?                 @db.Timestamptz(6)
+  processed_by             String?
+  policy_tiers             policy_tiers?             @relation(fields: [applied_tier_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  booking_policy_snapshots booking_policy_snapshots? @relation(fields: [policy_snapshot_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([booking_id], map: "idx_refund_logs_booking")
+  @@index([status], map: "idx_refund_logs_status")
+  @@index([user_id], map: "idx_refund_logs_user")
+}
+
+model saved_trips {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String    @db.Uuid
+  type       trip_type
+  title      String
+  subtitle   String?
+  price      Decimal?  @db.Decimal(12, 2)
+  currency   String    @default("USD")
+  image_url  String?
+  deep_link  String
+  snapshot   Json?
+  created_at DateTime  @default(now()) @db.Timestamptz(6)
+  users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id, type], map: "idx_saved_trips_type")
+  @@index([user_id], map: "idx_saved_trips_user")
+}
+
+model schema_migrations {
+  version String @id @db.VarChar
+}
+
+model search_results_cache {
+  cache_key   String   @id
+  city_name   String
+  region_id   Int      @default(0)
+  checkin     DateTime @db.Date
+  checkout    DateTime @db.Date
+  adults      Int      @default(2)
+  children    Int      @default(0)
+  rooms       Int      @default(1)
+  currency    String   @default("USD")
+  nationality String   @default("KR")
+  hotels      Json     @default("[]")
+  total_count Int      @default(0)
+  cached_at   DateTime @default(now()) @db.Timestamptz(6)
+  expires_at  DateTime @db.Timestamptz(6)
+
+  @@index([city_name, checkin], map: "idx_src_city_checkin")
+  @@index([expires_at], map: "idx_src_expires_at")
+}
+
+model sessions {
+  id         String   @id
+  user_id    String   @db.Uuid
+  expires_at DateTime @db.Timestamptz(6)
+  attributes Json     @default("{}")
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([expires_at], map: "idx_sessions_expires_at")
+  @@index([user_id], map: "idx_sessions_user_id")
+}
+
+model stripe_processed_events {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  event_id     String   @unique
+  event_type   String?
+  processed_at DateTime @default(now()) @db.Timestamptz(6)
+}
+
+model tgx_destination_cache {
+  city_key         String    @id
+  destination_code String
+  created_at       DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model travel_styles {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title      String
+  location   String
+  price      Decimal   @db.Decimal(10, 2)
+  image_url  String?
+  category   String?
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model unified_bookings {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id       String    @db.Uuid
+  type          trip_type
+  provider      String
+  external_id   String?
+  status        String    @default("pending")
+  total_price   Decimal   @db.Decimal(12, 2)
+  currency      String    @default("USD")
+  metadata      Json      @default("{}")
+  created_at    DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime  @default(now()) @db.Timestamptz(6)
+  supplier_cost Decimal?  @default(0) @db.Decimal(12, 2)
+  markup_amount Decimal?  @default(0) @db.Decimal(12, 2)
+  profit        Decimal?  @default(0) @db.Decimal(12, 2)
+
+  @@index([created_at(sort: Desc)], map: "idx_unified_bookings_created")
+  @@index([metadata], map: "idx_unified_bookings_metadata", type: Gin)
+  @@index([provider], map: "idx_unified_bookings_provider")
+  @@index([status], map: "idx_unified_bookings_status")
+  @@index([type], map: "idx_unified_bookings_type")
+  @@index([user_id], map: "idx_unified_bookings_user_id")
+}
+
+model unique_stays {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name       String
+  location   String
+  rating     Decimal?  @db.Decimal(2, 1)
+  price      Decimal   @db.Decimal(10, 2)
+  image_url  String?
+  badge      String?
+  category   String?
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model users {
+  id                    String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email                 String                 @unique
+  password_hash         String?
+  role                  String                 @default("user")
+  first_name            String?
+  last_name             String?
+  avatar_url            String?
+  banned_at             DateTime?              @db.Timestamptz(6)
+  created_at            DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime               @default(now()) @db.Timestamptz(6)
+  api_keys              api_keys[]
+  device_push_tokens    device_push_tokens[]
+  flight_booking_notes  flight_booking_notes[]
+  flight_searches       flight_searches[]
+  notifications         notifications[]
+  password_reset_tokens password_reset_tokens?
+  price_alerts          price_alerts[]
+  profiles              profiles?
+  saved_trips           saved_trips[]
+  sessions              sessions[]
+
+  @@index([email], map: "idx_users_email")
+}
+
+model voucher_usage {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  voucher_id       String    @db.Uuid
+  user_id          String    @db.Uuid
+  booking_id       String?
+  original_price   Decimal   @db.Decimal(10, 2)
+  discount_applied Decimal   @db.Decimal(10, 2)
+  final_price      Decimal   @db.Decimal(10, 2)
+  currency         String?   @default("PHP")
+  used_at          DateTime? @default(now()) @db.Timestamptz(6)
+  vouchers         vouchers  @relation(fields: [voucher_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id], map: "idx_voucher_usage_user")
+  @@index([voucher_id], map: "idx_voucher_usage_voucher")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model vouchers {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code                String                @unique
+  description         String                @default("")
+  discount_type       voucher_discount_type
+  discount_value      Decimal               @db.Decimal(10, 2)
+  min_booking_amount  Decimal?              @db.Decimal(10, 2)
+  max_discount_amount Decimal?              @db.Decimal(10, 2)
+  category            String                @default("general")
+  hotel_ids           String[]
+  location_codes      String[]
+  valid_from          DateTime              @default(now()) @db.Timestamptz(6)
+  valid_until         DateTime              @db.Timestamptz(6)
+  usage_limit         Int?
+  times_used          Int?                  @default(0)
+  active              Boolean?              @default(true)
+  created_at          DateTime?             @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime?             @default(now()) @db.Timestamptz(6)
+  voucher_usage       voucher_usage[]
+
+  @@index([active, valid_from, valid_until], map: "idx_vouchers_active")
+  @@index([code], map: "idx_vouchers_code")
+}
+
+model weekend_flight_deals {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name           String
+  location       String
+  rating         Decimal?  @db.Decimal(2, 1)
+  reviews        Int?      @default(0)
+  original_price Decimal?  @db.Decimal(10, 2)
+  sale_price     Decimal   @db.Decimal(10, 2)
+  image_url      String?
+  badge          String?
+  created_at     DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+enum booking_policy_type {
+  free_cancellation
+  non_refundable
+  partial_refund
+  tiered
+}
+
+enum passenger_type {
+  ADT
+  CHD
+  INF
+}
+
+enum push_platform {
+  ios
+  android
+  web
+}
+
+enum refund_status {
+  pending
+  approved
+  processed
+  rejected
+  failed
+}
+
+enum trip_type {
+  flight
+  hotel
+}
+
+enum voucher_discount_type {
+  percent
+  fixed
+}
