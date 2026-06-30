@@ -18,6 +18,8 @@ export function authenticate(req: Request, _res: Response, next: NextFunction) {
     }
 }
 
+export const requireAuth = authenticate;
+
 export function requireRole(...roles: string[]) {
     return (req: Request, _res: Response, next: NextFunction) => {
         if (!req.user || !roles.includes(req.user.role)) {

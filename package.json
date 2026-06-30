@@ -25,6 +25,7 @@
     "helmet": "^8.0.0",
     "ioredis": "^5.3.2",
     "jsonwebtoken": "^9.0.2",
+    "stripe": "^22.3.0",
     "uuid": "^9.0.0",
     "winston": "^3.11.0",
     "zod": "^3.22.0"
