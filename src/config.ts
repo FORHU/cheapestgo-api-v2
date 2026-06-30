@@ -25,6 +25,9 @@ const schema = z.object({
     FUNCTIONS_SECRET:          z.string().optional(),
     ANTHROPIC_API_KEY:         z.string().optional(),
     GOOGLE_PLACES_API_KEY:     z.string().optional(),
+    GOOGLE_CLIENT_ID:          z.string().optional(),
+    GOOGLE_CLIENT_SECRET:      z.string().optional(),
+    SITE_URL:                  z.string().default('http://localhost:3000'),
 });
 
 const parsed = schema.safeParse(process.env);

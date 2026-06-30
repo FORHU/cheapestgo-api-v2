@@ -7,6 +7,9 @@ import exchangeRatesRoutes from './exchange-rates.route';
 import airportsRoutes      from './airports.route';
 import usersRoutes         from './users.route';
 import cronRoutes          from './cron.route';
+import emailRoutes         from './email.route';
+import voucherRoutes       from './vouchers.route';
+import adminRoutes         from './admin.route';
 
 const router = Router();
 
@@ -20,5 +23,11 @@ router.use('/exchange-rates', exchangeRatesRoutes);
 router.use('/airports',       airportsRoutes);
 router.use('/users',          usersRoutes);
 router.use('/cron',           cronRoutes);
+router.use('/email',          emailRoutes);
+router.use('/vouchers',       voucherRoutes);
+router.use('/admin',          adminRoutes);
+
+// NOTE: /webhooks is mounted directly on the Express app (in app.ts) BEFORE
+// the global JSON body parser, so it does NOT appear here.
 
 export default router;
