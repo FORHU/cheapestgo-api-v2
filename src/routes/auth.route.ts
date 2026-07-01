@@ -154,7 +154,7 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
         res.cookie('oauth_state', state, { ...COOKIE_OPTIONS, maxAge: 600_000 });
         res.cookie('oauth_provider', 'google', { ...COOKIE_OPTIONS, maxAge: 600_000 });
 
-        const redirectUri = `${config.SITE_URL}/auth/callback`;
+        const redirectUri = `${config.API_URL}/api/auth/google/callback`;
 
         const params = new URLSearchParams({
             client_id:     config.GOOGLE_CLIENT_ID,
@@ -220,7 +220,7 @@ router.get('/google/callback', async (req: Request, res: Response, next: NextFun
         res.clearCookie('oauth_provider', COOKIE_OPTIONS);
 
         // Exchange authorization code for tokens
-        const redirectUri = `${config.SITE_URL}/auth/callback`;
+        const redirectUri = `${config.API_URL}/api/auth/google/callback`;
         const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
