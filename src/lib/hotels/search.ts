@@ -15,15 +15,28 @@ import type { HotelSearchParams, HotelSearchResult } from '@/types/hotels';
 // ─── Country name → ISO lookup (shared by stream route and ETG fallback) ──────
 
 const COUNTRY_NAME_TO_ISO: Record<string, string> = {
-    'indonesia': 'ID', 'france': 'FR', 'italy': 'IT', 'spain': 'ES', 'germany': 'DE',
-    'japan': 'JP', 'thailand': 'TH', 'greece': 'GR', 'united states': 'US', 'usa': 'US',
-    'australia': 'AU', 'philippines': 'PH', 'south korea': 'KR', 'korea': 'KR',
-    'vietnam': 'VN', 'cambodia': 'KH', 'singapore': 'SG', 'malaysia': 'MY',
-    'india': 'IN', 'china': 'CN', 'hong kong': 'HK', 'taiwan': 'TW',
-    'peru': 'PE', 'mexico': 'MX', 'brazil': 'BR', 'argentina': 'AR',
-    'egypt': 'EG', 'tanzania': 'TZ', 'south africa': 'ZA', 'kenya': 'KE',
-    'iceland': 'IS', 'maldives': 'MV', 'uae': 'AE', 'united arab emirates': 'AE',
-    'turkey': 'TR', 'morocco': 'MA', 'jordan': 'JO', 'new zealand': 'NZ', 'canada': 'CA',
+    // Asia Pacific
+    'indonesia': 'ID', 'japan': 'JP', 'thailand': 'TH', 'philippines': 'PH',
+    'south korea': 'KR', 'korea': 'KR', 'vietnam': 'VN', 'cambodia': 'KH',
+    'singapore': 'SG', 'malaysia': 'MY', 'india': 'IN', 'china': 'CN',
+    'hong kong': 'HK', 'taiwan': 'TW', 'myanmar': 'MM', 'burma': 'MM',
+    'laos': 'LA', 'maldives': 'MV', 'sri lanka': 'LK', 'nepal': 'NP',
+    'australia': 'AU', 'new zealand': 'NZ',
+    // Middle East & Gulf
+    'united arab emirates': 'AE', 'uae': 'AE', 'saudi arabia': 'SA', 'ksa': 'SA',
+    'qatar': 'QA', 'kuwait': 'KW', 'bahrain': 'BH', 'jordan': 'JO',
+    'turkey': 'TR', 'türkiye': 'TR',
+    // Europe
+    'france': 'FR', 'italy': 'IT', 'spain': 'ES', 'germany': 'DE', 'greece': 'GR',
+    'united kingdom': 'GB', 'uk': 'GB', 'britain': 'GB', 'england': 'GB',
+    'ireland': 'IE', 'portugal': 'PT', 'netherlands': 'NL', 'holland': 'NL',
+    'switzerland': 'CH', 'austria': 'AT', 'norway': 'NO', 'sweden': 'SE',
+    'denmark': 'DK', 'iceland': 'IS',
+    // Africa
+    'egypt': 'EG', 'morocco': 'MA', 'south africa': 'ZA', 'kenya': 'KE', 'tanzania': 'TZ',
+    // Americas
+    'united states': 'US', 'usa': 'US', 'canada': 'CA',
+    'mexico': 'MX', 'brazil': 'BR', 'argentina': 'AR', 'peru': 'PE',
 };
 
 function resolveIsoCode(raw?: string): string | null {

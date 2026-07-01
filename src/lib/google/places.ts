@@ -57,22 +57,38 @@ export interface AutocompleteResult {
 }
 
 const COUNTRY_SEARCH_LIST = [
-    { name: 'Indonesia', code: 'ID' }, { name: 'France', code: 'FR' }, { name: 'Italy', code: 'IT' },
-    { name: 'Spain', code: 'ES' }, { name: 'Germany', code: 'DE' }, { name: 'Japan', code: 'JP' },
-    { name: 'Thailand', code: 'TH' }, { name: 'Greece', code: 'GR' }, { name: 'United States', code: 'US' },
-    { name: 'Australia', code: 'AU' }, { name: 'Philippines', code: 'PH' }, { name: 'South Korea', code: 'KR' },
-    { name: 'Vietnam', code: 'VN' }, { name: 'Cambodia', code: 'KH' }, { name: 'Singapore', code: 'SG' },
-    { name: 'Malaysia', code: 'MY' }, { name: 'India', code: 'IN' }, { name: 'China', code: 'CN' },
-    { name: 'Hong Kong', code: 'HK' }, { name: 'Taiwan', code: 'TW' }, { name: 'Peru', code: 'PE' },
-    { name: 'Mexico', code: 'MX' }, { name: 'Brazil', code: 'BR' }, { name: 'Argentina', code: 'AR' },
-    { name: 'Egypt', code: 'EG' }, { name: 'South Africa', code: 'ZA' }, { name: 'Kenya', code: 'KE' },
-    { name: 'Iceland', code: 'IS' }, { name: 'Norway', code: 'NO' }, { name: 'Sweden', code: 'SE' },
-    { name: 'Denmark', code: 'DK' }, { name: 'Portugal', code: 'PT' }, { name: 'Netherlands', code: 'NL' },
-    { name: 'Switzerland', code: 'CH' }, { name: 'Austria', code: 'AT' }, { name: 'United Kingdom', code: 'GB' },
-    { name: 'Maldives', code: 'MV' }, { name: 'Sri Lanka', code: 'LK' }, { name: 'Nepal', code: 'NP' },
-    { name: 'United Arab Emirates', code: 'AE' }, { name: 'Turkey', code: 'TR' },
-    { name: 'Morocco', code: 'MA' }, { name: 'Jordan', code: 'JO' }, { name: 'New Zealand', code: 'NZ' },
-    { name: 'Canada', code: 'CA' },
+    // Asia Pacific
+    { name: 'Philippines', code: 'PH' }, { name: 'Indonesia', code: 'ID' },
+    { name: 'Japan', code: 'JP' }, { name: 'Thailand', code: 'TH' },
+    { name: 'South Korea', code: 'KR' }, { name: 'Vietnam', code: 'VN' },
+    { name: 'Cambodia', code: 'KH' }, { name: 'Singapore', code: 'SG' },
+    { name: 'Malaysia', code: 'MY' }, { name: 'Myanmar', code: 'MM' },
+    { name: 'Laos', code: 'LA' }, { name: 'India', code: 'IN' },
+    { name: 'China', code: 'CN' }, { name: 'Hong Kong', code: 'HK' },
+    { name: 'Taiwan', code: 'TW' }, { name: 'Maldives', code: 'MV' },
+    { name: 'Sri Lanka', code: 'LK' }, { name: 'Nepal', code: 'NP' },
+    { name: 'Australia', code: 'AU' }, { name: 'New Zealand', code: 'NZ' },
+    // Middle East & Gulf
+    { name: 'United Arab Emirates', code: 'AE' }, { name: 'Saudi Arabia', code: 'SA' },
+    { name: 'Qatar', code: 'QA' }, { name: 'Kuwait', code: 'KW' },
+    { name: 'Bahrain', code: 'BH' }, { name: 'Jordan', code: 'JO' },
+    { name: 'Turkey', code: 'TR' },
+    // Europe
+    { name: 'France', code: 'FR' }, { name: 'Italy', code: 'IT' },
+    { name: 'Spain', code: 'ES' }, { name: 'Germany', code: 'DE' },
+    { name: 'Greece', code: 'GR' }, { name: 'United Kingdom', code: 'GB' },
+    { name: 'Ireland', code: 'IE' }, { name: 'Portugal', code: 'PT' },
+    { name: 'Netherlands', code: 'NL' }, { name: 'Switzerland', code: 'CH' },
+    { name: 'Austria', code: 'AT' }, { name: 'Norway', code: 'NO' },
+    { name: 'Sweden', code: 'SE' }, { name: 'Denmark', code: 'DK' },
+    { name: 'Iceland', code: 'IS' },
+    // Africa
+    { name: 'Egypt', code: 'EG' }, { name: 'Morocco', code: 'MA' },
+    { name: 'South Africa', code: 'ZA' }, { name: 'Kenya', code: 'KE' },
+    // Americas
+    { name: 'United States', code: 'US' }, { name: 'Canada', code: 'CA' },
+    { name: 'Mexico', code: 'MX' }, { name: 'Brazil', code: 'BR' },
+    { name: 'Argentina', code: 'AR' }, { name: 'Peru', code: 'PE' },
 ];
 
 function matchCountries(query: string): AutocompleteResult[] {

@@ -8,6 +8,8 @@
     "build": "tsup src/server.ts --format cjs --out-dir dist",
     "start": "node dist/server.js",
     "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "eslint src --ext .ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
@@ -42,6 +44,8 @@
     "prisma": "^6.0.0",
     "ts-node": "^10.9.2",
     "tsup": "^8.0.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^4.1.9"
   }
 }
