@@ -13,7 +13,7 @@ export class AuthService {
         if (existing) throw new AppError(409, 'Email already in use', 'EMAIL_TAKEN');
 
         const password_hash = await bcrypt.hash(data.password, 12);
-        const user = await this.repo.create({ ...data, password_hash });
+        const user = await this.repo.create({ email: data.email, password_hash, first_name: data.first_name, last_name: data.last_name });
         return { user: this.sanitize(user), ...this.generateTokens(user) };
     }
 

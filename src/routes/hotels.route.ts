@@ -6,13 +6,15 @@ const router = Router();
 const ctrl   = new HotelsController();
 
 // Public
-router.post('/search',          ctrl.search);
-router.get( '/property/:id',    ctrl.property);
-router.get( '/deals',           ctrl.deals);
-router.post('/autocomplete',    ctrl.autocomplete);
-router.get( '/place-details',   ctrl.placeDetails);
-router.get( '/geocode',         ctrl.geocode);
-router.post('/prebook',         ctrl.preBook);
+router.post('/search',                  ctrl.search);
+router.get( '/property/:id',            ctrl.property);
+router.get( '/deals',                   ctrl.deals);
+router.post('/autocomplete',            ctrl.autocomplete);
+router.get( '/place-details',           ctrl.placeDetails);
+router.get( '/geocode',                 ctrl.geocode);
+router.post('/prebook',                 ctrl.preBook);
+router.get( '/amenities',               ctrl.amenitiesByDestination);
+router.get( '/amenities/by-ids',        ctrl.amenitiesByHotelIds);
 
 // Auth-protected
 router.post('/create-payment',  requireAuth, ctrl.createPayment);

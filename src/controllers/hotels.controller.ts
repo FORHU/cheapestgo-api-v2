@@ -103,4 +103,26 @@ export class HotelsController {
             res.json(result);
         } catch (err) { next(err); }
     };
+
+    // ── Amenities ─────────────────────────────────────────────────────────────
+
+    amenitiesByDestination = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { destination } = z.object({ destination: z.string().min(1) }).parse(req.query);
+            const result = await svc.getAmenitiesByDestination(destination);
+            res.json({ destination, hotels: result, count: result.length });
+        } catch (err) { next(err); }
+    };
+
+    amenitiesByHotelIds = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { ids } = z.object({
+                ids: z.union([z.string(), z.array(z.string())]).transform(v =>
+                    Array.isArray(v) ? v : v.split(',').map(s => s.trim()).filter(Boolean)
+                ),
+            }).parse(req.query);
+            const result = await svc.getAmenitiesByHotelIds(ids);
+            res.json({ hotels: result, count: result.length });
+        } catch (err) { next(err); }
+    };
 }

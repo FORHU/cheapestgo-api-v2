@@ -6,7 +6,7 @@
 import { prisma } from '@/lib/prisma';
 import {
     tgxGraphQL, getTgxSettings, getTgxConfig, buildOccupancies,
-    normalizeOption, resolveTgxDestinationCode,
+    normalizeOption, resolveTgxDestinationCode, fetchAmenitiesByHotelCodes,
     type TgxOption,
 } from './travelgatex';
 import { otvCodeToLabel } from './amenityCodes';
@@ -313,6 +313,65 @@ async function fetchEtgHotelNames(hotelIds: string[]): Promise<Map<string, strin
     return nameMap;
 }
 
+async function fetchEtgAmenitiesBatch(hotelIds: string[]): Promise<Map<string, string[]>> {
+    const amenityMap = new Map<string, string[]>();
+    if (!hotelIds.length) return amenityMap;
+    const keyId  = process.env.ETG_KEY_ID;
+    const apiKey = process.env.ETG_API_KEY;
+    if (!keyId || !apiKey) return amenityMap;
+    const token = Buffer.from(`${keyId}:${apiKey}`).toString('base64');
+    const BATCH = 50;
+    for (let i = 0; i < hotelIds.length; i += BATCH) {
+        const batch = hotelIds.slice(i, i + BATCH);
+        try {
+            const abort   = new AbortController();
+            const timeout = setTimeout(() => abort.abort(), 8_000);
+            const res = await fetch('https://api.worldota.net/api/b2b/v3/hotel/info/', {
+                method:  'POST',
+                headers: { 'Authorization': `Basic ${token}`, 'Content-Type': 'application/json' },
+                body:    JSON.stringify({ ids: batch, language: 'en' }),
+                signal:  abort.signal,
+            });
+            clearTimeout(timeout);
+            if (!res.ok) {
+                const body = await res.text().catch(() => '');
+                console.warn(`[amenity-enrich] ETG batch ${res.status}:`, body.slice(0, 300));
+                continue;
+            }
+            const json: any    = await res.json();
+            const hotels: any[] = json?.data?.hotels ?? json?.hotels ?? [];
+            for (const h of hotels) {
+                const id = String(h.id ?? h.hotel_id ?? '');
+                if (!id) continue;
+                const amenities: string[] = (h.amenity_groups ?? [])
+                    .flatMap((g: any) => g.amenities ?? [])
+                    .filter((a: any) => typeof a === 'string' && a.length > 0);
+                if (amenities.length) amenityMap.set(id, amenities);
+            }
+        } catch (e: any) {
+            if (e?.name !== 'AbortError') console.warn('[amenity-enrich] ETG batch failed:', e.message);
+        }
+    }
+    return amenityMap;
+}
+
+async function updateHotelAmenitiesInDb(amenityMap: Map<string, string[]>): Promise<void> {
+    if (!amenityMap.size) return;
+    let saved = 0;
+    for (const [hotelId, amenities] of amenityMap) {
+        if (!amenities.length) continue;
+        try {
+            await prisma.hotel_content.upsert({
+                where:  { hotel_id: hotelId },
+                create: { hotel_id: hotelId, amenities, images: [], content_source: 'etg', fetched_at: new Date() },
+                update: { amenities, fetched_at: new Date() },
+            });
+            saved++;
+        } catch { /* skip */ }
+    }
+    if (saved) console.log(`[tgx-search] Updated amenities for ${saved} hotels from ETG`);
+}
+
 async function updateHotelNamesInDb(nameMap: Map<string, string>): Promise<void> {
     if (!nameMap.size) return;
     let saved = 0;
@@ -452,6 +511,7 @@ async function backfillHotelContent(contentMap: Map<string, any>): Promise<void>
                 update: {
                     fetched_at: new Date(),
                     content_source: 'tgx',
+                    ...(Array.isArray(r.amenities) && r.amenities.length > 0 ? { amenities: r.amenities } : {}),
                 },
             });
             saved++;
@@ -515,7 +575,11 @@ async function fetchEtgHotelInfo(id: string): Promise<any | null> {
         clearTimeout(t);
         if (!res.ok) return null;
         const json: any = await res.json();
-        return json?.data ?? null;
+        const data = json?.data ?? null;
+        if (process.env.NODE_ENV === 'development' && data) {
+            console.log(`[etg-info] hotel ${id} amenity_groups:`, JSON.stringify(data.amenity_groups ?? 'MISSING').slice(0, 300));
+        }
+        return data;
     } catch {
         return null;
     }
@@ -573,7 +637,10 @@ async function searchEtgCity(
         const topIds    = topHotels.map((h: any) => h.id as string);
 
         const existingContent = await fetchHotelContent(topIds);
-        const needInfo        = topHotels.filter((h: any) => !existingContent.get(h.id)?.name);
+        const needInfo        = topHotels.filter((h: any) => {
+            const c = existingContent.get(h.id);
+            return !c?.name || !c?.amenities?.length;
+        });
         const toFetch         = needInfo.slice(0, 15);
         const infoResults     = toFetch.length > 0
             ? await Promise.allSettled(toFetch.map((h: any) => fetchEtgHotelInfo(h.id as string)))
@@ -583,6 +650,17 @@ async function searchEtgCity(
         for (let i = 0; i < toFetch.length; i++) {
             const r = infoResults[i];
             if (r.status === 'fulfilled' && r.value) infoMap.set(toFetch[i].id as string, r.value);
+        }
+
+        if (infoMap.size > 0) {
+            const amenityMap = new Map<string, string[]>();
+            for (const [id, info] of infoMap) {
+                const amenities: string[] = (info.amenity_groups ?? [])
+                    .flatMap((g: any) => g.amenities ?? [])
+                    .filter((a: any) => typeof a === 'string' && a.length > 0);
+                if (amenities.length) amenityMap.set(id, amenities);
+            }
+            updateHotelAmenitiesInDb(amenityMap).catch(() => {});
         }
 
         const results = topHotels.map((h: any) => {
@@ -600,6 +678,11 @@ async function searchEtgCity(
                 .slice(0, 10);
             const lat = Number(src?.latitude ?? src?.lat ?? 0);
             const lng = Number(src?.longitude ?? src?.lng ?? 0);
+            const amenities: string[] = dbContent?.amenities?.length
+                ? dbContent.amenities
+                : (etgInfo?.amenity_groups ?? [])
+                    .flatMap((g: any) => g.amenities ?? [])
+                    .filter((a: any) => typeof a === 'string' && a.length > 0);
             return {
                 hotelId: h.id, id: h.id,
                 name: dbContent?.name ?? etgInfo?.name ?? h.id,
@@ -611,7 +694,7 @@ async function searchEtgCity(
                 lat, lng, coordinates: { lat, lng },
                 address: src?.address ?? '', location: src?.address ?? '',
                 city: cityName, country: params.countryCode ?? '',
-                description: '', amenities: [],
+                description: '', amenities,
                 reviewRating: Number(dbContent?.review_rating ?? 0),
                 rating: Number(dbContent?.review_rating ?? 0),
                 reviews: Number(dbContent?.review_count ?? 0),
@@ -699,37 +782,45 @@ async function runCityFallback(
         if (_failedDestCodes.has(resolvedCode)) {
             console.log(`[tgx-search] Dest code "${resolvedCode}" is a known OTV miss — skipping`);
         } else {
-            const __t0     = Date.now();
-            const destResult = await tgxGraphQL(CITY_SEARCH_QUERY, {
-                criteria: { ...baseCriteria, destinations: [resolvedCode] },
-                settings,
-            });
-            console.log(`[tgx-search][TIMING] dest-code round-trip took ${Date.now() - __t0}ms`);
+            const __t0 = Date.now();
+            const [destResult, otv] = await Promise.all([
+                tgxGraphQL(CITY_SEARCH_QUERY, {
+                    criteria: { ...baseCriteria, destinations: [resolvedCode] },
+                    settings,
+                }),
+                cityName
+                    ? fetchOtvHotelCodesByCity(cityName, resolvedCode).catch(() => ({ codes: [] as string[], contentMap: new Map<string, any>() }))
+                    : Promise.resolve({ codes: [] as string[], contentMap: new Map<string, any>() }),
+            ]);
+            console.log(`[tgx-search][TIMING] dest+portfolio round-trip took ${Date.now() - __t0}ms`);
             const destOptions: TgxOption[] = destResult?.data?.hotelX?.search?.options || [];
             const destErrors: any[]        = destResult?.data?.hotelX?.search?.errors  || [];
             const destMerchant = destOptions.filter(
                 o => o.paymentType === 'MERCHANT' && (o.status === 'AVAILABLE' || o.status === 'OK')
             );
             if (destMerchant.length > 0) {
-                console.log(`[tgx-search] Dest-code search returned ${destMerchant.length} options for "${cityName}"`);
-                // Background-seed hotel_content
-                fetchOtvHotelCodesByCity(cityName, resolvedCode)
-                    .then(otv => {
-                        const nullNames = otv.codes.filter(c => !otv.contentMap.get(c)?.name);
-                        if (nullNames.length > 0) {
-                            fetchEtgHotelNames(nullNames)
-                                .then(etgNames => updateHotelNamesInDb(etgNames))
-                                .catch(() => {});
-                        }
-                    })
-                    .catch(() => {});
-                return buildCityResults(destMerchant, cityName, countryCode);
+                console.log(`[tgx-search] Dest-code search returned ${destMerchant.length} options, OTV portfolio ${otv.codes.length} hotels`);
+                if (otv.codes.length > 0) {
+                    const nullNames = otv.codes.filter(c => !otv.contentMap.get(c)?.name);
+                    if (nullNames.length > 0) {
+                        fetchEtgHotelNames(nullNames)
+                            .then(etgNames => updateHotelNamesInDb(etgNames))
+                            .catch(() => {});
+                    }
+                }
+                return buildCityResults(destMerchant, cityName, countryCode, otv.contentMap);
             }
-            persistFailedDestCode(resolvedCode, cityName);
-            if (destErrors.length) {
-                console.warn(`[tgx-search] Dest code "${resolvedCode}" had errors — recorded as OTV miss`);
+            // WRONG_FIELD/Empty hotels = TGX mapping gap (OTV was never called).
+            // Don't blacklist — the city may have OTV coverage once TGX mapping syncs.
+            if (!hasEmptyHotelsError(destErrors)) {
+                persistFailedDestCode(resolvedCode, cityName);
+                if (destErrors.length) {
+                    console.warn(`[tgx-search] Dest code "${resolvedCode}" had errors — recorded as OTV miss`);
+                } else {
+                    console.warn(`[tgx-search] Dest code "${resolvedCode}" returned 0 options — recorded as OTV miss`);
+                }
             } else {
-                console.warn(`[tgx-search] Dest code "${resolvedCode}" returned 0 options — recorded as OTV miss`);
+                console.warn(`[tgx-search] Dest code "${resolvedCode}" has TGX mapping gap (Empty hotels) — not recorded as OTV miss`);
             }
         }
     }
@@ -1015,6 +1106,43 @@ async function buildCityResults(
                 console.warn('[tgx-search] ETG name enrichment skipped:', e.message);
             }
         }
+
+        // Fetch ETG amenities in a single batch call, awaited so results are available before we build the response
+        const noAmenityCodes = hotelCodes.filter(c => {
+            const a = contentMap.get(c)?.amenities ?? preloadedContent.get(c)?.amenities;
+            return !Array.isArray(a) || a.length === 0;
+        });
+        console.log(`[amenity-enrich] ${noAmenityCodes.length}/${hotelCodes.length} hotels need amenities`);
+        if (noAmenityCodes.length > 0) {
+            const batch = noAmenityCodes.slice(0, 50);
+            const isNumeric = /^\d+$/.test(batch[0] ?? '');
+            console.log(`[amenity-enrich] ID type: ${isNumeric ? 'numeric (TGX)' : 'slug (ETG)'}, sample:`, batch.slice(0, 3));
+            try {
+                const amenityMap = new Map<string, string[]>();
+                if (isNumeric) {
+                    // TGX numeric codes — use hotelX.hotels portfolio query
+                    const tgxResults = await fetchAmenitiesByHotelCodes(batch);
+                    for (const h of tgxResults) {
+                        const labels = h.amenities.map(otvCodeToLabel).filter(Boolean) as string[];
+                        if (labels.length) amenityMap.set(h.hotelId, labels);
+                    }
+                    console.log(`[amenity-enrich] TGX returned amenities for ${amenityMap.size} hotels`);
+                } else {
+                    // ETG slug IDs — use ETG batch hotel/info
+                    const etgResult = await fetchEtgAmenitiesBatch(batch);
+                    for (const [id, amenities] of etgResult) amenityMap.set(id, amenities);
+                    console.log(`[amenity-enrich] ETG returned amenities for ${amenityMap.size} hotels`);
+                }
+                if (amenityMap.size > 0) {
+                    for (const [id, amenities] of amenityMap) {
+                        const row = contentMap.get(id);
+                        if (row) row.amenities = amenities;
+                        else preloadedContent.set(id, { ...(preloadedContent.get(id) ?? {}), amenities });
+                    }
+                    updateHotelAmenitiesInDb(amenityMap).catch(() => {});
+                }
+            } catch { /* non-fatal */ }
+        }
     }
 
     const hotels_result = hotelCodes.map(code => {
@@ -1043,7 +1171,7 @@ async function buildCityResults(
             city:         content?.city ?? cityName ?? '',
             country:      content?.country ?? countryCode ?? '',
             description:  content?.description ?? '',
-            amenities:    Array.isArray(content?.amenities) ? content.amenities : [],
+            amenities:    content?.amenities?.length ? content.amenities : (preloadedContent.get(code)?.amenities ?? []),
             reviewRating,
             rating:       reviewRating,
             reviews:      reviews?.reviews_count ?? content?.review_count ?? 0,

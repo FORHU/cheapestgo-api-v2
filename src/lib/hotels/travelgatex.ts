@@ -363,6 +363,70 @@ export async function cancelTgx(params: {
     };
 }
 
+// ─── Amenities ────────────────────────────────────────────────────────────────
+
+const AMENITIES_QUERY = `
+query TgxHotelAmenities($criteria: HotelXHotelListInput!) {
+  hotelX {
+    hotels(criteria: $criteria) {
+      edges {
+        node {
+          hotelData {
+            code
+            hotelName
+            amenities { code }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+export interface HotelAmenityResult {
+    hotelId:   string;
+    hotelName: string | null;
+    amenities: string[];
+}
+
+export async function fetchAmenitiesByDestination(
+    destinationCode: string,
+    maxSize = 200,
+): Promise<HotelAmenityResult[]> {
+    const cfg    = getTgxConfig();
+    const result = await tgxGraphQL(AMENITIES_QUERY, {
+        criteria: { access: cfg.accessCode, destinationCodes: [destinationCode], maxSize },
+    });
+
+    const edges: any[] = result?.data?.hotelX?.hotels?.edges ?? [];
+    return edges.map((e: any) => {
+        const d = e?.node?.hotelData;
+        return {
+            hotelId:   d?.code   ?? '',
+            hotelName: d?.hotelName ?? null,
+            amenities: (d?.amenities ?? []).map((a: any) => a.code).filter(Boolean),
+        };
+    }).filter(h => h.hotelId);
+}
+
+export async function fetchAmenitiesByHotelCodes(
+    hotelCodes: string[],
+): Promise<HotelAmenityResult[]> {
+    const cfg    = getTgxConfig();
+    const result = await tgxGraphQL(AMENITIES_QUERY, {
+        criteria: { access: cfg.accessCode, hotelCodes, maxSize: hotelCodes.length },
+    });
+
+    const edges: any[] = result?.data?.hotelX?.hotels?.edges ?? [];
+    return edges.map((e: any) => {
+        const d = e?.node?.hotelData;
+        return {
+            hotelId:   d?.code   ?? '',
+            hotelName: d?.hotelName ?? null,
+            amenities: (d?.amenities ?? []).map((a: any) => a.code).filter(Boolean),
+        };
+    }).filter(h => h.hotelId);
+}
+
 // ─── Destination code resolver ────────────────────────────────────────────────
 
 const _destCodeCache = new Map<string, string>();

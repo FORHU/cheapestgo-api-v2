@@ -12,7 +12,29 @@ import { prisma } from '@/lib/prisma';
 
 const router = Router();
 
-// All admin routes require a valid JWT AND the 'admin' role
+// ── DELETE /api/admin/cache/hotels (dev-only, no auth required) ───────────────
+router.delete('/cache/hotels', async (req: Request, res: Response, next: NextFunction) => {
+    if (process.env.NODE_ENV === 'production') {
+        return next(); // fall through to the auth-protected version below
+    }
+    try {
+        const city = typeof req.query.city === 'string' ? req.query.city.trim() : null;
+        let deleted: number;
+        if (city) {
+            deleted = await prisma.$executeRaw`
+                DELETE FROM hotel_search_cache
+                WHERE cache_key ILIKE ${'%' + city.toLowerCase() + '%'}
+            `;
+        } else {
+            deleted = await prisma.$executeRaw`DELETE FROM hotel_search_cache`;
+        }
+        return res.json({ ok: true, deleted, scope: city ?? 'all' });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// All admin routes below require a valid JWT AND the 'admin' role
 router.use(requireAuth, requireRole('admin'));
 
 const PAGE_SIZE = 20;
@@ -127,6 +149,30 @@ router.get('/bookings', async (req: Request, res: Response, next: NextFunction) 
         }
 
         return res.json({ bookings, total, page, totalPages });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── DELETE /api/admin/cache/hotels ───────────────────────────────────────────
+
+router.delete('/cache/hotels', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const city = typeof req.query.city === 'string' ? req.query.city.trim() : null;
+        let deleted: number;
+
+        if (city) {
+            const rows = await prisma.$executeRaw`
+                DELETE FROM hotel_search_cache
+                WHERE cache_key ILIKE ${'%' + city.toLowerCase() + '%'}
+            `;
+            deleted = rows;
+        } else {
+            const rows = await prisma.$executeRaw`DELETE FROM hotel_search_cache`;
+            deleted = rows;
+        }
+
+        return res.json({ ok: true, deleted, scope: city ?? 'all' });
     } catch (err) {
         next(err);
     }
