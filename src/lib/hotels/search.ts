@@ -355,6 +355,48 @@ async function fetchEtgAmenitiesBatch(hotelIds: string[]): Promise<Map<string, s
     return amenityMap;
 }
 
+// Fetch amenities for numeric RateHawk hids via ETG hotel/info (hid field).
+// Returns Map<hotelId(string), amenities[]>. Also returns resolved slug per hotel
+// so callers can persist it to ratehawk_hid for future batch calls.
+async function fetchEtgAmenitiesByHids(
+    hotelIds: string[],
+): Promise<Map<string, { amenities: string[]; slug: string }>> {
+    const result = new Map<string, { amenities: string[]; slug: string }>();
+    if (!hotelIds.length) return result;
+    const keyId  = process.env.ETG_KEY_ID;
+    const apiKey = process.env.ETG_API_KEY;
+    if (!keyId || !apiKey) return result;
+    const token = Buffer.from(`${keyId}:${apiKey}`).toString('base64');
+
+    // ETG only supports single-hid lookup — run concurrently, cap at 10 in-flight
+    const CONCURRENCY = 10;
+    for (let i = 0; i < hotelIds.length; i += CONCURRENCY) {
+        await Promise.all(hotelIds.slice(i, i + CONCURRENCY).map(async id => {
+            const hid = parseInt(id, 10);
+            if (isNaN(hid)) return;
+            try {
+                const res = await fetch('https://api.worldota.net/api/b2b/v3/hotel/info/', {
+                    method:  'POST',
+                    headers: { 'Authorization': `Basic ${token}`, 'Content-Type': 'application/json' },
+                    body:    JSON.stringify({ hid, language: 'en' }),
+                    signal:  AbortSignal.timeout(8_000),
+                });
+                if (!res.ok) return;
+                const json: any = await res.json();
+                const d = json?.data;
+                if (!d) return;
+                const amenities: string[] = (d.amenity_groups ?? [])
+                    .flatMap((g: any) => g.amenities ?? [])
+                    .filter((a: any) => typeof a === 'string' && a.length > 0);
+                if (amenities.length || d.id) {
+                    result.set(id, { amenities, slug: d.id ?? '' });
+                }
+            } catch { /* non-fatal */ }
+        }));
+    }
+    return result;
+}
+
 async function updateHotelAmenitiesInDb(amenityMap: Map<string, string[]>): Promise<void> {
     if (!amenityMap.size) return;
     let saved = 0;
@@ -1107,41 +1149,45 @@ async function buildCityResults(
             }
         }
 
-        // Fetch ETG amenities in a single batch call, awaited so results are available before we build the response
+        // Enrich amenities from ETG for hotels missing them.
+        // Fire-and-forget — results are cached to DB so subsequent searches return them instantly.
         const noAmenityCodes = hotelCodes.filter(c => {
             const a = contentMap.get(c)?.amenities ?? preloadedContent.get(c)?.amenities;
             return !Array.isArray(a) || a.length === 0;
         });
         console.log(`[amenity-enrich] ${noAmenityCodes.length}/${hotelCodes.length} hotels need amenities`);
         if (noAmenityCodes.length > 0) {
-            const batch = noAmenityCodes.slice(0, 50);
-            const isNumeric = /^\d+$/.test(batch[0] ?? '');
-            console.log(`[amenity-enrich] ID type: ${isNumeric ? 'numeric (TGX)' : 'slug (ETG)'}, sample:`, batch.slice(0, 3));
-            try {
-                const amenityMap = new Map<string, string[]>();
-                if (isNumeric) {
-                    // TGX numeric codes — use hotelX.hotels portfolio query
-                    const tgxResults = await fetchAmenitiesByHotelCodes(batch);
-                    for (const h of tgxResults) {
-                        const labels = h.amenities.map(otvCodeToLabel).filter(Boolean) as string[];
-                        if (labels.length) amenityMap.set(h.hotelId, labels);
+            const isNumeric = /^\d+$/.test(noAmenityCodes[0] ?? '');
+            console.log(`[amenity-enrich] ID type: ${isNumeric ? 'numeric (TGX)' : 'slug (ETG)'}, total: ${noAmenityCodes.length}`);
+            (async () => {
+                try {
+                    const amenityMap = new Map<string, string[]>();
+                    if (isNumeric) {
+                        const etgResults = await fetchEtgAmenitiesByHids(noAmenityCodes);
+                        const slugUpdates = new Map<string, string>();
+                        for (const [id, { amenities, slug }] of etgResults) {
+                            if (amenities.length) amenityMap.set(id, amenities);
+                            if (slug) slugUpdates.set(id, slug);
+                        }
+                        if (slugUpdates.size > 0) {
+                            for (const [hotelId, slug] of slugUpdates) {
+                                prisma.hotel_content.updateMany({
+                                    where: { hotel_id: hotelId },
+                                    data:  { ratehawk_hid: slug },
+                                }).catch(() => {});
+                            }
+                        }
+                        console.log(`[amenity-enrich] ETG hid lookup returned amenities for ${amenityMap.size}/${noAmenityCodes.length} hotels`);
+                    } else {
+                        const etgResult = await fetchEtgAmenitiesBatch(noAmenityCodes);
+                        for (const [id, amenities] of etgResult) amenityMap.set(id, amenities);
+                        console.log(`[amenity-enrich] ETG returned amenities for ${amenityMap.size} hotels`);
                     }
-                    console.log(`[amenity-enrich] TGX returned amenities for ${amenityMap.size} hotels`);
-                } else {
-                    // ETG slug IDs — use ETG batch hotel/info
-                    const etgResult = await fetchEtgAmenitiesBatch(batch);
-                    for (const [id, amenities] of etgResult) amenityMap.set(id, amenities);
-                    console.log(`[amenity-enrich] ETG returned amenities for ${amenityMap.size} hotels`);
-                }
-                if (amenityMap.size > 0) {
-                    for (const [id, amenities] of amenityMap) {
-                        const row = contentMap.get(id);
-                        if (row) row.amenities = amenities;
-                        else preloadedContent.set(id, { ...(preloadedContent.get(id) ?? {}), amenities });
+                    if (amenityMap.size > 0) {
+                        updateHotelAmenitiesInDb(amenityMap).catch(() => {});
                     }
-                    updateHotelAmenitiesInDb(amenityMap).catch(() => {});
-                }
-            } catch { /* non-fatal */ }
+                } catch { /* non-fatal */ }
+            })();
         }
     }
 
