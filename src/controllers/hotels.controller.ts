@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { HotelsService } from '@/services/hotels.service';
 import { autocompleteDestinations, getPlaceDetails, geocode as geoCodePlace } from '@/lib/google/places';
+import { config } from '@/config';
 
 const svc = new HotelsService();
 
@@ -41,6 +42,70 @@ export class HotelsController {
             const { limit } = z.object({ limit: z.coerce.number().optional().default(12) }).parse(req.query);
             const result = await svc.getDeals(limit);
             res.json({ deals: result });
+        } catch (err) { next(err); }
+    };
+
+    // ── Nearby POI discovery ──────────────────────────────────────────────────
+
+    nearbyPlaces = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { lat, lng, category, radius } = z.object({
+                lat:      z.coerce.number(),
+                lng:      z.coerce.number(),
+                category: z.string().default('all'),
+                radius:   z.coerce.number().default(3000),
+            }).parse(req.query);
+
+            const key = config.GOOGLE_PLACES_API_KEY;
+            if (!key) return res.json({ features: [] });
+
+            const TYPE_MAP: Record<string, string[]> = {
+                all:        ['tourist_attraction', 'restaurant', 'park', 'museum'],
+                restaurant: ['restaurant', 'cafe', 'bakery', 'bar'],
+                attraction: ['tourist_attraction', 'museum', 'art_gallery', 'amusement_park', 'zoo', 'aquarium'],
+                grocery:    ['supermarket', 'grocery_or_supermarket', 'convenience_store'],
+                medical:    ['hospital', 'pharmacy', 'doctor', 'dentist'],
+                transit:    ['bus_station', 'train_station', 'subway_station', 'transit_station'],
+            };
+            const types = TYPE_MAP[category] ?? TYPE_MAP['all'];
+
+            const results = await Promise.all(
+                types.map(async (type) => {
+                    const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=${type}&key=${key}&language=en`;
+                    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+                    const d = await r.json() as { status: string; results?: any[] };
+                    if (d.status !== 'OK') return [];
+                    return (d.results ?? []).map((place: any) => ({
+                        type: 'Feature',
+                        geometry: { type: 'Point', coordinates: [place.geometry.location.lng, place.geometry.location.lat] },
+                        properties: {
+                            name:            place.name,
+                            place_id:        place.place_id,
+                            category:        place.types?.[0] || type,
+                            rating:          place.rating,
+                            userRatingsTotal: place.user_ratings_total,
+                            vicinity:        place.vicinity,
+                            photoReference:  place.photos?.[0]?.photo_reference ?? null,
+                            source:          'google',
+                        },
+                    }));
+                })
+            );
+
+            const unique = new Map<string, any>();
+            results.flat().forEach((f) => {
+                if (!unique.has(f.properties.place_id)) unique.set(f.properties.place_id, f);
+            });
+
+            const features = Array.from(unique.values())
+                .filter((f) => (f.properties.rating ?? 0) >= 3.5)
+                .sort((a, b) => {
+                    const diff = (b.properties.rating ?? 0) - (a.properties.rating ?? 0);
+                    return diff !== 0 ? diff : (b.properties.userRatingsTotal ?? 0) - (a.properties.userRatingsTotal ?? 0);
+                })
+                .slice(0, 25);
+
+            res.json({ features });
         } catch (err) { next(err); }
     };
 

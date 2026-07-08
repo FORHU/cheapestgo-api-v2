@@ -15,6 +15,7 @@ router.get( '/geocode',                 ctrl.geocode);
 router.post('/prebook',                 ctrl.preBook);
 router.get( '/amenities',               ctrl.amenitiesByDestination);
 router.get( '/amenities/by-ids',        ctrl.amenitiesByHotelIds);
+router.get( '/nearby',                  ctrl.nearbyPlaces);
 
 // Auth-protected
 router.post('/create-payment',  requireAuth, ctrl.createPayment);

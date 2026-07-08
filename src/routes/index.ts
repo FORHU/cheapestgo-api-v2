@@ -10,6 +10,7 @@ import cronRoutes          from './cron.route';
 import emailRoutes         from './email.route';
 import voucherRoutes       from './vouchers.route';
 import adminRoutes         from './admin.route';
+import photosRoutes        from './photos.route';
 
 const router = Router();
 
@@ -26,6 +27,7 @@ router.use('/cron',           cronRoutes);
 router.use('/email',          emailRoutes);
 router.use('/vouchers',       voucherRoutes);
 router.use('/admin',          adminRoutes);
+router.use('/photos',         photosRoutes);
 
 // NOTE: /webhooks is mounted directly on the Express app (in app.ts) BEFORE
 // the global JSON body parser, so it does NOT appear here.

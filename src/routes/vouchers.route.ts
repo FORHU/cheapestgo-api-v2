@@ -144,6 +144,35 @@ router.post('/validate', requireAuth, async (req: Request, res: Response, next: 
     }
 });
 
+// ── POST /record ──────────────────────────────────────────────────────────────
+
+router.post('/record', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const userId = req.user!.sub;
+        const { voucherCode, bookingId, originalPrice, discountApplied, finalPrice, currency } = req.body as {
+            voucherCode: string;
+            bookingId: string;
+            originalPrice: number;
+            discountApplied: number;
+            finalPrice: number;
+            currency: string;
+        };
+
+        if (!voucherCode || !bookingId) {
+            throw new AppError(400, 'voucherCode and bookingId are required', 'VALIDATION_ERROR');
+        }
+
+        await prisma.$executeRaw`
+            INSERT INTO voucher_usage (voucher_code, user_id, booking_id, original_price, discount_applied, final_price, currency)
+            VALUES (${voucherCode.trim().toUpperCase()}, ${userId}, ${bookingId}, ${originalPrice}, ${discountApplied}, ${finalPrice}, ${currency ?? 'USD'})
+        `;
+
+        return res.json({ success: true, data: { recorded: true } });
+    } catch (err) {
+        next(err);
+    }
+});
+
 // ── GET /list ─────────────────────────────────────────────────────────────────
 
 router.get('/list', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {

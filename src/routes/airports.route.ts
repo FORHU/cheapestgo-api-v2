@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { config } from '@/config';
+import { searchAirports } from '@/lib/airports';
 
 const router = Router();
 
@@ -70,11 +71,25 @@ router.get('/search', async (req: Request, res: Response, next: NextFunction) =>
             return res.json({ success: true, data: [] });
         }
 
-        const results = await searchDuffel(query, limit);
+        // Fetch from both sources in parallel; local results get priority (curated major airports)
+        const [duffelResults, localResults] = await Promise.all([
+            searchDuffel(query, limit),
+            Promise.resolve(searchAirports(query, limit)),
+        ]);
+
+        const seen   = new Set<string>();
+        const merged: AirportResult[] = [];
+
+        for (const r of localResults) {
+            if (!seen.has(r.iata)) { seen.add(r.iata); merged.push(r); }
+        }
+        for (const r of (duffelResults ?? [])) {
+            if (!seen.has(r.iata)) { seen.add(r.iata); merged.push(r); }
+        }
 
         return res.json({
             success: true,
-            data: (results || []).slice(0, limit),
+            data: merged.slice(0, limit),
         });
     } catch (err) {
         console.error('[airports/search] Error:', err);
