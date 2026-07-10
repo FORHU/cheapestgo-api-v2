@@ -3,6 +3,9 @@ import { z } from 'zod';
 import { HotelsService } from '@/services/hotels.service';
 import { autocompleteDestinations, getPlaceDetails, geocode as geoCodePlace } from '@/lib/google/places';
 import { config } from '@/config';
+import { resolveTgxDestinationCode } from '@/lib/hotels/travelgatex';
+import { getInstantHotelCatalog, runTgxSearch } from '@/lib/hotels/search';
+import { prisma } from '@/lib/prisma';
 
 const svc = new HotelsService();
 
@@ -189,5 +192,82 @@ export class HotelsController {
             const result = await svc.getAmenitiesByHotelIds(ids);
             res.json({ hotels: result, count: result.length });
         } catch (err) { next(err); }
+    };
+
+    // ── Destination code resolver ─────────────────────────────────────────────
+
+    resolveDestination = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { city } = z.object({ city: z.string().min(1) }).parse(req.body);
+            const code = await resolveTgxDestinationCode(city, prisma);
+            res.json({ city, code: code ?? null });
+        } catch (err) { next(err); }
+    };
+
+    // ── SSE streaming search ──────────────────────────────────────────────────
+
+    searchStream = async (req: Request, res: Response) => {
+        const parsed = z.object({
+            destination:  z.string(),
+            checkIn:      z.string(),
+            checkOut:     z.string(),
+            adults:       z.coerce.number().int().min(1).default(1),
+            children:     z.coerce.number().int().min(0).default(0),
+            rooms:        z.coerce.number().int().min(1).default(1),
+            countryCode:  z.string().optional(),
+            currency:     z.string().optional(),
+        }).safeParse(req.body);
+
+        if (!parsed.success) {
+            res.status(400).json({ error: 'Invalid request body' });
+            return;
+        }
+
+        const params = parsed.data;
+
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.flushHeaders();
+
+        const emit = (data: object) => {
+            if (!res.writableEnded) res.write(`data: ${JSON.stringify(data)}\n\n`);
+        };
+
+        let closed = false;
+        req.on('close', () => { closed = true; });
+
+        try {
+            const instant = await getInstantHotelCatalog({
+                cityName:    params.destination,
+                countryCode: params.countryCode,
+                checkin:     params.checkIn,
+                checkout:    params.checkOut,
+                adults:      params.adults,
+                children:    params.children,
+            } as any);
+            if (!closed) emit({ type: 'instant', hotels: instant });
+
+            if (!closed) {
+                const result = await runTgxSearch({
+                    cityName:    params.destination,
+                    checkin:     params.checkIn,
+                    checkout:    params.checkOut,
+                    adults:      params.adults,
+                    children:    params.children,
+                    countryCode: params.countryCode,
+                    currency:    params.currency,
+                } as any);
+                if (!closed) emit({ type: 'hotels', hotels: result.data, totalCount: result.totalCount });
+            }
+        } catch (err: any) {
+            if (!closed) emit({ type: 'error', message: err.message ?? 'Search failed' });
+        } finally {
+            if (!res.writableEnded) {
+                emit({ type: 'done' });
+                res.end();
+            }
+        }
     };
 }
