@@ -7,12 +7,13 @@ import { defaultRateLimit } from '@/middleware/rate-limit.middleware';
 import { errorMiddleware } from '@/middleware/error.middleware';
 import routes from '@/routes';
 import webhookRoutes from '@/routes/webhooks.route';
+import internalRouter from '@/routes/internal.route';
 
 const app = express();
 
 app.use(helmet());
 app.use(cors({
-    origin:      config.CORS_ORIGIN,
+    origin: config.CORS_ORIGIN,
     credentials: true,
 }));
 
@@ -29,5 +30,6 @@ app.use(defaultRateLimit);
 app.use('/api/v2', routes);
 
 app.use(errorMiddleware);
+app.use('/api/internal', internalRouter);
 
 export default app;
