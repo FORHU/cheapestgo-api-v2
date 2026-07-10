@@ -74,8 +74,8 @@ export async function searchDuffel(params: FlightSearchParams): Promise<FlightRe
             passengers,
             cabin_class: params.cabinClass === 'premium_economy' ? 'premium_economy'
                 : params.cabinClass === 'business' ? 'business'
-                : params.cabinClass === 'first' ? 'first'
-                : 'economy',
+                    : params.cabinClass === 'first' ? 'first'
+                        : 'economy',
             return_offers: true,
         },
     };
@@ -528,6 +528,24 @@ export async function getDuffelOrder(orderId: string): Promise<any> {
     const data: any = await res.json();
     if (!res.ok) throw Object.assign(new Error(data?.errors?.[0]?.message ?? `Duffel order fetch failed ${res.status}`), { status: res.status });
     return data.data;
+}
+
+export function mapDuffelStatus(order: any): string {
+    if (order?.cancelled_at) {
+        return 'cancelled';
+    }
+
+    const documents: any[] = order?.documents ?? [];
+    const hasTicket = documents.some((doc: any) => doc.type === 'electronic_ticket');
+    if (hasTicket) {
+        return 'ticketed';
+    }
+
+    if (order?.payment_status?.awaiting_payment) {
+        return 'awaiting_payment';
+    }
+
+    return 'confirmed';
 }
 
 // ─── Offer normalization ──────────────────────────────────────────────────────
