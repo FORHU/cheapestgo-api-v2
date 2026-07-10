@@ -1,8 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
-import { mystiflyRequest } from '../lib/flights/mystifly';
 
-const internalRouter = Router();
+const internalDuffelRouter = Router();
 
 function requireInternalAuth(req: Request, res: Response, next: Function) {
     const authHeader = req.headers.authorization;
@@ -17,7 +16,7 @@ function requireInternalAuth(req: Request, res: Response, next: Function) {
     next();
 }
 
-internalRouter.post('/create-booking', requireInternalAuth, async (req: Request, res: Response) => {
+internalDuffelRouter.post('/create-booking', requireInternalAuth, async (req: Request, res: Response) => {
     const { sessionId } = req.body;
 
     if (!sessionId || typeof sessionId !== 'string') {
@@ -42,17 +41,12 @@ internalRouter.post('/create-booking', requireInternalAuth, async (req: Request,
                 throw { code: 'ALREADY_COMPLETED' };
             }
 
-            if (session.provider !== 'mystifly') {
+            if (session.provider !== 'duffel') {
                 throw { code: 'WRONG_PROVIDER' };
             }
 
-            const mystiflyResult = await mystiflyRequest('AirBook', {
-                flight: session.flight,
-                passengers: session.passengers,
-                contact: session.contact,
-            });
-
-            const pnr = mystiflyResult?.Data?.PNR ?? mystiflyResult?.data?.pnr ?? undefined;
+            const pnr = session.duffel_pre_order_pnr;
+            const providerOrderId = session.duffel_pre_order_id ?? null;
 
             if (!pnr) {
                 throw { code: 'MISSING_PNR' };
@@ -68,6 +62,8 @@ internalRouter.post('/create-booking', requireInternalAuth, async (req: Request,
                     status: 'booked',
                     session_id: session.id,
                     payment_intent_id: session.payment_intent_id,
+                    provider_order_id: providerOrderId,
+                    duffel_order_id: providerOrderId,
                     fare_policy: session.fare_policy ?? undefined,
                     charged_price: session.charged_price ?? undefined,
                     markup_pct: session.markup_pct ?? undefined,
@@ -100,11 +96,11 @@ internalRouter.post('/create-booking', requireInternalAuth, async (req: Request,
             return res.status(404).json({ error: 'Booking session not found' });
         }
         if (err?.code === 'MISSING_PNR') {
-            return res.status(500).json({ error: 'Supplier did not return a PNR' });
+            return res.status(500).json({ error: 'Duffel order not found on session' });
         }
-        console.error('create-booking (mystifly) failed:', err);
+        console.error('create-booking (duffel) failed:', err);
         return res.status(500).json({ error: 'Internal server error' });
     }
 });
 
-export default internalRouter;
+export default internalDuffelRouter;
