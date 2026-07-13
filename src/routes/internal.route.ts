@@ -1,10 +1,10 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
 import { mystiflyRequest } from '../lib/flights/mystifly';
 
 const internalRouter = Router();
 
-function requireInternalAuth(req: Request, res: Response, next: Function) {
+function requireInternalAuth(req: Request, res: Response, next: NextFunction) {
     const authHeader = req.headers.authorization;
     const expected = `Bearer ${process.env.INTERNAL_SECRET}`;
 
@@ -42,20 +42,34 @@ internalRouter.post('/create-booking', requireInternalAuth, async (req: Request,
                 throw { code: 'ALREADY_COMPLETED' };
             }
 
-            if (session.provider !== 'mystifly') {
-                throw { code: 'WRONG_PROVIDER' };
-            }
+            let pnr: string;
+            let extraFields: Record<string, any> = {};
 
-            const mystiflyResult = await mystiflyRequest('AirBook', {
-                flight: session.flight,
-                passengers: session.passengers,
-                contact: session.contact,
-            });
+            if (session.provider === 'mystifly' || session.provider === 'mystifly_v2') {
+                const mystiflyResult = await mystiflyRequest('AirBook', {
+                    flight: session.flight,
+                    passengers: session.passengers,
+                    contact: session.contact,
+                });
 
-            const pnr = mystiflyResult?.Data?.PNR ?? mystiflyResult?.data?.pnr ?? undefined;
+                pnr = mystiflyResult?.Data?.PNR ?? mystiflyResult?.data?.pnr;
 
-            if (!pnr) {
-                throw { code: 'MISSING_PNR' };
+                if (!pnr) {
+                    throw { code: 'MISSING_PNR' };
+                }
+            } else if (session.provider === 'duffel') {
+                pnr = session.duffel_pre_order_pnr;
+
+                if (!pnr) {
+                    throw { code: 'MISSING_PNR' };
+                }
+
+                extraFields = {
+                    provider_order_id: session.duffel_pre_order_id ?? null,
+                    duffel_order_id: session.duffel_pre_order_id ?? null,
+                };
+            } else {
+                throw { code: 'UNKNOWN_PROVIDER', provider: session.provider };
             }
 
             const flightBooking = await tx.flight_bookings.create({
@@ -71,6 +85,7 @@ internalRouter.post('/create-booking', requireInternalAuth, async (req: Request,
                     fare_policy: session.fare_policy ?? undefined,
                     charged_price: session.charged_price ?? undefined,
                     markup_pct: session.markup_pct ?? undefined,
+                    ...extraFields,
                 },
             });
 
@@ -94,15 +109,15 @@ internalRouter.post('/create-booking', requireInternalAuth, async (req: Request,
             return res.status(404).json({ error: 'Booking session not found' });
         }
         if (err?.code === 'ALREADY_COMPLETED') {
-            return res.status(404).json({ error: 'Booking session already completed' });
-        }
-        if (err?.code === 'WRONG_PROVIDER') {
-            return res.status(404).json({ error: 'Booking session not found' });
+            return res.status(409).json({ error: 'Booking already created for this session' });
         }
         if (err?.code === 'MISSING_PNR') {
             return res.status(500).json({ error: 'Supplier did not return a PNR' });
         }
-        console.error('create-booking (mystifly) failed:', err);
+        if (err?.code === 'UNKNOWN_PROVIDER') {
+            return res.status(400).json({ error: `Unsupported provider: ${err.provider}` });
+        }
+        console.error('create-booking failed:', err);
         return res.status(500).json({ error: 'Internal server error' });
     }
 });
