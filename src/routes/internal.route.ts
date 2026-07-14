@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { mystiflyRequest } from '../lib/flights/mystifly';
+import { duffelHeaders } from '../lib/flights/duffel';
 
 const internalRouter = Router();
 
@@ -103,6 +104,94 @@ internalRouter.post('/create-booking', requireInternalAuth, async (req: Request,
             return res.status(500).json({ error: 'Supplier did not return a PNR' });
         }
         console.error('create-booking (mystifly) failed:', err);
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+internalRouter.post('/issue-ticket', requireInternalAuth, async (req: Request, res: Response) => {
+    const { bookingId } = req.body;
+
+    if (!bookingId || typeof bookingId !== 'string') {
+        return res.status(400).json({ error: 'bookingId is required' });
+    }
+
+    try {
+        const result = await prisma.$transaction(async (tx) => {
+            const bookings = await tx.$queryRaw<any[]>`
+                SELECT * FROM flight_bookings
+                WHERE id = ${bookingId}::uuid
+                FOR UPDATE
+            `;
+
+            const booking = bookings[0];
+
+            if (!booking) {
+                throw { code: 'NOT_FOUND' };
+            }
+
+            if (booking.status === 'ticketed') {
+                throw { code: 'ALREADY_TICKETED' };
+            }
+
+            const orderId = booking.provider_order_id ?? booking.duffel_order_id;
+            if (!orderId) {
+                throw { code: 'NO_ORDER_ID' };
+            }
+
+            const duffelRes = await fetch(
+                `https://api.duffel.com/air/orders/${orderId}`,
+                { headers: duffelHeaders() },
+            );
+
+            if (!duffelRes.ok) {
+                throw { code: 'DUFFEL_API_ERROR', status: duffelRes.status };
+            }
+
+            const { data: order } = await duffelRes.json() as any;
+            const documents: any[] = order?.documents ?? [];
+            const ticketNumbers = documents
+                .filter((d: any) => d.type === 'electronic_ticket')
+                .map((d: any) => d.document_number);
+
+            if (ticketNumbers.length === 0) {
+                throw { code: 'NO_TICKETS' };
+            }
+
+            await tx.$executeRaw`
+                UPDATE flight_bookings
+                SET status         = 'ticketed',
+                    ticketed_at    = NOW(),
+                    ticket_numbers = ${JSON.stringify(ticketNumbers)}::jsonb
+                WHERE id = ${bookingId}::uuid
+            `;
+
+            return { bookingId: booking.id, pnr: booking.pnr, ticketNumbers };
+        });
+
+        return res.status(200).json({
+            success: true,
+            bookingId: result.bookingId,
+            pnr: result.pnr,
+            ticketNumbers: result.ticketNumbers,
+        });
+
+    } catch (err: any) {
+        if (err?.code === 'NOT_FOUND') {
+            return res.status(404).json({ error: 'Flight booking not found' });
+        }
+        if (err?.code === 'ALREADY_TICKETED') {
+            return res.status(200).json({ success: true, message: 'Already ticketed' });
+        }
+        if (err?.code === 'NO_ORDER_ID') {
+            return res.status(400).json({ error: 'No provider order ID on booking' });
+        }
+        if (err?.code === 'NO_TICKETS') {
+            return res.status(409).json({ error: 'Order exists but no tickets issued yet' });
+        }
+        if (err?.code === 'DUFFEL_API_ERROR') {
+            return res.status(502).json({ error: `Duffel API error (HTTP ${err.status})` });
+        }
+        console.error('issue-ticket failed:', err);
         return res.status(500).json({ error: 'Internal server error' });
     }
 });

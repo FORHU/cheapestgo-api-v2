@@ -67,7 +67,7 @@ export class FlightsService {
 
     async book(args: {
         provider: string;
-        flight: FlightOffer & { _rawOffer?: any; [k: string]: any };
+        flight: FlightOffer & { _rawOffer?: any;[k: string]: any };
         passengers: any[];
         contact: { email: string; phone: string; countryCode?: string };
         idempotencyKey: string;
@@ -259,9 +259,9 @@ export class FlightsService {
 
                 const errMsg = isPhoneErr ? 'Invalid phone number format. Please check your phone number and country code.'
                     : isExpiredErr ? 'This flight is no longer available. Please search again for current prices.'
-                    : isSeatErr ? 'One or more selected seats are no longer available. Please choose different seats or continue without seat selection.'
-                    : isSupplierOutage ? "The airline's booking system is currently experiencing technical difficulties. Please try again in a few minutes or choose a different flight."
-                    : rawMsg || 'Flight booking failed. Please try again.';
+                        : isSeatErr ? 'One or more selected seats are no longer available. Please choose different seats or continue without seat selection.'
+                            : isSupplierOutage ? "The airline's booking system is currently experiencing technical difficulties. Please try again in a few minutes or choose a different flight."
+                                : rawMsg || 'Flight booking failed. Please try again.';
 
                 const httpStatus = isExpiredErr ? 409 : isSupplierOutage ? 502 : 400;
                 throw new AppError(httpStatus, errMsg, 'DUFFEL_ORDER_FAILED');
@@ -404,7 +404,7 @@ export class FlightsService {
         };
     }
 
-    // ── Confirm ───────────────────────────────────────────────────────────────
+    // ── Confirm ───────────────────────────────────────
 
     async confirm(paymentIntentId: string, sessionId: string, userId: string, internalBaseUrl: string): Promise<{
         bookingId?: string;
@@ -436,7 +436,7 @@ export class FlightsService {
 
         // Strict per-provider PI status check
         if (isMystifly) {
-            if (paymentIntent.status !== 'requires_capture') {
+            if (paymentIntent.status !== 'succeeded') {
                 throw new AppError(402, `Payment not authorized for Mystifly (status: ${paymentIntent.status})`, 'PAYMENT_NOT_AUTHORIZED');
             }
         } else {
@@ -624,7 +624,7 @@ export class FlightsService {
             ? offers.find(o =>
                 o.slices?.[0]?.segments?.[0] &&
                 `${o.slices[0].segments[0].marketing_carrier?.iata_code}${o.slices[0].segments[0].marketing_carrier_flight_number}` === targetFlightNumber,
-              )
+            )
             : null;
 
         if (!matched && targetAirlineCode) {
@@ -1167,8 +1167,8 @@ function normalizeSeatMapEntry(
 
                     const seatType = disclosures.includes('WINDOW') ? 'window'
                         : disclosures.includes('AISLE') ? 'aisle'
-                        : disclosures.includes('MIDDLE') ? 'middle'
-                        : 'unknown';
+                            : disclosures.includes('MIDDLE') ? 'middle'
+                                : 'unknown';
 
                     sectionSeats.push({
                         designator: el.designator,
