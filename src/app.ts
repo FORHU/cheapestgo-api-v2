@@ -12,8 +12,12 @@ import internalRouter from '@/routes/internal.route';
 const app = express();
 
 app.use(helmet());
+const allowedOrigins = config.CORS_ORIGIN.split(',').map(o => o.trim());
 app.use(cors({
-    origin: config.CORS_ORIGIN,
+    origin: (origin, cb) => {
+        if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+        cb(new Error(`CORS: origin ${origin} not allowed`));
+    },
     credentials: true,
 }));
 
