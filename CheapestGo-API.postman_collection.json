@@ -6,8 +6,16 @@
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "base_url", "value": "http://localhost:4000/api/v2", "type": "string" },
-    { "key": "access_token", "value": "", "type": "string" }
+    {
+      "key": "base_url",
+      "value": "http://localhost:4000/api/v2",
+      "type": "string"
+    },
+    {
+      "key": "access_token",
+      "value": "",
+      "type": "string"
+    }
   ],
   "item": [
     {
@@ -30,7 +38,12 @@
           "request": {
             "method": "POST",
             "url": "{{base_url}}/auth/register",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"password123\",\n  \"first_name\": \"John\",\n  \"last_name\": \"Doe\"\n}"
@@ -56,7 +69,12 @@
           "request": {
             "method": "POST",
             "url": "{{base_url}}/auth/login",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"password123\"\n}"
@@ -68,7 +86,12 @@
           "request": {
             "method": "GET",
             "url": "{{base_url}}/auth/me",
-            "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }]
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ]
           }
         },
         {
@@ -88,7 +111,12 @@
           "request": {
             "method": "POST",
             "url": "{{base_url}}/hotels/search",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"destination\": \"Bangkok\",\n  \"checkIn\": \"2026-08-01\",\n  \"checkOut\": \"2026-08-05\",\n  \"adults\": 2,\n  \"children\": 0,\n  \"rooms\": 1,\n  \"countryCode\": \"TH\"\n}"
@@ -102,8 +130,14 @@
             "url": "{{base_url}}/hotels/property/:id",
             "url": {
               "raw": "{{base_url}}/hotels/property/OTV_12345",
-              "host": ["{{base_url}}"],
-              "path": ["hotels", "property", "OTV_12345"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "hotels",
+                "property",
+                "OTV_12345"
+              ]
             }
           }
         },
@@ -113,9 +147,19 @@
             "method": "GET",
             "url": {
               "raw": "{{base_url}}/hotels/deals?limit=12",
-              "host": ["{{base_url}}"],
-              "path": ["hotels", "deals"],
-              "query": [{ "key": "limit", "value": "12" }]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "hotels",
+                "deals"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "12"
+                }
+              ]
             }
           }
         },
@@ -124,7 +168,12 @@
           "request": {
             "method": "POST",
             "url": "{{base_url}}/hotels/autocomplete",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"query\": \"Bangkok\"\n}"
@@ -137,9 +186,19 @@
             "method": "GET",
             "url": {
               "raw": "{{base_url}}/hotels/place-details?placeId=ChIJ82ENKDJgHTERIEjiXbIAAQE",
-              "host": ["{{base_url}}"],
-              "path": ["hotels", "place-details"],
-              "query": [{ "key": "placeId", "value": "ChIJ82ENKDJgHTERIEjiXbIAAQE" }]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "hotels",
+                "place-details"
+              ],
+              "query": [
+                {
+                  "key": "placeId",
+                  "value": "ChIJ82ENKDJgHTERIEjiXbIAAQE"
+                }
+              ]
             }
           }
         },
@@ -149,11 +208,22 @@
             "method": "GET",
             "url": {
               "raw": "{{base_url}}/hotels/geocode?lat=13.7563&lng=100.5018",
-              "host": ["{{base_url}}"],
-              "path": ["hotels", "geocode"],
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "hotels",
+                "geocode"
+              ],
               "query": [
-                { "key": "lat", "value": "13.7563" },
-                { "key": "lng", "value": "100.5018" }
+                {
+                  "key": "lat",
+                  "value": "13.7563"
+                },
+                {
+                  "key": "lng",
+                  "value": "100.5018"
+                }
               ]
             }
           }
@@ -163,7 +233,12 @@
           "request": {
             "method": "POST",
             "url": "{{base_url}}/hotels/prebook",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"optionRefId\": \"TGX:TOKEN_HERE\",\n  \"checkIn\": \"2026-08-01\",\n  \"checkOut\": \"2026-08-05\",\n  \"adults\": 2,\n  \"rooms\": 1,\n  \"hotelId\": \"OTV_12345\",\n  \"rateKey\": \"TGX:TOKEN_HERE\"\n}"
@@ -176,9 +251,20 @@
             "method": "GET",
             "url": {
               "raw": "{{base_url}}/hotels/amenities?destination=BKK",
-              "host": ["{{base_url}}"],
-              "path": ["hotels", "amenities"],
-              "query": [{ "key": "destination", "value": "BKK", "description": "TravelgateX destination code (e.g. BKK, DXB, NYC)" }]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "hotels",
+                "amenities"
+              ],
+              "query": [
+                {
+                  "key": "destination",
+                  "value": "BKK",
+                  "description": "TravelgateX destination code (e.g. BKK, DXB, NYC)"
+                }
+              ]
             },
             "description": "Fetch amenities for all hotels under a TravelgateX destination code. Returns human-readable labels and raw OTV codes."
           }
@@ -189,9 +275,21 @@
             "method": "GET",
             "url": {
               "raw": "{{base_url}}/hotels/amenities/by-ids?ids=10052394,10042746,10043678",
-              "host": ["{{base_url}}"],
-              "path": ["hotels", "amenities", "by-ids"],
-              "query": [{ "key": "ids", "value": "10052394,10042746,10043678", "description": "Comma-separated RateHawk hotel hids (numeric). Amenities are fetched from ETG hotel/info API and cached to DB on first call. Subsequent calls return instantly from cache." }]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "hotels",
+                "amenities",
+                "by-ids"
+              ],
+              "query": [
+                {
+                  "key": "ids",
+                  "value": "10052394,10042746,10043678",
+                  "description": "Comma-separated RateHawk hotel hids (numeric). Amenities are fetched from ETG hotel/info API and cached to DB on first call. Subsequent calls return instantly from cache."
+                }
+              ]
             },
             "description": "Fetch amenities for specific hotels by their RateHawk numeric hid. On first call, resolves amenities from ETG B2B (hotel/info) and caches them. Returns hotelId, hotelName, and amenities array per hotel. Cap of 25 uncached hotels per request to respect ETG rate limits (30 req/min)."
           }
@@ -202,8 +300,14 @@
             "method": "POST",
             "url": "{{base_url}}/hotels/create-payment",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
             ],
             "body": {
               "mode": "raw",
@@ -217,8 +321,14 @@
             "method": "POST",
             "url": "{{base_url}}/hotels/confirm",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
             ],
             "body": {
               "mode": "raw",
@@ -232,8 +342,14 @@
             "method": "POST",
             "url": "{{base_url}}/hotels/cancel",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
             ],
             "body": {
               "mode": "raw",
@@ -254,7 +370,128 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"origin\": \"MNL\",\n  \"destination\": \"BKK\",\n  \"departureDate\": \"2025-09-01\",\n  \"adults\": 1,\n  \"cabinClass\": \"ECONOMY\"\n}"
+              "raw": "{\n  \"tripType\": \"round-trip\",\n  \"segments\": [\n    { \"origin\": \"ICN\", \"destination\": \"BKK\", \"departureDate\": \"2026-08-01\" },\n    { \"origin\": \"BKK\", \"destination\": \"ICN\", \"departureDate\": \"2026-08-08\" }\n  ],\n  \"passengers\": { \"adults\": 1, \"children\": 0, \"infants\": 0 },\n  \"cabinClass\": \"economy\",\n  \"currency\": \"USD\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Search Flights (One-way)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/flights/search",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tripType\": \"one-way\",\n  \"segments\": [\n    { \"origin\": \"ICN\", \"destination\": \"TPE\", \"departureDate\": \"2026-08-01\" }\n  ],\n  \"passengers\": { \"adults\": 1, \"children\": 0, \"infants\": 0 },\n  \"cabinClass\": \"economy\",\n  \"currency\": \"USD\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Search Flights (Multi-city)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/flights/search",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tripType\": \"multi-city\",\n  \"segments\": [\n    { \"origin\": \"ICN\", \"destination\": \"TPE\", \"departureDate\": \"2026-08-01\" },\n    { \"origin\": \"TPE\", \"destination\": \"BKK\", \"departureDate\": \"2026-08-05\" },\n    { \"origin\": \"BKK\", \"destination\": \"ICN\", \"departureDate\": \"2026-08-10\" }\n  ],\n  \"passengers\": { \"adults\": 1, \"children\": 0, \"infants\": 0 },\n  \"cabinClass\": \"economy\",\n  \"currency\": \"USD\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Book Flight (auto-capture)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const res = pm.response.json();",
+                  "  if (res.data?.sessionId) pm.collectionVariables.set('flight_session_id', res.data.sessionId);",
+                  "  if (res.data?.paymentIntentId) pm.collectionVariables.set('flight_payment_intent_id', res.data.paymentIntentId);",
+                  "  if (res.data?.clientSecret) pm.collectionVariables.set('flight_client_secret', res.data.clientSecret);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/flights/book",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"duffel\",\n  \"flight\": {{flight_offer_from_search}},\n  \"passengers\": [\n    { \"type\": \"adult\", \"firstName\": \"John\", \"lastName\": \"Doe\", \"birthDate\": \"1990-01-15\", \"gender\": \"M\" }\n  ],\n  \"contact\": { \"email\": \"john.doe@example.com\", \"phone\": \"01012345678\", \"countryCode\": \"82\" },\n  \"idempotencyKey\": \"booking-{{$randomUUID}}\",\n  \"farePolicy\": { \"isRefundable\": true, \"isChangeable\": true, \"refundPenaltyAmount\": 50, \"refundPenaltyCurrency\": \"USD\", \"policyVersion\": \"search\", \"policySource\": \"duffel\" }\n}"
+            }
+          }
+        },
+        {
+          "name": "Confirm Flight Booking",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const res = pm.response.json();",
+                  "  if (res.data?.bookingId) pm.collectionVariables.set('flight_booking_id', res.data.bookingId);",
+                  "  if (res.data?.pnr) pm.collectionVariables.set('flight_pnr', res.data.pnr);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/flights/confirm",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentIntentId\": \"{{flight_payment_intent_id}}\",\n  \"sessionId\": \"{{flight_session_id}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Get Flight Booking Status",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/flights/booking-status?sessionId={{flight_session_id}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }]
+          }
+        },
+        {
+          "name": "Get Flight Bags",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/flights/bags",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"offerId\": \"OFFER_ID_FROM_SEARCH\",\n  \"duffelPassengerIds\": [\"PASSENGER_ID_FROM_OFFER\"]\n}"
+            }
+          }
+        },
+        {
+          "name": "Get Seat Map",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/flights/seat-map",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"offerId\": \"OFFER_ID_FROM_SEARCH\",\n  \"segments\": [\n    { \"origin\": \"ICN\", \"destination\": \"BKK\" }\n  ]\n}"
             }
           }
         }
@@ -280,7 +517,12 @@
           "request": {
             "method": "DELETE",
             "url": "{{base_url}}/admin/cache/hotels",
-            "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
             "description": "Clears the entire hotel_search_cache table. Requires admin role."
           }
         },
@@ -290,11 +532,27 @@
             "method": "DELETE",
             "url": {
               "raw": "{{base_url}}/admin/cache/hotels?city=Bangkok",
-              "host": ["{{base_url}}"],
-              "path": ["admin", "cache", "hotels"],
-              "query": [{ "key": "city", "value": "Bangkok" }]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "cache",
+                "hotels"
+              ],
+              "query": [
+                {
+                  "key": "city",
+                  "value": "Bangkok"
+                }
+              ]
             },
-            "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
             "description": "Clears cached search results for a specific city."
           }
         }
@@ -309,9 +567,18 @@
             "method": "GET",
             "url": {
               "raw": "{{base_url}}/airports?q=Manila",
-              "host": ["{{base_url}}"],
-              "path": ["airports"],
-              "query": [{ "key": "q", "value": "Manila" }]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "airports"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "Manila"
+                }
+              ]
             }
           }
         }
