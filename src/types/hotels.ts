@@ -213,8 +213,8 @@ export interface AutocompleteResult {
 
 // ─── Pricing ─────────────────────────────────────────────────────────────────
 
-export const HOTEL_MARKUP  = 0.15;
-export const BUNDLE_MARKUP = 0.12;
+export const HOTEL_MARKUP  = 0; // disabled — restore to 0.15 when client is ready to charge
+export const BUNDLE_MARKUP = 0; // disabled — restore to 0.12 when client is ready to charge
 
 export interface MarkupResult {
     originalPrice: number;

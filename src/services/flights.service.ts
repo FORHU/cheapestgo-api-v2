@@ -24,7 +24,7 @@ import {
 
 // ─── Markup / pricing helpers (inline — no external dep) ─────────────────────
 
-const FLIGHT_MARKUP = 0.025; // 2.5%
+const FLIGHT_MARKUP = 0; // disabled — restore to 0.025 when client is ready to charge
 
 function applyMarkup(basePrice: number, markupRate: number) {
     const markupAmount = Math.round(basePrice * markupRate * 100) / 100;
