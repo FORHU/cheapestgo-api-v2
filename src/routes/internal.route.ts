@@ -11,7 +11,7 @@
  * Auth: Authorization: Bearer <FUNCTIONS_SECRET>
  */
 
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
 import { mystiflyRequest } from '../lib/flights/mystifly';
 import { stripe } from '../lib/stripe';
@@ -20,7 +20,7 @@ const internalRouter = Router();
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
-function requireInternalAuth(req: Request, res: Response, next: Function) {
+function requireInternalAuth(req: Request, res: Response, next: NextFunction) {
     const authHeader = req.headers.authorization;
     const expected = `Bearer ${process.env.FUNCTIONS_SECRET}`;
 
@@ -161,6 +161,7 @@ async function handleDuffel(
             confirmed_currency: confirmedCurrency,
             charged_price: confirmedPrice,
             supplier_cost: Number(session.original_price ?? confirmedPrice),
+            provider_order_id: preOrderId,
             duffel_order_id: preOrderId,
             ticket_numbers: preOrderTickets.length > 0 ? preOrderTickets : [],
             fare_policy: farePolicy ?? undefined,

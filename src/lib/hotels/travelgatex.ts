@@ -454,7 +454,7 @@ export async function resolveTgxDestinationCode(cityName: string, prisma: any): 
                 `query TgxResolveCity($access: ID!, $text: String!, $maxSize: Int) {
                    hotelX {
                      destinationSearcher(criteria: { access: $access, text: $text, maxSize: $maxSize }) {
-                       ... on DestinationData { code type }
+                       ... on DestinationData { code type texts { text language } }
                      }
                    }
                  }`,
@@ -463,10 +463,18 @@ export async function resolveTgxDestinationCode(cityName: string, prisma: any): 
             timeout,
         ]);
 
-        const items    = result?.data?.hotelX?.destinationSearcher ?? [];
-        const cityItem = items.find((i: any) => i.type === 'CITY');
-        const zoneItem = items.find((i: any) => i.type === 'ZONE');
-        const code     = cityItem?.code ?? zoneItem?.code ?? undefined;
+        const items = result?.data?.hotelX?.destinationSearcher ?? [];
+        const exactName = cityName.toLowerCase();
+        const matchesName = (i: any) =>
+            (i.texts ?? []).some((t: any) => t.language === 'en' && t.text.toLowerCase() === exactName);
+
+        const cityItem =
+            items.find((i: any) => i.type === 'CITY' && matchesName(i)) ??
+            items.find((i: any) => i.type === 'CITY');
+        const zoneItem =
+            items.find((i: any) => i.type === 'ZONE' && matchesName(i)) ??
+            items.find((i: any) => i.type === 'ZONE');
+        const code = cityItem?.code ?? zoneItem?.code ?? undefined;
 
         if (code) {
             _destCodeCache.set(key, code);
