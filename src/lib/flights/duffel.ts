@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Duffel API client.
  *
  * Wraps raw HTTP calls to https://api.duffel.com.
@@ -593,6 +593,7 @@ export function parseDuffelOffer(offer: any, cabinClassFallback?: string): Fligh
         duration: offer.slices.reduce((acc: number, s: any) => acc + parseDuffelDuration(s.duration), 0),
         stops: offer.slices.reduce((acc: number, s: any) => acc + (s.segments.length - 1), 0),
         remaining_seats: offer.available_seats || null,
+        segments: allSegments,
         refundable: isRefundable,
         raw: offer,
     } as any;
@@ -600,7 +601,7 @@ export function parseDuffelOffer(offer: any, cabinClassFallback?: string): Fligh
 
 export function normalizedToFlightOffer(result: FlightResult, tripType: 'one-way' | 'round-trip' | 'multi-city' = 'one-way'): any {
     const raw: any = result.raw;
-    const allSegments: any[] = (raw as any).segments ?? [];
+    const allSegments: any[] = (result as any).segments ?? (raw?.slices ? parseDuffelOffer(raw).segments : []);
 
     const price = typeof result.price === 'number' ? result.price : 0;
 
