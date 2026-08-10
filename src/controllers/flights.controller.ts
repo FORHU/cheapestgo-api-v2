@@ -29,6 +29,14 @@ export class FlightsController {
         } catch (err) { next(err); }
     };
 
+    deals = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { limit } = z.object({ limit: z.coerce.number().optional().default(12) }).parse(req.query);
+            const result = await svc.getDeals(limit);
+            res.json({ deals: result });
+        } catch (err) { next(err); }
+    };
+
     book = async (req: Request, res: Response, next: NextFunction) => {
         try {
             const result = await svc.book({ ...req.body, userId: req.user!.sub });

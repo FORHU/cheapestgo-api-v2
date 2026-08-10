@@ -45,6 +45,12 @@ function toStripeAmount(price: number, currency: string): number {
 export class FlightsService {
     private repo = new FlightsRepository();
 
+    // ── Deals ─────────────────────────────────────────────────────────────────
+
+    async getDeals(limit = 12) {
+        return this.repo.getFlightDeals(limit);
+    }
+
     // ── Search ────────────────────────────────────────────────────────────────
 
     async search(params: FlightSearchParams, filters?: ServerFilters): Promise<{

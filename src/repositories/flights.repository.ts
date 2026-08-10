@@ -316,4 +316,14 @@ export class FlightsRepository {
             },
         });
     }
+
+    // ─── Deals ────────────────────────────────────────────────────────────────
+
+    /** Route deals kept fresh by the `sync-flight-deals` cron. Public, read-only. */
+    async getFlightDeals(limit = 12) {
+        return prisma.flight_deals.findMany({
+            orderBy: { updated_at: 'desc' },
+            take:    limit,
+        });
+    }
 }

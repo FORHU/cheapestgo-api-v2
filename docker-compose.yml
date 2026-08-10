@@ -2,16 +2,20 @@ services:
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
+    # Must stay in sync with DATABASE_URL in .env. These only take effect when the
+    # data volume is empty — Postgres ignores them if the data directory already exists.
     environment:
-      POSTGRES_USER: cheapestgo
-      POSTGRES_PASSWORD: cheapestgo
-      POSTGRES_DB: cheapestgo
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin123}
+      POSTGRES_DB: ${POSTGRES_DB:-cheapestgo_v2}
     ports:
+      # Published on IPv4 only. Use 127.0.0.1 (not "localhost") in DATABASE_URL:
+      # Prisma resolves localhost to ::1 first and fails to connect.
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cheapestgo"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin} -d ${POSTGRES_DB:-cheapestgo_v2}"]
       interval: 5s
       timeout: 5s
       retries: 5
