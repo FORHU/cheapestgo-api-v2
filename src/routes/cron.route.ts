@@ -13,6 +13,8 @@ import { stripe } from '@/lib/stripe';
 import { getDuffelBalances, duffelHeaders } from '@/lib/flights/duffel';
 import { searchFlights } from '@/lib/flights/search';
 import { FlightOffer } from '@/types/flights';
+import { tgxGraphQL, getTgxConfig, resolveTgxDestinationCode } from '@/lib/hotels/travelgatex';
+import { otvCodeToLabel } from '@/lib/hotels/amenityCodes';
 
 const router = Router();
 
@@ -752,6 +754,414 @@ router.get('/sync-hotel-deals', async (_req: Request, res: Response, next: NextF
     try {
         console.log('[cron/sync-hotel-deals] Not yet implemented — hotel deals are populated via etg-reviews-sync');
         return res.json({ ok: true, message: 'Hotel deals sync deferred to TGX batch flow' });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/cron/sync-dest-cache
+// Schedule: weekly  (0 1 * * 0)
+// Bulk-fetches the full TGX destination list and populates tgx_destination_cache
+// so city-name → dest-code resolution never hits TGX at search time.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DESTINATIONS_QUERY = `
+query TgxListDestinations($criteria: HotelXDestinationListInput!, $token: String) {
+  hotelX {
+    destinations(criteria: $criteria, token: $token) {
+      token
+      edges { node { destinationData { code type texts { text language } } } }
+    }
+  }
+}`;
+
+router.get('/sync-dest-cache', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+        const cfg = getTgxConfig();
+        const t0  = Date.now();
+
+        // city_key (lowercase english name) → destination_code
+        // CITY beats ZONE when both share the same name; first-seen wins on ties.
+        const destMap = new Map<string, string>();
+        let token: string | null = null;
+        let page = 0;
+        const MAX_PAGES = 100;
+
+        do {
+            page++;
+            let result: any;
+            try {
+                result = await tgxGraphQL(
+                    DESTINATIONS_QUERY,
+                    { criteria: { access: cfg.accessCode }, ...(token ? { token } : {}) },
+                );
+            } catch (e: any) {
+                console.warn(`[sync-dest-cache] Page ${page} failed: ${e.message?.slice(0, 200)}`);
+                break;
+            }
+
+            const conn = result?.data?.hotelX?.destinations;
+            if (!conn) {
+                console.warn('[sync-dest-cache] Unexpected TGX response:', JSON.stringify(result?.errors ?? result).slice(0, 300));
+                break;
+            }
+
+            const edges: any[] = conn.edges ?? [];
+            token = conn.token ?? null;
+
+            for (const edge of edges) {
+                const dest = edge?.node?.destinationData;
+                if (!dest?.code) continue;
+                const englishText = (dest.texts ?? []).find((t: any) => t.language === 'en')?.text;
+                if (!englishText) continue;
+                const key      = englishText.toLowerCase().trim();
+                const existing = destMap.get(key);
+                // CITY over ZONE; first-seen wins on same type
+                if (!existing || (dest.type === 'CITY')) {
+                    destMap.set(key, dest.code as string);
+                }
+            }
+
+            console.log(`[sync-dest-cache] Page ${page}: ${edges.length} edges, map=${destMap.size}${token ? '' : ' (last)'}`);
+        } while (token && page < MAX_PAGES);
+
+        if (destMap.size === 0) {
+            return res.status(502).json({ ok: false, error: 'No destinations returned from TGX — check access code' });
+        }
+
+        // Batch upsert in chunks of 500 using raw SQL for performance
+        const entries = [...destMap.entries()];
+        let upserted  = 0;
+        const BATCH   = 500;
+
+        for (let i = 0; i < entries.length; i += BATCH) {
+            const chunk = entries.slice(i, i + BATCH);
+            try {
+                // Build a VALUES list and upsert in one statement
+                await prisma.$executeRaw`
+                    INSERT INTO tgx_destination_cache (city_key, destination_code)
+                    SELECT v.city_key, v.destination_code
+                    FROM jsonb_to_recordset(${JSON.stringify(
+                        chunk.map(([city_key, destination_code]) => ({ city_key, destination_code }))
+                    )}::jsonb) AS v(city_key text, destination_code text)
+                    ON CONFLICT (city_key) DO UPDATE
+                        SET destination_code = EXCLUDED.destination_code
+                    WHERE tgx_destination_cache.destination_code != 'NONE'
+                `;
+                upserted += chunk.length;
+            } catch (e: any) {
+                console.warn(`[sync-dest-cache] Batch ${i} failed: ${e.message?.slice(0, 200)}`);
+            }
+        }
+
+        const elapsed = Date.now() - t0;
+        console.log(`[sync-dest-cache] Done: ${upserted}/${destMap.size} upserted in ${elapsed}ms`);
+        return res.json({ ok: true, pages: page, totalMapped: destMap.size, upserted, elapsedMs: elapsed });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/cron/fill-dest-cache
+// Schedule: every 1-2 hours until gap is closed, then daily
+// Fills missing entries: cities in hotel_content with no dest code yet,
+// resolved one-by-one via TGX destinationSearcher.
+// Query params: limit (default 100, max 500), min_hotels (default 5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get('/fill-dest-cache', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const limit     = Math.min(parseInt((req.query.limit      as string) ?? '100', 10), 500);
+        const minHotels = parseInt((req.query.min_hotels as string) ?? '5', 10);
+        const t0        = Date.now();
+
+        // Cities in hotel_content with enough hotels but no dest code, ordered by hotel count
+        const rows = await prisma.$queryRaw<{ city: string; cnt: bigint }[]>`
+            SELECT lower(hc.city) AS city, count(*) AS cnt
+            FROM hotel_content hc
+            WHERE hc.city IS NOT NULL
+              AND hc.city != ''
+              AND lower(hc.city) NOT IN (SELECT city_key FROM tgx_destination_cache)
+            GROUP BY lower(hc.city)
+            HAVING count(*) >= ${minHotels}
+            ORDER BY count(*) DESC
+            LIMIT ${limit}
+        `;
+
+        if (!rows.length) {
+            return res.json({ ok: true, processed: 0, resolved: 0, message: 'No uncached cities — all caught up.' });
+        }
+
+        console.log(`[fill-dest-cache] Processing ${rows.length} cities (min_hotels=${minHotels}) in background`);
+
+        // Respond immediately; resolution runs in background (each city can take up to 30s)
+        res.json({ ok: true, message: `Fill started for ${rows.length} cities`, queued: rows.length });
+
+        let resolved = 0;
+        let failed   = 0;
+
+        for (const row of rows) {
+            const cityName = row.city;
+            try {
+                const code = await Promise.race([
+                    resolveTgxDestinationCode(cityName, prisma),
+                    new Promise<undefined>(r => setTimeout(() => r(undefined), 30_000)),
+                ]);
+
+                if (code) {
+                    resolved++;
+                    console.log(`[fill-dest-cache] ✓ ${cityName} → ${code}`);
+                } else {
+                    failed++;
+                    console.log(`[fill-dest-cache] ✗ ${cityName} — no code, marking NONE`);
+                    // Insert NONE sentinel so this city is skipped on future runs
+                    await prisma.$executeRaw`
+                        INSERT INTO tgx_destination_cache (city_key, destination_code)
+                        VALUES (${cityName}, 'NONE')
+                        ON CONFLICT (city_key) DO NOTHING
+                    `;
+                }
+            } catch (e: any) {
+                failed++;
+                console.warn(`[fill-dest-cache] ✗ ${cityName} error: ${e.message?.slice(0, 80)}`);
+            }
+            await new Promise(r => setTimeout(r, 1_000));
+        }
+
+        const elapsed = Date.now() - t0;
+        console.log(`[fill-dest-cache] Done: ${resolved} resolved, ${failed} unresolvable in ${elapsed}ms`);
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/cron/refresh-hotel-content
+// Schedule: daily at 02:00 UTC  (0 2 * * *)
+// Downloads hotel static content from TGX Hotels Query for the top searched
+// cities and upserts into hotel_content. Never overwrites richer existing data.
+// Query params: limit (default 30, max 100)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const HOTEL_CONTENT_QUERY = `
+query TgxHotelContent($criteria: HotelXHotelListInput!, $token: String) {
+  hotelX {
+    hotels(criteria: $criteria, token: $token) {
+      token
+      edges {
+        node {
+          hotelData {
+            code hotelName categoryCode chainCode
+            descriptions { type texts { language text } }
+            medias { url type order }
+            location { coordinates { latitude longitude } address city country zipCode }
+            contact { email telephone fax web }
+            allAmenities { edges { node { amenityData { amenityCode type } } } }
+            checkIn  { schedule { startTime endTime } instructions { language text } }
+            checkOut { schedule { startTime endTime } instructions { language text } }
+            giataData { id }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+function _extractDescription(descriptions: any[]): { description: string | null; importantInfo: string | null } {
+    if (!descriptions?.length) return { description: null, importantInfo: null };
+    let description: string | null = null;
+    const extra: string[] = [];
+    for (const d of descriptions) {
+        const en   = (d.texts ?? []).find((t: any) => t.language?.toLowerCase().startsWith('en'));
+        const text = en?.text ?? d.texts?.[0]?.text ?? null;
+        if (!text) continue;
+        if (d.type === 'GENERAL' && !description) description = text;
+        else if (text) extra.push(text);
+    }
+    if (!description && extra.length) description = extra.shift() ?? null;
+    return { description, importantInfo: extra.length ? extra.join('\n\n') : null };
+}
+
+function _extractImages(medias: any[]): string[] {
+    return (medias ?? [])
+        .sort((a: any, b: any) => (a.order ?? 99) - (b.order ?? 99))
+        .filter((m: any) => m.url)
+        .map((m: any) => m.url as string)
+        .slice(0, 10);
+}
+
+function _extractAmenities(allAmenities: any): string[] {
+    return (allAmenities?.edges ?? [])
+        .map((e: any) => otvCodeToLabel(e?.node?.amenityData?.amenityCode ?? ''))
+        .filter(Boolean);
+}
+
+function _extractCheckTime(info: any, useStart = true): string | null {
+    if (!info) return null;
+    const fromSchedule = useStart ? info.schedule?.startTime : (info.schedule?.endTime ?? info.schedule?.startTime);
+    if (fromSchedule) return fromSchedule;
+    const instructions: any[] = info.instructions ?? [];
+    const en = instructions.find((t: any) => t.language?.toLowerCase().startsWith('en'));
+    return en?.text ?? instructions[0]?.text ?? null;
+}
+
+async function _fetchAndUpsertCityContent(
+    cfg: ReturnType<typeof getTgxConfig>,
+    cityKey: string,
+    destCode: string | null,
+    countryCode: string,
+): Promise<number> {
+    const PAGE_SIZE = 500;
+    let token: string | null = null;
+    let totalSaved = 0;
+    let page = 0;
+    const MAX_PAGES = 4;
+
+    do {
+        const criteria: Record<string, unknown> = { access: cfg.accessCode, maxSize: PAGE_SIZE };
+        if (destCode)   criteria.destinationCodes = [destCode];
+        else if (countryCode) criteria.countries  = [countryCode.toUpperCase()];
+
+        let result: any;
+        try {
+            result = await tgxGraphQL(HOTEL_CONTENT_QUERY, { criteria, ...(token ? { token } : {}) });
+        } catch (e: any) {
+            console.warn(`[refresh-hotel-content] TGX query failed for "${cityKey}": ${e.message}`);
+            break;
+        }
+
+        const hotelList = result?.data?.hotelX?.hotels ?? {};
+        const edges: any[] = hotelList.edges ?? [];
+        token = hotelList.token ?? null;
+        page++;
+
+        for (const edge of edges) {
+            const hd = edge?.node?.hotelData;
+            if (!hd?.code) continue;
+
+            const lat    = Number(hd.location?.coordinates?.latitude  ?? 0);
+            const lng    = Number(hd.location?.coordinates?.longitude ?? 0);
+            const images = _extractImages(hd.medias ?? []);
+            const { description, importantInfo } = _extractDescription(hd.descriptions ?? []);
+            const starRating  = Number((hd.categoryCode ?? '').replace(/[^0-9]/g, '') || 0);
+            const amenities   = _extractAmenities(hd.allAmenities);
+            const checkInTime  = _extractCheckTime(hd.checkIn,  true);
+            const checkOutTime = _extractCheckTime(hd.checkOut, false);
+            const rawCountry   = hd.location?.country;
+            const country      = typeof rawCountry === 'string' ? rawCountry : (rawCountry?.code ?? countryCode ?? null);
+            const contact      = hd.contact && (hd.contact.email || hd.contact.telephone || hd.contact.fax || hd.contact.web)
+                ? { email: hd.contact.email, phone: hd.contact.telephone, fax: hd.contact.fax, web: hd.contact.web }
+                : null;
+
+            try {
+                await prisma.$executeRaw`
+                    INSERT INTO hotel_content
+                        (hotel_id, name, images, lat, lng, address, city, country,
+                         description, star_rating, amenities,
+                         check_in_time, check_out_time, important_information,
+                         contact_info, chain_code, giata_id,
+                         content_source, fetched_at)
+                    VALUES (
+                        ${hd.code},
+                        ${hd.hotelName ?? null},
+                        ${images}::text[],
+                        ${lat}::float8, ${lng}::float8,
+                        ${hd.location?.address ?? null},
+                        ${hd.location?.city ?? null},
+                        ${country},
+                        ${description},
+                        ${starRating}::int,
+                        ${JSON.stringify(amenities)}::jsonb,
+                        ${checkInTime},
+                        ${checkOutTime},
+                        ${importantInfo},
+                        ${contact ? JSON.stringify(contact) : null}::jsonb,
+                        ${hd.chainCode ?? null},
+                        ${hd.giataData?.id ?? null},
+                        'tgx',
+                        now()
+                    )
+                    ON CONFLICT (hotel_id) DO UPDATE SET
+                        name        = CASE WHEN hotel_content.name IS NULL OR hotel_content.name = hotel_content.hotel_id
+                                     THEN COALESCE(EXCLUDED.name, hotel_content.name) ELSE hotel_content.name END,
+                        images      = CASE WHEN array_length(hotel_content.images, 1) > 0
+                                     THEN hotel_content.images ELSE EXCLUDED.images END,
+                        lat         = CASE WHEN EXCLUDED.lat != 0 THEN EXCLUDED.lat ELSE hotel_content.lat END,
+                        lng         = CASE WHEN EXCLUDED.lng != 0 THEN EXCLUDED.lng ELSE hotel_content.lng END,
+                        address     = COALESCE(hotel_content.address,     EXCLUDED.address),
+                        city        = COALESCE(hotel_content.city,        EXCLUDED.city),
+                        country     = COALESCE(hotel_content.country,     EXCLUDED.country),
+                        description = COALESCE(hotel_content.description, EXCLUDED.description),
+                        star_rating = CASE WHEN hotel_content.star_rating IS NOT NULL AND hotel_content.star_rating != 0
+                                     THEN hotel_content.star_rating ELSE EXCLUDED.star_rating END,
+                        amenities   = CASE WHEN hotel_content.amenities IS NOT NULL
+                                          AND jsonb_typeof(hotel_content.amenities) = 'array'
+                                          AND jsonb_array_length(hotel_content.amenities) > 0
+                                     THEN hotel_content.amenities ELSE EXCLUDED.amenities END,
+                        check_in_time         = COALESCE(hotel_content.check_in_time,         EXCLUDED.check_in_time),
+                        check_out_time        = COALESCE(hotel_content.check_out_time,        EXCLUDED.check_out_time),
+                        important_information = COALESCE(hotel_content.important_information, EXCLUDED.important_information),
+                        contact_info          = COALESCE(hotel_content.contact_info,          EXCLUDED.contact_info),
+                        chain_code            = COALESCE(hotel_content.chain_code,            EXCLUDED.chain_code),
+                        giata_id              = COALESCE(hotel_content.giata_id,              EXCLUDED.giata_id),
+                        content_source        = COALESCE(hotel_content.content_source, 'tgx'),
+                        fetched_at            = now()
+                `;
+                totalSaved++;
+            } catch { /* skip individual hotel failures */ }
+        }
+
+        console.log(`[refresh-hotel-content] "${cityKey}" page ${page}: ${edges.length} hotels (more=${!!token})`);
+    } while (token && page < MAX_PAGES);
+
+    return totalSaved;
+}
+
+router.get('/refresh-hotel-content', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const limit = Math.min(parseInt((req.query.limit as string) ?? '30', 10), 100);
+        const cfg   = getTgxConfig();
+        const t0    = Date.now();
+
+        const cities = await prisma.hotel_search_stats.findMany({
+            orderBy: { search_count: 'desc' },
+            take:    limit,
+            select:  { city_key: true, country_code: true },
+        });
+
+        if (!cities.length) {
+            console.log('[refresh-hotel-content] No cities in hotel_search_stats — skipping');
+            return res.json({ ok: true, message: 'No cities to refresh', updated: 0 });
+        }
+
+        const cityKeys  = cities.map(r => r.city_key);
+        const destRows  = await prisma.tgx_destination_cache.findMany({
+            where:  { city_key: { in: cityKeys } },
+            select: { city_key: true, destination_code: true },
+        });
+        const destCodeMap = new Map(destRows.map(r => [r.city_key, r.destination_code]));
+
+        // Respond immediately — each city can take minutes
+        res.json({ ok: true, message: `Hotel content refresh started (limit=${limit})`, cities: cities.length });
+
+        let totalUpdated = 0;
+        for (const { city_key, country_code } of cities) {
+            const destCode = destCodeMap.get(city_key) ?? null;
+            if (destCode === 'NONE') continue;
+            console.log(`[refresh-hotel-content] Seeding "${city_key}" destCode=${destCode ?? 'none'}`);
+            try {
+                const saved = await _fetchAndUpsertCityContent(cfg, city_key, destCode, country_code);
+                totalUpdated += saved;
+            } catch (e: any) {
+                console.warn(`[refresh-hotel-content] Failed for "${city_key}": ${e.message}`);
+            }
+            await new Promise(r => setTimeout(r, 300));
+        }
+
+        const elapsed = Date.now() - t0;
+        console.log(`[refresh-hotel-content] Done: ${totalUpdated} hotels across ${cities.length} cities in ${elapsed}ms`);
     } catch (err) {
         next(err);
     }

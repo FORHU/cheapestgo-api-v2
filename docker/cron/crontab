@@ -1,0 +1,28 @@
+# cheapestgo-api-v2 cron schedule
+# All jobs hit the API container directly over the Docker network (no external roundtrip).
+# CRON_SECRET, FUNCTIONS_SECRET, and APP_URL are injected from docker-compose environment.
+# APP_URL must NOT have a trailing slash (e.g. http://api:4000)
+
+# ── High-frequency ────────────────────────────────────────────────────────────
+*/5  * * * * curl -sf -X GET  $APP_URL/api/v2/cron/poll-pending-tickets           -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+*/10 * * * * curl -sf -X POST $APP_URL/api/v2/internal/auto-recover               -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+*/10 * * * * curl -sf -X GET  $APP_URL/api/v2/cron/cleanup-orphaned-duffel-orders -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+*/15 * * * * curl -sf -X POST $APP_URL/api/v2/internal/retry-emails               -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+*/30 * * * * curl -sf -X GET  $APP_URL/api/v2/cron/refresh-popular-flights        -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+
+# ── Sub-daily ─────────────────────────────────────────────────────────────────
+0 */2  * * * curl -sf -X GET $APP_URL/api/v2/cron/fill-dest-cache     -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+0 */6  * * * curl -sf -X GET $APP_URL/api/v2/cron/duffel-balance-check -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+0 */6  * * * curl -sf -X GET $APP_URL/api/v2/cron/sync-flight-deals    -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+0 */12 * * * curl -sf -X GET $APP_URL/api/v2/cron/otv-credit-check     -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+
+# ── Daily (UTC) ───────────────────────────────────────────────────────────────
+0 2 * * * curl -sf -X GET $APP_URL/api/v2/cron/etg-reviews-sync       -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+0 3 * * * curl -sf -X GET $APP_URL/api/v2/cron/cache-cleanup           -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+0 4 * * * curl -sf -X GET $APP_URL/api/v2/cron/cleanup-sessions        -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+0 5 * * * curl -sf -X GET $APP_URL/api/v2/cron/sync-hotel-deals        -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+0 6 * * * curl -sf -X GET $APP_URL/api/v2/cron/check-price-alerts      -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+0 7 * * * curl -sf -X GET $APP_URL/api/v2/cron/refresh-hotel-content   -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+
+# ── Weekly (Sunday 01:00 UTC) ─────────────────────────────────────────────────
+0 1 * * 0 curl -sf -X GET $APP_URL/api/v2/cron/sync-dest-cache        -H "Authorization: Bearer $CRON_SECRET" -o /dev/null

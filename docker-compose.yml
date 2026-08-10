@@ -1,4 +1,19 @@
 services:
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
@@ -28,6 +43,16 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  cron:
+    build: ./docker/cron
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      APP_URL: ${APP_URL:-http://api:4000}
+      CRON_SECRET: ${CRON_SECRET}
+      FUNCTIONS_SECRET: ${FUNCTIONS_SECRET}
 
 volumes:
   postgres_data:

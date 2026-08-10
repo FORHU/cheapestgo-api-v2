@@ -527,4 +527,212 @@ internalRouter.post('/issue-ticket', requireInternalAuth, async (req: Request, r
     }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/internal/auto-recover
+// Schedule: every 10 minutes  (*/10 * * * *)
+// Detects booking_sessions where Stripe payment succeeded but flight_bookings
+// was never created, then retries via /api/internal/create-booking.
+// Auth: Bearer <CRON_SECRET> or <FUNCTIONS_SECRET>
+// ─────────────────────────────────────────────────────────────────────────────
+
+const AUTO_RECOVER_MAX    = 10;
+const MISMATCH_THRESHOLD  = 5 * 60 * 1000;   // sessions >5 min old
+const MISMATCH_MAX_AGE    = 24 * 60 * 60 * 1000; // ignore sessions >24h old
+
+function requireCronOrInternal(req: Request, res: Response, next: NextFunction) {
+    const auth     = req.headers.authorization;
+    const cronSec  = process.env.CRON_SECRET;
+    const funcSec  = process.env.FUNCTIONS_SECRET;
+    if ((cronSec && auth === `Bearer ${cronSec}`) || (funcSec && auth === `Bearer ${funcSec}`)) {
+        return next();
+    }
+    return res.status(401).json({ error: 'Unauthorized' });
+}
+
+internalRouter.post('/auto-recover', requireCronOrInternal, async (_req: Request, res: Response) => {
+    try {
+        const cutoffRecent = new Date(Date.now() - MISMATCH_THRESHOLD).toISOString();
+        const cutoffOld    = new Date(Date.now() - MISMATCH_MAX_AGE).toISOString();
+
+        // Sessions with a payment_intent_id, not yet booked/expired, older than 5 min
+        const stuckSessions = await prisma.$queryRaw<any[]>`
+            SELECT id, provider, payment_intent_id, status, created_at
+            FROM booking_sessions
+            WHERE payment_intent_id IS NOT NULL
+              AND status NOT IN ('booked', 'expired', 'completed', 'failed')
+              AND created_at < ${cutoffRecent}::timestamptz
+              AND created_at >= ${cutoffOld}::timestamptz
+            ORDER BY created_at ASC
+            LIMIT ${AUTO_RECOVER_MAX}
+        `;
+
+        if (!stuckSessions.length) {
+            return res.json({ success: true, recovered: 0, message: 'No mismatches found' });
+        }
+
+        // Filter out sessions that already have a flight_booking
+        const sessionIds = stuckSessions.map((s: any) => s.id);
+        const existingBookings = await prisma.$queryRaw<{ session_id: string }[]>`
+            SELECT session_id FROM flight_bookings WHERE session_id = ANY(${sessionIds}::uuid[])
+        `;
+        const bookedSet  = new Set(existingBookings.map(b => b.session_id));
+        const mismatches = stuckSessions.filter((s: any) => !bookedSet.has(s.id));
+
+        if (!mismatches.length) {
+            return res.json({ success: true, recovered: 0, message: 'All sessions already have bookings' });
+        }
+
+        console.log(`[auto-recover] Found ${mismatches.length} mismatch(es) to recover`);
+
+        let recovered = 0;
+        let failed    = 0;
+
+        for (const session of mismatches) {
+            try {
+                // For Duffel the order is pre-created before payment — only recover
+                // if the PI actually succeeded; otherwise expire and move on.
+                if (session.payment_intent_id) {
+                    const pi = await stripe.paymentIntents.retrieve(session.payment_intent_id);
+                    const shouldRecover = session.provider === 'duffel'
+                        ? pi.status === 'succeeded'
+                        : true; // Mystifly uses manual capture → requires_capture is valid
+
+                    if (!shouldRecover) {
+                        console.log(`[auto-recover] Expiring abandoned session ${session.id} (pi.status=${pi.status})`);
+                        await prisma.$executeRaw`
+                            UPDATE booking_sessions SET status = 'expired' WHERE id = ${session.id}::uuid
+                        `;
+                        continue;
+                    }
+                }
+
+                const apiBase = process.env.INTERNAL_API_URL ?? `http://localhost:${process.env.PORT ?? 4000}/api/v2`;
+                const response = await fetch(`${apiBase}/internal/create-booking`, {
+                    method:  'POST',
+                    headers: {
+                        'Content-Type':  'application/json',
+                        'Authorization': `Bearer ${process.env.FUNCTIONS_SECRET}`,
+                    },
+                    body: JSON.stringify({ sessionId: session.id }),
+                    signal: AbortSignal.timeout(60_000),
+                });
+
+                const data = await response.json() as any;
+                if (data.success) {
+                    recovered++;
+                    console.log(JSON.stringify({ _event: 'admin_audit', action: 'auto_recover_booking', sessionId: session.id, provider: session.provider, result: 'success', triggeredBy: 'cron', timestamp: new Date().toISOString() }));
+                } else {
+                    failed++;
+                    console.error(JSON.stringify({ _event: 'admin_audit', action: 'auto_recover_booking', sessionId: session.id, provider: session.provider, result: 'failed', error: data.error, triggeredBy: 'cron', timestamp: new Date().toISOString() }));
+                    // Permanently-failing session — expire so it stops appearing in cron
+                    await prisma.$executeRaw`
+                        UPDATE booking_sessions SET status = 'expired' WHERE id = ${session.id}::uuid
+                    `;
+                }
+            } catch (e: any) {
+                failed++;
+                console.error(`[auto-recover] Error for session ${session.id}:`, e.message);
+            }
+        }
+
+        if (recovered > 0 || failed > 0) {
+            await prisma.notifications.create({
+                data: {
+                    title:       'Auto-Recovery Complete',
+                    description: `Recovered: ${recovered}, Failed: ${failed} (of ${mismatches.length} mismatches)`,
+                    type:        'system',
+                } as any,
+            }).catch(() => {});
+        }
+
+        return res.json({ success: true, recovered, failed, total: mismatches.length });
+    } catch (err: any) {
+        console.error('[auto-recover] Fatal error:', err.message);
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/internal/retry-emails
+// Schedule: every 15 minutes  (*/15 * * * *)
+// Re-sends failed/queued emails by reading the stored htmlBody from
+// email_logs.metadata and re-submitting via Resend.
+// Auth: Bearer <CRON_SECRET> or <FUNCTIONS_SECRET>
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RETRY_EMAILS_MAX    = 20;
+const RETRY_EMAILS_MAX_AGE = 48 * 60 * 60 * 1000; // ignore logs older than 48h
+
+internalRouter.post('/retry-emails', requireCronOrInternal, async (_req: Request, res: Response) => {
+    try {
+        const resendApiKey = process.env.RESEND_API_KEY;
+        if (!resendApiKey) {
+            return res.status(503).json({ error: 'RESEND_API_KEY not configured' });
+        }
+
+        const cutoff = new Date(Date.now() - RETRY_EMAILS_MAX_AGE).toISOString();
+
+        const logs = await prisma.email_logs.findMany({
+            where:   { status: { in: ['failed', 'queued'] }, created_at: { gte: new Date(cutoff) } },
+            orderBy: { created_at: 'asc' },
+            take:    RETRY_EMAILS_MAX,
+        });
+
+        if (!logs.length) {
+            return res.json({ success: true, retried: 0, message: 'No emails to retry' });
+        }
+
+        console.log(`[retry-emails] Found ${logs.length} email(s) to retry`);
+
+        let succeeded = 0;
+        let failed    = 0;
+        let skipped   = 0;
+
+        for (const log of logs) {
+            const htmlBody = (log.metadata as any)?.htmlBody;
+            if (!htmlBody) { skipped++; continue; }
+
+            try {
+                const resendRes = await fetch('https://api.resend.com/emails', {
+                    method:  'POST',
+                    headers: { Authorization: `Bearer ${resendApiKey}`, 'Content-Type': 'application/json' },
+                    body:    JSON.stringify({
+                        from:    'CheapestGo <no-reply@mail.cheapestgo.com>',
+                        to:      [log.recipient],
+                        subject: log.subject,
+                        html:    htmlBody,
+                    }),
+                });
+
+                if (resendRes.ok) {
+                    const cleanMeta = { ...(log.metadata as any) };
+                    delete cleanMeta.htmlBody;
+                    await prisma.email_logs.update({
+                        where: { id: log.id },
+                        data:  { status: 'sent', sent_at: new Date(), error_message: null, metadata: { ...cleanMeta, retriedAt: new Date().toISOString() } },
+                    });
+                    succeeded++;
+                    console.log(`[retry-emails] Sent: ${log.id}`);
+                } else {
+                    const errText = await resendRes.text().catch(() => '');
+                    await prisma.email_logs.update({
+                        where: { id: log.id },
+                        data:  { error_message: `Retry failed (${resendRes.status}): ${errText.slice(0, 200)}` },
+                    });
+                    failed++;
+                    console.error(`[retry-emails] Failed: ${log.id} — ${resendRes.status}`);
+                }
+            } catch (e: any) {
+                failed++;
+                console.error(`[retry-emails] Error for ${log.id}:`, e.message);
+            }
+        }
+
+        return res.json({ success: true, retried: succeeded, failed, skipped, total: logs.length });
+    } catch (err: any) {
+        console.error('[retry-emails] Fatal error:', err.message);
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 export default internalRouter;
