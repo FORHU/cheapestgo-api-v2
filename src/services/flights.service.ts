@@ -125,7 +125,7 @@ export class FlightsService {
                 return loc.iata_code ?? loc.iataCode ?? loc.code ?? '';
             };
             const origin = extractIata(firstSeg?.origin);
-            const departureDate = (firstSeg?.departing_at ?? firstSeg?.departureTime ?? firstSeg?.departure ?? '').slice(0, 10);
+            const departureDate = (firstSeg?.departing_at ?? firstSeg?.departureTime ?? firstSeg?.departure?.time ?? (typeof firstSeg?.departure === 'string' ? firstSeg.departure : '') ?? '').slice(0, 10);
 
             if (origin && departureDate) {
                 const activeBookings = await this.repo.getActiveBookingsForUser(userId);
@@ -181,11 +181,16 @@ export class FlightsService {
             }
 
             // Build E.164 phone
-            const rawCountryCode = String(contact.countryCode ?? '82').replace(/\D/g, '') || '82';
-            const rawPhone = String(contact.phone ?? '').replace(/\D/g, '').replace(/^0+/, '');
-            const e164Phone = `+${rawCountryCode}${rawPhone}`;
-            const totalDigits = rawCountryCode.length + rawPhone.length;
-            if (rawPhone.length < 4 || totalDigits < 7 || !/^\+\d{7,15}$/.test(e164Phone)) {
+            const phoneInput = String(contact.phone ?? '').trim();
+            let e164Phone: string;
+            if (phoneInput.startsWith('+')) {
+                e164Phone = phoneInput.replace(/[\s\-()]/g, '');
+            } else {
+                const rawCountryCode = String(contact.countryCode ?? '82').replace(/\D/g, '') || '82';
+                const cleaned = phoneInput.replace(/\D/g, '').replace(/^0+/, '');
+                e164Phone = `+${rawCountryCode}${cleaned}`;
+            }
+            if (!/^\+\d{7,15}$/.test(e164Phone)) {
                 throw new AppError(400, `Invalid phone number. Please enter a valid phone number with country code.`, 'INVALID_PHONE');
             }
 
@@ -203,7 +208,7 @@ export class FlightsService {
                 title: duffelTitle(pax),
                 given_name: pax.firstName,
                 family_name: pax.lastName,
-                born_on: pax.birthDate,
+                born_on: pax.dateOfBirth ?? pax.birthDate,
                 email: contact.email,
                 phone_number: e164Phone,
                 gender: (pax.gender ?? '').toUpperCase() === 'M' ? 'm' : 'f',
@@ -347,6 +352,7 @@ export class FlightsService {
                 ...(bundleHotelId ? { bundleHotelId, type: 'flight_bundle' } : { type: 'flight' }),
             },
             description: `CG: ${(flight.segments as any)?.[0]?.origin ?? ''} → ${(flight.segments as any)?.[(flight.segments?.length ?? 1) - 1]?.destination ?? ''}`,
+            automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
         }, { idempotencyKey: piIdempotencyKey });
 
         // ── Update session with PI ─────────────────────────────────────────────

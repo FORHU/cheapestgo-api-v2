@@ -23,11 +23,7 @@ router.get('/preferences', async (req: Request, res: Response, next: NextFunctio
             select: { preferences: true },
         });
 
-        if (!profile) {
-            throw new AppError(404, 'Profile not found', 'NOT_FOUND');
-        }
-
-        return res.json({ preferences: profile.preferences ?? {} });
+        return res.json({ preferences: profile?.preferences ?? {} });
     } catch (err) {
         next(err);
     }
@@ -48,9 +44,10 @@ router.patch('/preferences', async (req: Request, res: Response, next: NextFunct
             throw new AppError(400, 'Request body must be a JSON object', 'VALIDATION_ERROR');
         }
 
-        const profile = await prisma.profiles.update({
-            where: { id: userId },
-            data: { preferences: body },
+        const profile = await prisma.profiles.upsert({
+            where:  { id: userId },
+            update: { preferences: body },
+            create: { id: userId, preferences: body },
             select: { preferences: true },
         });
 

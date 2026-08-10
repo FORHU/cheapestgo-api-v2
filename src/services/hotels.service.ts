@@ -459,6 +459,7 @@ export class HotelsService {
                 markupAmount:  String(pricing.markupAmount),
             },
             description: `CG: ${params.propertyName || 'Hotel'} — ${params.roomName || 'Room'}`,
+            automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
         }, { idempotencyKey });
 
         return {
