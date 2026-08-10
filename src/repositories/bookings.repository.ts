@@ -3,14 +3,42 @@ import { prisma } from '@/lib/prisma';
 export class BookingsRepository {
 
     async listForUser(userId: string, tripType?: 'flight' | 'hotel') {
-        const where: any = { user_id: userId };
-        // bookings table has no trip_type column — filter by provider instead
-        if (tripType === 'hotel')  where.provider = { not: 'duffel' };
-        if (tripType === 'flight') where.provider = 'duffel';
-        return prisma.bookings.findMany({
-            where,
-            orderBy: { created_at: 'desc' },
+        const results: any[] = [];
+
+        // Query hotel bookings when type is unspecified or 'hotel'
+        if (!tripType || tripType === 'hotel') {
+            const hotelRows = await prisma.bookings.findMany({
+                where:   { user_id: userId },
+                orderBy: { created_at: 'desc' },
+            });
+            for (const row of hotelRows) {
+                results.push({ ...row, type: 'hotel' });
+            }
+        }
+
+        // Query flight bookings when type is unspecified or 'flight'
+        if (!tripType || tripType === 'flight') {
+            const flightRows = await prisma.flight_bookings.findMany({
+                where:   { user_id: userId },
+                orderBy: { created_at: 'desc' },
+                include: {
+                    flight_segments: { orderBy: { segment_index: 'asc' } },
+                    passengers:      true,
+                },
+            });
+            for (const row of flightRows) {
+                results.push({ ...row, type: 'flight' });
+            }
+        }
+
+        // Sort merged results by created_at descending
+        results.sort((a, b) => {
+            const da = a.created_at ? new Date(a.created_at).getTime() : 0;
+            const db = b.created_at ? new Date(b.created_at).getTime() : 0;
+            return db - da;
         });
+
+        return results;
     }
 
     async findById(bookingId: string) {

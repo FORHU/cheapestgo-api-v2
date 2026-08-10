@@ -35,6 +35,7 @@ app.use('/api/v2', routes);
 
 app.use(errorMiddleware);
 
+// Internal routes — unified handler for both Duffel and Mystifly providers.
 app.use('/api/internal', internalRouter);
 
 export default app;
