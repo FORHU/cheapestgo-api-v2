@@ -6,6 +6,7 @@
 
 import { config } from '@/config';
 import { prisma } from '@/lib/prisma';
+import { CITY_ALIASES, resolveHotelDbCity } from '@/lib/cityAliases';
 
 function getKey(): string {
     const key = config.GOOGLE_PLACES_API_KEY;
@@ -133,26 +134,46 @@ async function fetchCitiesFromMapbox(query: string): Promise<AutocompleteResult[
     }
 }
 
+// Mapbox returns titles like "Gangnam District" — try the full title, then strip
+// common geographic suffixes to match alias keys like "gangnam".
+const GEO_SUFFIX = /(\s+(district|county|province|prefecture|municipality|ward|borough|township|region|area|city|town|village)|[-\s]ku|[-\s]gu|[-\s]dong|[-\s]si)$/i;
+
+function resolveAlias(title: string, countryCode: string): string {
+    const aliasMap = CITY_ALIASES[countryCode.toUpperCase()] ?? {};
+    const lower    = title.toLowerCase();
+    if (aliasMap[lower]) return aliasMap[lower];
+    const stripped = lower.replace(GEO_SUFFIX, '').trim();
+    return aliasMap[stripped] ?? title;
+}
+
 async function filterCitiesWithHotels(cities: Array<{ title: string; countryCode: string }>): Promise<Set<string>> {
     if (!cities.length) return new Set();
     try {
-        const cityNames = cities.map(c => c.title.toLowerCase());
+        // Resolve district/neighbourhood names to canonical DB city names before querying.
+        // e.g. "Gangnam District" (KR) → alias "gangnam" → "Seoul" → resolveHotelDbCity → "Seoul"
+        const resolved = cities.map(c => {
+            const canonical = resolveAlias(c.title, c.countryCode);
+            const dbCity    = resolveHotelDbCity(canonical, c.countryCode).toLowerCase();
+            return { title: c.title, countryCode: c.countryCode, dbCity };
+        });
+
+        const dbCityNames = [...new Set(resolved.map(r => r.dbCity))];
         const rows = await prisma.hotel_content.findMany({
-            where:  { city: { in: cityNames, mode: 'insensitive' } },
+            where:  { city: { in: dbCityNames, mode: 'insensitive' } },
             select: { city: true, country: true },
             distinct: ['city', 'country'],
         });
         const matched = new Set(rows.map((r: any) => `${r.city?.toLowerCase()}|${r.country?.toLowerCase()}`));
         const result  = new Set<string>();
-        for (const c of cities) {
-            if (matched.has(`${c.title.toLowerCase()}|${c.countryCode.toLowerCase()}`)) {
-                result.add(c.title.toLowerCase());
+        for (const r of resolved) {
+            if (matched.has(`${r.dbCity}|${r.countryCode.toLowerCase()}`)) {
+                result.add(r.title.toLowerCase());
             }
         }
         if (result.size === 0) {
             const cityOnlyMatched = new Set(rows.map((r: any) => r.city?.toLowerCase() as string));
-            for (const c of cities) {
-                if (cityOnlyMatched.has(c.title.toLowerCase())) result.add(c.title.toLowerCase());
+            for (const r of resolved) {
+                if (cityOnlyMatched.has(r.dbCity)) result.add(r.title.toLowerCase());
             }
         }
         return result;

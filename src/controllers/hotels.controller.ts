@@ -6,7 +6,7 @@ import { config } from '@/config';
 import { resolveTgxDestinationCode } from '@/lib/hotels/travelgatex';
 import { getInstantHotelCatalog, runTgxSearch } from '@/lib/hotels/search';
 import { prisma } from '@/lib/prisma';
-import { CITY_ALIASES, resolveHotelDbCity } from '@/lib/cityAliases';
+import { CITY_ALIASES } from '@/lib/cityAliases';
 
 const svc = new HotelsService();
 
@@ -114,6 +114,62 @@ export class HotelsController {
     };
 
     // ── Places / autocomplete ─────────────────────────────────────────────────
+
+    suggest = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { q } = z.object({ q: z.string().min(1).max(100) }).parse(req.query);
+
+            const [destResult, hotels] = await Promise.all([
+                // Destination autocomplete via Mapbox
+                autocompleteDestinations(q),
+                // Hotel name search from local catalog
+                prisma.hotel_content.findMany({
+                    where: {
+                        OR: [
+                            { name:    { contains: q, mode: 'insensitive' } },
+                            { city:    { contains: q, mode: 'insensitive' } },
+                            { country: { contains: q, mode: 'insensitive' } },
+                        ],
+                        name: { not: null },
+                    },
+                    select: {
+                        hotel_id:      true,
+                        name:          true,
+                        city:          true,
+                        country:       true,
+                        star_rating:   true,
+                        review_rating: true,
+                        review_count:  true,
+                        images:        true,
+                        lat:           true,
+                        lng:           true,
+                    },
+                    orderBy: [
+                        { review_rating: 'desc' },
+                        { star_rating:   'desc' },
+                    ],
+                    take: 6,
+                }),
+            ]);
+
+            const destinations = (destResult as any).data ?? [];
+
+            const hotelSuggestions = hotels.map(h => ({
+                id:           h.hotel_id,
+                name:         h.name,
+                city:         h.city,
+                country:      h.country,
+                starRating:   h.star_rating,
+                reviewRating: h.review_rating ? Number(h.review_rating) : null,
+                reviewCount:  h.review_count,
+                image:        h.images?.[0]?.replace('{size}', '320x200') ?? null,
+                lat:          h.lat,
+                lng:          h.lng,
+            }));
+
+            res.json({ destinations, hotels: hotelSuggestions });
+        } catch (err) { next(err); }
+    };
 
     autocomplete = async (req: Request, res: Response, next: NextFunction) => {
         try {
