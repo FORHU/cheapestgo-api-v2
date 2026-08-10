@@ -1,5 +1,7 @@
 // ─── Hotel search types ───────────────────────────────────────────────────────
 
+export type DestinationRung = 'city' | 'district' | 'poi' | 'province' | 'country';
+
 export interface HotelSearchParams {
     checkin: string;
     checkout: string;
@@ -13,11 +15,15 @@ export interface HotelSearchParams {
     countryCode?: string;
     hotelCode?: string;
     rooms?: number;
+    rung?: DestinationRung;
+    lat?: number;
+    lng?: number;
+    bbox?: [number, number, number, number];
 }
 
 export interface HotelSearchResult {
-    data: HotelListing[];
-    allMappable: HotelListing[];
+    data: any[];
+    allMappable: any[];
     totalCount: number;
 }
 

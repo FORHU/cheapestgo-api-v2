@@ -191,12 +191,12 @@ export class FlightsService {
 
             const duffelPaxTemplates: any[] = rawOffer.passengers ?? [];
 
-            function duffelTitle(pax: any): string {
+            const duffelTitle = (pax: any): string => {
                 const g = (pax.gender ?? '').toUpperCase();
                 const t = (pax.type ?? '').toUpperCase();
                 if (t === 'CHD' || t === 'INF') return g === 'M' ? 'mr' : 'miss';
                 return g === 'M' ? 'mr' : 'ms';
-            }
+            };
 
             const orderPassengers = passengers.map((pax: any, idx: number) => ({
                 id: duffelPaxTemplates[idx]?.id,
@@ -1042,6 +1042,54 @@ export class FlightsService {
             }
         }
         return result;
+    }
+
+    // ── Price calendar live ───────────────────────────────────────────────────
+
+    async getPriceCalendarLive(params: {
+        origin:      string;
+        destination: string;
+        adults:      number;
+        cabin:       string;
+        dates:       string[];
+        returnDate?: string | null;
+        provider?:   string | null;
+    }): Promise<{ success: boolean; data: Record<string, { price: number; currency: string }> }> {
+        const today      = new Date().toISOString().slice(0, 10);
+        const validDates = params.dates.filter(d => d >= today);
+
+        if (!validDates.length) return { success: true, data: {} };
+
+        const results = await Promise.allSettled(
+            validDates.map(async (date) => {
+                const allOffers = await searchFlights({
+                    origin:        params.origin,
+                    destination:   params.destination,
+                    departureDate: date,
+                    returnDate:    params.returnDate ?? undefined,
+                    adults:        params.adults,
+                    children:      0,
+                    infants:       0,
+                    cabinClass:    (params.cabin as any) || 'economy',
+                });
+                const offers = params.provider
+                    ? allOffers.filter((o: any) => o.provider === params.provider)
+                    : allOffers;
+                if (!offers?.length) return { date, price: null as number | null, currency: 'USD' };
+                const cheapest = offers.reduce((min: any, o: any) =>
+                    (o.price?.total ?? Infinity) < (min?.price?.total ?? Infinity) ? o : min
+                );
+                return { date, price: cheapest?.price?.total ?? null, currency: cheapest?.price?.currency ?? 'USD' };
+            })
+        );
+
+        const data: Record<string, { price: number; currency: string }> = {};
+        for (const r of results) {
+            if (r.status === 'fulfilled' && r.value.price !== null) {
+                data[r.value.date] = { price: r.value.price, currency: r.value.currency };
+            }
+        }
+        return { success: true, data };
     }
 
     // ─── Private supplier helpers ─────────────────────────────────────────────

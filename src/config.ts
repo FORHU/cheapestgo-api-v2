@@ -32,7 +32,8 @@ const schema = z.object({
     GOOGLE_CLIENT_SECRET: z.string().optional(),
     SITE_URL: z.string().default('http://localhost:3000'),
     API_URL: z.string().default('http://localhost:4000'),
-    DUFFEL_WEBHOOK_SECRET: z.string().optional()
+    DUFFEL_WEBHOOK_SECRET: z.string().optional(),
+    MAPBOX_TOKEN: z.string().optional()
 });
 
 const parsed = schema.safeParse(process.env);

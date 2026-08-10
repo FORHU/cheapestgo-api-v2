@@ -5,7 +5,7 @@
 
 import { prisma } from '@/lib/prisma';
 import {
-    tgxGraphQL, getTgxSettings, getTgxConfig, buildOccupancies,
+    tgxGraphQL, getTgxSettings, getTgxConfig, getTgxFilterSearch, buildOccupancies,
     normalizeOption, resolveTgxDestinationCode, fetchAmenitiesByHotelCodes,
     type TgxOption,
 } from './travelgatex';
@@ -196,9 +196,9 @@ async function setHotelSearchCache(key: string, result: any, ttlMinutes: number)
 // ─── GraphQL search queries ───────────────────────────────────────────────────
 
 const CITY_SEARCH_QUERY = `
-query TgxCitySearch($criteria: HotelCriteriaSearchInput!, $settings: HotelSettingsInput!) {
+query TgxCitySearch($criteria: HotelCriteriaSearchInput!, $settings: HotelSettingsInput!, $filterSearch: HotelXFilterSearchInput) {
   hotelX {
-    search(criteria: $criteria, settings: $settings) {
+    search(criteria: $criteria, settings: $settings, filterSearch: $filterSearch) {
       options {
         id hotelCode boardCode paymentType status
         price { currency net gross }
@@ -212,9 +212,9 @@ query TgxCitySearch($criteria: HotelCriteriaSearchInput!, $settings: HotelSettin
 }`;
 
 const HOTEL_SEARCH_QUERY = `
-query TgxHotelSearch($criteria: HotelCriteriaSearchInput!, $settings: HotelSettingsInput!) {
+query TgxHotelSearch($criteria: HotelCriteriaSearchInput!, $settings: HotelSettingsInput!, $filterSearch: HotelXFilterSearchInput) {
   hotelX {
-    search(criteria: $criteria, settings: $settings) {
+    search(criteria: $criteria, settings: $settings, filterSearch: $filterSearch) {
       options {
         id hotelCode boardCode paymentType status
         price { currency net gross }
@@ -825,10 +825,12 @@ async function runCityFallback(
             console.log(`[tgx-search] Dest code "${resolvedCode}" is a known OTV miss — skipping`);
         } else {
             const __t0 = Date.now();
+            const filterSearch = getTgxFilterSearch();
             const [destResult, otv] = await Promise.all([
                 tgxGraphQL(CITY_SEARCH_QUERY, {
                     criteria: { ...baseCriteria, destinations: [resolvedCode] },
                     settings,
+                    filterSearch,
                 }),
                 cityName
                     ? fetchOtvHotelCodesByCity(cityName, resolvedCode).catch(() => ({ codes: [] as string[], contentMap: new Map<string, any>() }))
@@ -878,7 +880,7 @@ async function runCityFallback(
         otvContentMap = otv.contentMap;
     } else {
         const sample        = otvCodes.slice(0, 20);
-        const sampleContent = await fetchHotelContent(sample);
+        const sampleContent = await fetchHotelContent(sample).catch(() => new Map<string, any>());
         const missingNames  = sample.filter(c => !sampleContent.get(c)?.name).length;
         if (missingNames > sample.length * 0.4) {
             console.log(`[tgx-search] ${missingNames}/${sample.length} hotels have no name — refreshing OTV portfolio`);
@@ -904,6 +906,7 @@ async function runCityFallback(
                     const r = await tgxGraphQL(CITY_SEARCH_QUERY, {
                         criteria: { ...baseCriteria, hotels: chunk },
                         settings,
+                        filterSearch: getTgxFilterSearch(),
                     });
                     return {
                         options: (r?.data?.hotelX?.search?.options || []) as TgxOption[],
@@ -1001,11 +1004,17 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
         adults = 2, children = 0, childrenAges,
         destinationCode, cityName, countryCode, hotelCode,
         guest_nationality = 'KR',
+        rung, bbox,
     } = params;
 
     const currency    = 'USD';
     const settings    = getTgxSettings();
     const occupancies = buildOccupancies(Number(adults), Number(children), childrenAges);
+
+    // Province/country rungs: ETG region search handles these better than TGX city lookup.
+    if ((rung === 'province' || rung === 'country') && cityName) {
+        return searchEtgCity(cityName, params);
+    }
 
     let destinations: string[] | undefined;
     let hotels: string[] | undefined;
@@ -1032,11 +1041,11 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
         ...(hotels ? { hotels } : { destinations }),
     };
 
-    const gqlQuery = hotelCode ? HOTEL_SEARCH_QUERY : CITY_SEARCH_QUERY;
-    const result   = await tgxGraphQL(gqlQuery, { criteria, settings });
+    const gqlQuery  = hotelCode ? HOTEL_SEARCH_QUERY : CITY_SEARCH_QUERY;
+    const gqlResult = await tgxGraphQL(gqlQuery, { criteria, settings, filterSearch: getTgxFilterSearch() });
 
-    const options: TgxOption[] = result?.data?.hotelX?.search?.options || [];
-    const gqlErrors            = result?.data?.hotelX?.search?.errors  || [];
+    const options: TgxOption[] = gqlResult?.data?.hotelX?.search?.options || [];
+    const gqlErrors            = gqlResult?.data?.hotelX?.search?.errors  || [];
 
     if (hasEmptyHotelsError(gqlErrors) && !hotelCode && cityName) {
         const baseCriteria = { checkIn: checkin, checkOut: checkout, occupancies, nationality: guest_nationality, currency };
@@ -1063,8 +1072,8 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
             .map(normalizeOption);
 
         const [contentMap, reviewMap] = await Promise.all([
-            fetchHotelContent([String(hotelCode)]),
-            fetchHotelReviews([String(hotelCode)]),
+            fetchHotelContent([String(hotelCode)]).catch(() => new Map<string, any>()),
+            fetchHotelReviews([String(hotelCode)]).catch(() => new Map<string, any>()),
         ]);
         const content      = contentMap.get(String(hotelCode));
         const reviews      = reviewMap.get(String(hotelCode));
@@ -1103,7 +1112,18 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
         };
     }
 
-    return buildCityResults(merchantOptions, cityName, countryCode);
+    const cityResult = await buildCityResults(merchantOptions, cityName, countryCode);
+
+    // Apply bbox filter when caller provides a bounding box (e.g. province/island searches).
+    if (bbox && cityResult.data.length > 0) {
+        const [west, south, east, north] = bbox;
+        const inBox = (h: any) => !h.lat || !h.lng || (h.lng >= west && h.lng <= east && h.lat >= south && h.lat <= north);
+        cityResult.data        = cityResult.data.filter(inBox);
+        cityResult.allMappable = cityResult.allMappable.filter(inBox);
+        cityResult.totalCount  = cityResult.data.length;
+    }
+
+    return cityResult;
 }
 
 async function buildCityResults(
@@ -1127,8 +1147,8 @@ async function buildCityResults(
         .map(([code]) => code);
 
     const [contentMap, reviewMap] = await Promise.all([
-        fetchHotelContent(hotelCodes),
-        fetchHotelReviews(hotelCodes),
+        fetchHotelContent(hotelCodes).catch(() => new Map<string, any>()),
+        fetchHotelReviews(hotelCodes).catch(() => new Map<string, any>()),
     ]);
 
     if (hotelCodes.length > 0) {

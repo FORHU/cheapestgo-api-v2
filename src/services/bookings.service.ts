@@ -5,13 +5,46 @@ export class BookingsService {
     private repo = new BookingsRepository();
 
     async list(userId: string, tripType?: 'flight' | 'hotel') {
-        return this.repo.listForUser(userId, tripType);
+        const rows = await this.repo.listForUser(userId, tripType);
+        return { success: true, data: rows };
     }
 
     async getDetails(bookingId: string, userId: string) {
         const booking = await this.repo.findByIdForUser(bookingId, userId);
         if (!booking) throw new AppError(404, 'Booking not found', 'NOT_FOUND');
-        return booking;
+
+        // Build structured cancellation policy from stored data (same as v1 TGX path)
+        const isRefundable = booking.policy_type === 'free_cancellation';
+        const stored = booking.cancellation_policy as any;
+        const cancellationPolicies = stored ?? {
+            refundableTag:    isRefundable ? 'RFN' : 'NRFN',
+            cancelPolicyInfos: [],
+        };
+
+        return {
+            success: true,
+            data: {
+                bookingId:    booking.booking_id,
+                status:       booking.status ?? 'confirmed',
+                provider:     booking.provider,
+                propertyName: booking.property_name,
+                propertyImage: booking.property_image,
+                roomName:     booking.room_name,
+                checkIn:      booking.check_in,
+                checkOut:     booking.check_out,
+                adults:       booking.guests_adults,
+                children:     booking.guests_children,
+                totalPrice:   Number(booking.total_price),
+                currency:     booking.currency,
+                holderFirstName: booking.holder_first_name,
+                holderLastName:  booking.holder_last_name,
+                holderEmail:     booking.holder_email,
+                specialRequests: booking.special_requests,
+                policyType:      booking.policy_type,
+                cancellationPolicies,
+                createdAt:    booking.created_at,
+            },
+        };
     }
 
     // ── Saved trips ───────────────────────────────────────────────────────────

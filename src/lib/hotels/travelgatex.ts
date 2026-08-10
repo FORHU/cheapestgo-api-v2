@@ -28,6 +28,11 @@ export function getTgxSettings(cfg = getTgxConfig(), timeout = 18000) {
     };
 }
 
+// Routes the request to our specific OTV access code per TGX docs.
+export function getTgxFilterSearch(cfg = getTgxConfig()) {
+    return { access: { includes: [cfg.accessCode] } };
+}
+
 // ─── GraphQL client ───────────────────────────────────────────────────────────
 
 export async function tgxGraphQL<T = any>(
@@ -115,9 +120,10 @@ export interface TgxOption {
 }
 
 export function normalizeOption(opt: TgxOption) {
-    const tokenId = opt.token || opt.id;
+    // TGX docs: id is the canonical identifier that goes to Quote; token is supplier-native.
+    const quoteId = opt.id || opt.token;
     return {
-        offerId:       `TGX:${tokenId}`,
+        offerId:       `TGX:${quoteId}`,
         roomName:      opt.rooms?.[0]?.description || opt.boardCode || 'Room',
         roomCode:      opt.rooms?.[0]?.code,
         boardCode:     opt.boardCode,

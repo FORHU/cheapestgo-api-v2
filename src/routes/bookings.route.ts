@@ -3,6 +3,7 @@ import { BookingsController } from '@/controllers/bookings.controller';
 import { requireAuth } from '@/middleware/auth.middleware';
 import { AppError } from '@/middleware/error.middleware';
 import { prisma } from '@/lib/prisma';
+import { config } from '@/config';
 
 const router = Router();
 const ctrl = new BookingsController();
@@ -38,6 +39,11 @@ router.post('/amend', async (req: Request, res: Response, next: NextFunction) =>
         if (!booking) throw new AppError(404, 'Booking not found', 'NOT_FOUND');
         if (booking.user_id !== userId) throw new AppError(403, 'Unauthorized', 'FORBIDDEN');
 
+        const full = await prisma.bookings.findFirst({
+            where:  { booking_id: bookingId },
+            select: { user_id: true, property_name: true, holder_email: true, holder_first_name: true, holder_last_name: true },
+        });
+
         await prisma.bookings.updateMany({
             where: { booking_id: bookingId },
             data: {
@@ -48,6 +54,28 @@ router.post('/amend', async (req: Request, res: Response, next: NextFunction) =>
                 updated_at: new Date(),
             },
         });
+
+        // Fire amendment email non-blocking
+        if (config.RESEND_API_KEY && full?.holder_email) {
+            const toEmail   = email || full.holder_email;
+            const guestName = `${firstName || full.holder_first_name} ${lastName || full.holder_last_name}`.trim();
+            const changes   = [
+                firstName || lastName ? 'Guest name' : '',
+                email   ? 'Email' : '',
+                remarks ? 'Special requests' : '',
+            ].filter(Boolean).join(', ') || 'Booking details';
+
+            fetch('https://api.resend.com/emails', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${config.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    from:    'CheapestGo <no-reply@mail.cheapestgo.com>',
+                    to:      [toEmail],
+                    subject: `Booking Updated — #${bookingId}`,
+                    html:    `<p>Hi ${guestName},</p><p>Your booking <strong>${bookingId}</strong> at <strong>${full.property_name}</strong> has been updated (${changes}).</p>`,
+                }),
+            }).catch(e => console.error('[amend] Email error:', e));
+        }
 
         return res.json({ success: true, data: { bookingId, status: 'confirmed' } });
     } catch (err) {

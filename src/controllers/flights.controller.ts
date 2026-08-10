@@ -129,4 +129,36 @@ export class FlightsController {
             res.json(result);
         } catch (err) { next(err); }
     };
+
+    priceCalendarLive = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { origin, destination, adults = 1, cabin = 'economy', dates, returnDate, provider } =
+                z.object({
+                    origin:      z.string().regex(/^[A-Z]{3}$/),
+                    destination: z.string().regex(/^[A-Z]{3}$/),
+                    adults:      z.coerce.number().int().min(1).default(1),
+                    cabin:       z.string().optional().default('economy'),
+                    dates:       z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).min(1).max(7),
+                    returnDate:  z.string().optional().nullable(),
+                    provider:    z.string().optional().nullable(),
+                }).parse(req.body);
+
+            const result = await svc.getPriceCalendarLive({ origin, destination, adults, cabin, dates, returnDate, provider });
+            res.json(result);
+        } catch (err) { next(err); }
+    };
+
+    // ── Mystifly-only stubs (not available in v2 without Supabase edge functions) ──
+
+    tripDetails = async (_req: Request, res: Response) => {
+        res.status(503).json({ success: false, error: 'Trip details not available', code: 'MYSTIFLY_NOT_LIVE' });
+    };
+
+    ticketDisplay = async (_req: Request, res: Response) => {
+        res.status(503).json({ success: false, error: 'Ticket display not available', code: 'MYSTIFLY_NOT_LIVE' });
+    };
+
+    bookingNote = async (_req: Request, res: Response) => {
+        res.status(503).json({ success: false, error: 'Booking notes not available', code: 'MYSTIFLY_NOT_LIVE' });
+    };
 }

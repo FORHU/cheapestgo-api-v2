@@ -19,17 +19,12 @@ vi.mock('@/lib/stripe', () => ({
             retrieve: vi.fn(),
             capture:  vi.fn(),
             cancel:   vi.fn(),
+            update:   vi.fn(),
+            search:   vi.fn(),
         },
         refunds: {
             create: vi.fn(),
         },
-    },
-}));
-
-vi.mock('@/lib/redis', () => ({
-    redis: {
-        set: vi.fn(),
-        del: vi.fn(),
     },
 }));
 
@@ -42,6 +37,17 @@ vi.mock('@/repositories/hotels.repository', () => ({
     }),
 }));
 
+vi.mock('@/lib/prisma', () => ({
+    prisma: {
+        bookings: {
+            findFirst: vi.fn(),
+            findUnique: vi.fn(),
+            create: vi.fn(),
+            update: vi.fn(),
+        },
+    },
+}));
+
 vi.mock('@/middleware/error.middleware', () => ({
     AppError: class AppError extends Error {
         constructor(public status: number, message: string, public code: string) {
@@ -50,13 +56,31 @@ vi.mock('@/middleware/error.middleware', () => ({
     },
 }));
 
+vi.mock('@/lib/pricing', () => ({
+    HOTEL_MARKUP:  0.05,
+    BUNDLE_MARKUP: 0.04,
+    applyMarkup: (base: number, rate: number) => ({
+        originalPrice: base,
+        chargedPrice:  Math.round(base * (1 + rate) * 100) / 100,
+        markupAmount:  Math.round(base * rate * 100) / 100,
+        markupRate:    rate,
+    }),
+    toStripeAmount: (price: number, currency: string) =>
+        ['jpy', 'krw'].includes(currency.toLowerCase()) ? Math.round(price) : Math.round(price * 100),
+}));
+
+vi.mock('crypto', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('crypto')>();
+    return { ...actual };
+});
+
 // ── Imports (after mocks) ──────────────────────────────────────────────────────
 
 import { runTgxSearch } from '@/lib/hotels/search';
 import { quoteTgx, bookTgx, cancelTgx } from '@/lib/hotels/travelgatex';
 import { stripe } from '@/lib/stripe';
-import { redis } from '@/lib/redis';
 import { HotelsService } from '@/services/hotels.service';
+import { prisma } from '@/lib/prisma';
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 
@@ -73,7 +97,7 @@ const MOCK_SEARCH_RESULT = {
     totalCount: 1,
 };
 
-const RATE_KEY   = 'tgx-token-abc123';
+
 const OPTION_REF = 'quote-token-xyz';
 const BOOKING_REF = 'CG-user1-1234567890';
 const PI_ID       = 'pi_test_abc';
@@ -86,6 +110,11 @@ let service: HotelsService;
 beforeEach(() => {
     vi.clearAllMocks();
     service = new HotelsService();
+    // default prisma stubs (tests that need specific values override these)
+    vi.mocked(prisma.bookings.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.bookings.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.bookings.create).mockResolvedValue({} as any);
+    vi.mocked(prisma.bookings.update).mockResolvedValue({} as any);
 });
 
 // ─── search() ─────────────────────────────────────────────────────────────────
@@ -98,10 +127,10 @@ describe('HotelsService.search()', () => {
 
         expect(runTgxSearch).toHaveBeenCalledWith(
             expect.objectContaining({
-                destination: 'Bangkok',
-                checkIn:     '2026-09-01',
-                checkOut:    '2026-09-05',
-                adults:      2,
+                cityName: 'Bangkok',
+                checkin:  '2026-09-01',
+                checkout: '2026-09-05',
+                adults:   2,
             })
         );
     });
@@ -123,38 +152,99 @@ describe('HotelsService.search()', () => {
     });
 });
 
+// ─── createPayment() ──────────────────────────────────────────────────────────
+
+describe('HotelsService.createPayment()', () => {
+    const BASE_PARAMS = {
+        userId:       USER_ID,
+        prebookId:    'TGX:b260901!~|c260905!~|d10000352!~|hUS',
+        amount:       300,
+        currency:     'USD',
+        holderEmail:  'juan@example.com',
+        propertyName: 'The Grand Hotel',
+        roomName:     'Deluxe Room',
+        checkIn:      '2026-09-01',
+        checkOut:     '2026-09-05',
+    };
+
+    it('throws 400 for unsupported currency', async () => {
+        await expect(service.createPayment({ ...BASE_PARAMS, currency: 'XYZ' }))
+            .rejects.toMatchObject({ status: 400, code: 'UNSUPPORTED_CURRENCY' });
+    });
+
+    it('throws 400 for amount exceeding currency cap', async () => {
+        await expect(service.createPayment({ ...BASE_PARAMS, amount: 999_999_999 }))
+            .rejects.toMatchObject({ status: 400, code: 'INVALID_AMOUNT' });
+    });
+
+    it('throws 409 when user has overlapping booking at same property', async () => {
+        vi.mocked(prisma.bookings.findFirst).mockResolvedValueOnce({
+            booking_id: 'EXISTING-1',
+            check_in:   new Date('2026-09-02'),
+            check_out:  new Date('2026-09-06'),
+        } as any);
+
+        await expect(service.createPayment(BASE_PARAMS))
+            .rejects.toMatchObject({ code: 'DUPLICATE_BOOKING' });
+    });
+
+    it('creates a PaymentIntent with manual capture and markup applied', async () => {
+        vi.mocked(stripe.paymentIntents.create).mockResolvedValue({
+            id:            PI_ID,
+            client_secret: 'cs_test_secret',
+        } as any);
+
+        await service.createPayment(BASE_PARAMS);
+
+        expect(stripe.paymentIntents.create).toHaveBeenCalledWith(
+            expect.objectContaining({
+                currency:       'usd',
+                capture_method: 'manual',
+                amount:         expect.any(Number), // 300 * 1.05 * 100 = 31500
+                metadata:       expect.objectContaining({ userId: USER_ID, type: 'hotel' }),
+            }),
+            expect.objectContaining({ idempotencyKey: expect.stringContaining(`hotel-pi-${USER_ID}`) })
+        );
+    });
+
+    it('applies bundle markup when bundleFlightId is provided', async () => {
+        vi.mocked(stripe.paymentIntents.create).mockResolvedValue({
+            id: PI_ID, client_secret: 'cs_test_secret',
+        } as any);
+
+        await service.createPayment({ ...BASE_PARAMS, bundleFlightId: 'FLT-123' });
+
+        expect(stripe.paymentIntents.create).toHaveBeenCalledWith(
+            expect.objectContaining({
+                metadata: expect.objectContaining({ type: 'hotel_bundle', bundleFlightId: 'FLT-123' }),
+            }),
+            expect.anything()
+        );
+    });
+
+    it('returns success with clientSecret and paymentIntentId', async () => {
+        vi.mocked(stripe.paymentIntents.create).mockResolvedValue({
+            id:            PI_ID,
+            client_secret: 'cs_test_secret',
+        } as any);
+
+        const result = await service.createPayment(BASE_PARAMS);
+
+        expect(result.success).toBe(true);
+        expect(result.data?.paymentIntentId).toBe(PI_ID);
+        expect(result.data?.clientSecret).toBe('cs_test_secret');
+    });
+});
+
 // ─── preBook() ────────────────────────────────────────────────────────────────
 
 describe('HotelsService.preBook()', () => {
-    it('calls quoteTgx with the rateKey', async () => {
-        vi.mocked(quoteTgx).mockResolvedValue({ price: 120, currency: 'USD' } as any);
-
-        await service.preBook({
-            optionRefId: OPTION_REF,
-            rateKey:     RATE_KEY,
-            checkIn:     '2026-09-01',
-            checkOut:    '2026-09-05',
-            adults:      2,
-            hotelId:     'H1',
-        });
-
-        expect(quoteTgx).toHaveBeenCalledWith(RATE_KEY);
+    it('rejects non-TGX offerId', async () => {
+        await expect(service.preBook({ offerId: 'LITEAPI:123' })).rejects.toThrow();
     });
 
-    it('returns the quote result', async () => {
-        const quote = { price: 120, currency: 'USD', token: 'quote-xyz' };
-        vi.mocked(quoteTgx).mockResolvedValue(quote as any);
-
-        const result = await service.preBook({
-            optionRefId: OPTION_REF,
-            rateKey:     RATE_KEY,
-            checkIn:     '2026-09-01',
-            checkOut:    '2026-09-05',
-            adults:      2,
-            hotelId:     'H1',
-        });
-
-        expect(result).toEqual(quote);
+    it('rejects malformed TGX token', async () => {
+        await expect(service.preBook({ offerId: 'TGX:bad-token' })).rejects.toThrow();
     });
 });
 
@@ -164,19 +254,18 @@ describe('HotelsService.confirmBooking()', () => {
     const BASE_PARAMS = {
         paymentIntentId: PI_ID,
         userId:          USER_ID,
-        optionRefId:     OPTION_REF,
-        rateKey:         RATE_KEY,
-        guestName:       'Juan dela Cruz',
-        guestEmail:      'juan@example.com',
+        prebookId:       `TGX:${OPTION_REF}`,
+        holder:          { firstName: 'Juan', lastName: 'dela Cruz', email: 'juan@example.com' },
         checkIn:         '2026-09-01',
         checkOut:        '2026-09-05',
-        hotelId:         'H1',
     };
 
-    function mockPI(overrides: Partial<{ status: string; metadata: any }> = {}) {
+    function mockPI(overrides: Partial<{ status: string; metadata: any; amount: number; currency: string }> = {}) {
         vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({
             id:       PI_ID,
             status:   'requires_capture',
+            amount:   12000,
+            currency: 'usd',
             metadata: { userId: USER_ID },
             ...overrides,
         } as any);
@@ -196,68 +285,109 @@ describe('HotelsService.confirmBooking()', () => {
             .rejects.toMatchObject({ status: 402 });
     });
 
-    it('calls bookTgx with optionRefId as quoteToken and guest details', async () => {
+    it('calls bookTgx with quoteToken and holder details', async () => {
         mockPI();
-        vi.mocked(bookTgx).mockResolvedValue({ status: 'CONFIRMED', clientRef: BOOKING_REF } as any);
+        vi.mocked(bookTgx).mockResolvedValue({ status: 'confirmed', clientRef: BOOKING_REF, price: { gross: 120, net: 110, currency: 'USD' } } as any);
         vi.mocked(stripe.paymentIntents.capture).mockResolvedValue({} as any);
+        vi.mocked(stripe.paymentIntents.update).mockResolvedValue({} as any);
 
         await service.confirmBooking(BASE_PARAMS);
 
         expect(bookTgx).toHaveBeenCalledWith(
             expect.objectContaining({
                 quoteToken: OPTION_REF,
-                holder: expect.objectContaining({
-                    firstName: 'Juan',
-                    email:     'juan@example.com',
-                }),
+                holder: expect.objectContaining({ firstName: 'Juan', email: 'juan@example.com' }),
             })
         );
     });
 
     it('captures the Stripe payment after a successful booking', async () => {
         mockPI();
-        vi.mocked(bookTgx).mockResolvedValue({ status: 'CONFIRMED', clientRef: BOOKING_REF } as any);
+        vi.mocked(bookTgx).mockResolvedValue({ status: 'confirmed', clientRef: BOOKING_REF, price: { gross: 120, net: 110, currency: 'USD' } } as any);
         vi.mocked(stripe.paymentIntents.capture).mockResolvedValue({} as any);
+        vi.mocked(stripe.paymentIntents.update).mockResolvedValue({} as any);
 
         await service.confirmBooking(BASE_PARAMS);
 
         expect(stripe.paymentIntents.capture).toHaveBeenCalledWith(PI_ID);
     });
 
-    it('returns bookingRef and status from bookTgx response', async () => {
+    it('returns success with bookingId from bookTgx response', async () => {
         mockPI();
-        vi.mocked(bookTgx).mockResolvedValue({ status: 'CONFIRMED', clientRef: BOOKING_REF } as any);
+        vi.mocked(bookTgx).mockResolvedValue({ status: 'confirmed', clientRef: BOOKING_REF, price: { gross: 120, net: 110, currency: 'USD' } } as any);
         vi.mocked(stripe.paymentIntents.capture).mockResolvedValue({} as any);
+        vi.mocked(stripe.paymentIntents.update).mockResolvedValue({} as any);
 
         const result = await service.confirmBooking(BASE_PARAMS);
 
-        expect(result.bookingRef).toBe(BOOKING_REF);
-        expect(result.status).toBe('CONFIRMED');
+        expect(result.success).toBe(true);
+        expect(result.data?.bookingId).toBe(BOOKING_REF);
     });
 });
 
 // ─── cancelBooking() ──────────────────────────────────────────────────────────
 
 describe('HotelsService.cancelBooking()', () => {
-    it('calls cancelTgx with the bookingRef as clientReference', async () => {
-        vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
+    const MOCK_BOOKING = {
+        booking_id:       BOOKING_REF,
+        user_id:          USER_ID,
+        payment_intent_id: PI_ID,
+        status:           'confirmed',
+        provider:         'travelgatex',
+        provider_metadata: { hotelCode: '10000352', supplierRef: 'SUP-REF' },
+        property_name:    'The Grand Hotel',
+    };
 
-        await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID });
+    function mockBookingRow(overrides: Partial<typeof MOCK_BOOKING> = {}) {
+        vi.mocked(prisma.bookings.findFirst).mockResolvedValue({ ...MOCK_BOOKING, ...overrides } as any);
+        vi.mocked(prisma.bookings.update).mockResolvedValue({} as any);
+    }
 
-        expect(cancelTgx).toHaveBeenCalledWith({ clientReference: BOOKING_REF });
+    it('throws 404 when booking is not found', async () => {
+        vi.mocked(prisma.bookings.findFirst).mockResolvedValue(null);
+
+        await expect(service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID }))
+            .rejects.toMatchObject({ status: 404 });
     });
 
-    it('returns cancelled status', async () => {
+    it('throws 403 when userId does not own the booking', async () => {
+        mockBookingRow({ user_id: 'other-user' });
+
+        await expect(service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID }))
+            .rejects.toMatchObject({ status: 403 });
+    });
+
+    it('calls cancelTgx with clientReference, hotelCode and supplierRef from metadata', async () => {
+        mockBookingRow();
         vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'requires_capture', amount: 12000 } as any);
+        vi.mocked(stripe.paymentIntents.cancel).mockResolvedValue({} as any);
 
-        const result = await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID });
+        await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID, paymentIntentId: PI_ID });
 
-        expect(result.status).toBe('cancelled');
+        expect(cancelTgx).toHaveBeenCalledWith(expect.objectContaining({
+            clientReference: BOOKING_REF,
+            hotelCode:       '10000352',
+            supplierReference: 'SUP-REF',
+        }));
+    });
+
+    it('returns success with bookingId and status', async () => {
+        mockBookingRow();
+        vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'requires_capture', amount: 12000 } as any);
+        vi.mocked(stripe.paymentIntents.cancel).mockResolvedValue({} as any);
+
+        const result = await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID, paymentIntentId: PI_ID });
+
+        expect(result.success).toBe(true);
+        expect(result.data?.bookingId).toBe(BOOKING_REF);
     });
 
     it('cancels the PI when it is still requires_capture', async () => {
+        mockBookingRow();
         vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
-        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'requires_capture' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'requires_capture', amount: 12000 } as any);
         vi.mocked(stripe.paymentIntents.cancel).mockResolvedValue({} as any);
 
         await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID, paymentIntentId: PI_ID });
@@ -267,9 +397,10 @@ describe('HotelsService.cancelBooking()', () => {
     });
 
     it('issues a refund when the PI has already been captured', async () => {
+        mockBookingRow();
         vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
-        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded' } as any);
-        vi.mocked(stripe.refunds.create).mockResolvedValue({} as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 12000 } as any);
+        vi.mocked(stripe.refunds.create).mockResolvedValue({ id: 're_test', status: 'succeeded' } as any);
 
         await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID, paymentIntentId: PI_ID });
 
@@ -280,12 +411,28 @@ describe('HotelsService.cancelBooking()', () => {
         expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
     });
 
-    it('does not touch Stripe when no paymentIntentId is provided', async () => {
+    it('does not touch Stripe when no PI is found anywhere', async () => {
+        mockBookingRow({ payment_intent_id: undefined });
         vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
+        vi.mocked(stripe.paymentIntents.search).mockResolvedValue({ data: [] } as any);
 
         await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID });
 
         expect(stripe.paymentIntents.retrieve).not.toHaveBeenCalled();
         expect(stripe.refunds.create).not.toHaveBeenCalled();
+    });
+
+    it('updates booking status in DB after cancel', async () => {
+        mockBookingRow();
+        vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 12000 } as any);
+        vi.mocked(stripe.refunds.create).mockResolvedValue({ id: 're_test', status: 'succeeded' } as any);
+
+        await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID, paymentIntentId: PI_ID });
+
+        expect(prisma.bookings.update).toHaveBeenCalledWith(expect.objectContaining({
+            where: { booking_id: BOOKING_REF },
+            data:  expect.objectContaining({ status: 'cancelled_refunded' }),
+        }));
     });
 });

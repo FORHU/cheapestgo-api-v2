@@ -11,16 +11,16 @@ export class BookingsController {
             const { type } = z.object({
                 type: z.enum(['flight', 'hotel']).optional(),
             }).parse(req.query as any);
-            const bookings = await svc.list(req.user!.sub, type);
-            res.json({ bookings });
+            const result = await svc.list(req.user!.sub, type);
+            res.json(result);
         } catch (err) { next(err); }
     };
 
     details = async (req: Request, res: Response, next: NextFunction) => {
         try {
             const { id } = z.object({ id: z.string() }).parse(req.params);
-            const booking = await svc.getDetails(id, req.user!.sub);
-            res.json({ booking });
+            const result = await svc.getDetails(id, req.user!.sub);
+            res.json(result);
         } catch (err) { next(err); }
     };
 

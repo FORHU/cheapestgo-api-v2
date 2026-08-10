@@ -4,7 +4,9 @@ export class BookingsRepository {
 
     async listForUser(userId: string, tripType?: 'flight' | 'hotel') {
         const where: any = { user_id: userId };
-        if (tripType) where.trip_type = tripType;
+        // bookings table has no trip_type column — filter by provider instead
+        if (tripType === 'hotel')  where.provider = { not: 'duffel' };
+        if (tripType === 'flight') where.provider = 'duffel';
         return prisma.bookings.findMany({
             where,
             orderBy: { created_at: 'desc' },
@@ -12,11 +14,11 @@ export class BookingsRepository {
     }
 
     async findById(bookingId: string) {
-        return prisma.bookings.findUnique({ where: { id: bookingId } });
+        return prisma.bookings.findFirst({ where: { booking_id: bookingId } });
     }
 
     async findByIdForUser(bookingId: string, userId: string) {
-        return prisma.bookings.findFirst({ where: { id: bookingId, user_id: userId } });
+        return prisma.bookings.findFirst({ where: { booking_id: bookingId, user_id: userId } });
     }
 
     async findByProviderRef(providerRef: string) {
@@ -54,8 +56,8 @@ export class BookingsRepository {
     }
 
     async updateStatus(bookingId: string, status: string, extra?: Record<string, any>) {
-        return prisma.bookings.update({
-            where: { id: bookingId },
+        return prisma.bookings.updateMany({
+            where: { booking_id: bookingId },
             data:  { status, ...(extra ?? {}), updated_at: new Date() },
         });
     }
