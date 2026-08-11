@@ -8,6 +8,10 @@ services:
     environment:
       NODE_ENV: production
       PORT: 4000
+      # Override .env so the API container reaches postgres/redis via Docker network names
+      # rather than localhost (which resolves to the container itself inside Docker).
+      DATABASE_URL: postgresql://cheapestgo:cheapestgo@postgres:5432/cheapestgo
+      REDIS_URL: redis://redis:6379
     depends_on:
       postgres:
         condition: service_healthy
