@@ -5,7 +5,12 @@ const schema = z.object({
     PORT: z.coerce.number().default(4000),
     DATABASE_URL: z.string().min(1),
     REDIS_URL: z.string().default('redis://localhost:6379'),
-    CORS_ORIGIN: z.string().default('http://localhost:3000'),
+    // Comma-separated allowlist. Parsed into an array because `cors` treats a
+    // string as one exact origin and echoes it back verbatim — a comma-joined
+    // string produces an Access-Control-Allow-Origin no browser will accept.
+    CORS_ORIGIN: z.string()
+        .default('http://localhost:3000')
+        .transform(v => v.split(',').map(s => s.trim()).filter(Boolean)),
     JWT_SECRET: z.string().min(1),
     JWT_EXPIRES_IN: z.string().default('1d'),
     JWT_REFRESH_SECRET: z.string().min(1),
