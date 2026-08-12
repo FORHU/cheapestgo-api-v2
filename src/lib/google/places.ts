@@ -55,6 +55,8 @@ export interface AutocompleteResult {
     countryCode: string;
     id?: string;
     code?: string;
+    lat?: number;
+    lng?: number;
 }
 
 const COUNTRY_SEARCH_LIST = [
@@ -121,12 +123,16 @@ async function fetchCitiesFromMapbox(query: string): Promise<AutocompleteResult[
             const countryCtx   = (feature.context ?? []).find((c: any) => c.id?.startsWith('country.'));
             const rawCode      = countryCtx?.short_code ?? '';
             const countryCode  = rawCode ? rawCode.toUpperCase().slice(0, 2) : '';
+            // feature.center is [lng, lat] in Mapbox GeoJSON
+            const [fLng, fLat] = feature.center ?? [];
             return {
                 type:        'city' as const,
                 title:       cityName,
                 subtitle:    placeName,
                 countryCode,
                 id:          feature.id ?? undefined,
+                lat:         typeof fLat === 'number' ? fLat : undefined,
+                lng:         typeof fLng === 'number' ? fLng : undefined,
             };
         });
     } catch {

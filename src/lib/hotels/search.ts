@@ -10,6 +10,7 @@ import {
     type TgxOption,
 } from './travelgatex';
 import { otvCodeToLabel } from './amenityCodes';
+import { resolveHotelDbCity } from '@/lib/cityAliases';
 import type { HotelSearchParams, HotelSearchResult } from '@/types/hotels';
 
 // ─── Country name → ISO lookup (shared by stream route and ETG fallback) ──────
@@ -55,11 +56,11 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
     try {
         const cityOnly   = cityName.split(',')[0].trim();
         const normalized = cityOnly.replace(/-(si|do|gu|gun|eup)$/i, '').trim();
-        const pattern    = `%${normalized}%`;
         const isoCode    = resolveIsoCode(countryCode);
+        const dbCity     = resolveHotelDbCity(normalized, isoCode || countryCode);
 
         const where: any = {
-            city: { contains: normalized, mode: 'insensitive' },
+            city: { contains: dbCity, mode: 'insensitive' },
             images: { isEmpty: false },
         };
         if (isoCode) {
@@ -918,24 +919,28 @@ async function runCityFallback(
             return results;
         };
 
-        let chunkResults    = await runChunks(chunks);
-        let fallbackOptions: TgxOption[] = chunkResults.flatMap(r => r.options);
-        const fallbackErrors: any[]      = chunkResults.flatMap(r => r.errors);
-        const allProcessesFailed = fallbackErrors.some(e => e.code === 'ALL_PROCESSES_FAILED');
+        try {
+            let chunkResults    = await runChunks(chunks);
+            let fallbackOptions: TgxOption[] = chunkResults.flatMap(r => r.options);
+            const fallbackErrors: any[]      = chunkResults.flatMap(r => r.errors);
+            const allProcessesFailed = fallbackErrors.some(e => e.code === 'ALL_PROCESSES_FAILED');
 
-        if ((hasEmptyHotelsError(fallbackErrors) || allProcessesFailed) && fallbackOptions.length === 0) {
-            const waitMs = allProcessesFailed ? 3000 : 1000;
-            console.log(`[tgx-search] Hotel-code search failed — retrying in ${waitMs}ms`);
-            await new Promise(r => setTimeout(r, waitMs));
-            chunkResults    = await runChunks(chunks);
-            fallbackOptions = chunkResults.flatMap(r => r.options);
-        }
+            if ((hasEmptyHotelsError(fallbackErrors) || allProcessesFailed) && fallbackOptions.length === 0) {
+                const waitMs = allProcessesFailed ? 3000 : 1000;
+                console.log(`[tgx-search] Hotel-code search failed — retrying in ${waitMs}ms`);
+                await new Promise(r => setTimeout(r, waitMs));
+                chunkResults    = await runChunks(chunks);
+                fallbackOptions = chunkResults.flatMap(r => r.options);
+            }
 
-        const fallbackMerchant = fallbackOptions.filter(
-            o => o.paymentType === 'MERCHANT' && (o.status === 'AVAILABLE' || o.status === 'OK')
-        );
-        if (fallbackMerchant.length > 0) {
-            return buildCityResults(fallbackMerchant, cityName, countryCode, otvContentMap);
+            const fallbackMerchant = fallbackOptions.filter(
+                o => o.paymentType === 'MERCHANT' && (o.status === 'AVAILABLE' || o.status === 'OK')
+            );
+            if (fallbackMerchant.length > 0) {
+                return buildCityResults(fallbackMerchant, cityName, countryCode, otvContentMap);
+            }
+        } catch (tgxErr: any) {
+            console.warn(`[tgx-search] Hotel-code search threw for "${cityName}" — falling through to ETG: ${tgxErr.message}`);
         }
     }
 

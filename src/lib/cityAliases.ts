@@ -2164,6 +2164,7 @@ export const HOTEL_DB_CITY_MAP: Record<string, string> = {
     'Mahe|SC':                      'Insel Mahe',
     'Praslin|SC':                   'Insel Praslin',
     // City name differs from DB value
+    'Beijing|CN':                   'Peking',
     'Antwerp|BE':                   'Antwerpen',
     'Suzhou|CN':                    'Suzhou (Jiangsu)',
     'Washington DC|US':             'Washington',
