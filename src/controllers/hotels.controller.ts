@@ -65,6 +65,7 @@ export class HotelsController {
             const TYPE_MAP: Record<string, string[]> = {
                 all:        ['tourist_attraction', 'restaurant', 'park', 'museum'],
                 restaurant: ['restaurant', 'cafe', 'bakery', 'bar'],
+                cafe:       ['cafe', 'bakery'],
                 attraction: ['tourist_attraction', 'museum', 'art_gallery', 'amusement_park', 'zoo', 'aquarium'],
                 grocery:    ['supermarket', 'grocery_or_supermarket', 'convenience_store'],
                 medical:    ['hospital', 'pharmacy', 'doctor', 'dentist'],
