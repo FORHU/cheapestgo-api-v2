@@ -24,7 +24,7 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'ridgewood': 'New York', 'jackson heights': 'New York', 'jamaica': 'New York',
         // Los Angeles
         'hollywood': 'Los Angeles', 'beverly hills': 'Los Angeles', 'santa monica': 'Los Angeles',
-        'venice': 'Los Angeles', 'west hollywood': 'Los Angeles', 'culver city': 'Los Angeles',
+        'venice': 'Los Angeles', 'venice beach': 'Los Angeles', 'west hollywood': 'Los Angeles', 'culver city': 'Los Angeles',
         'malibu': 'Los Angeles', 'brentwood': 'Los Angeles', 'bel air': 'Los Angeles',
         'westwood': 'Los Angeles', 'century city': 'Los Angeles', 'downtown la': 'Los Angeles',
         'arts district': 'Los Angeles', 'echo park': 'Los Angeles', 'silver lake': 'Los Angeles',
@@ -42,7 +42,7 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'andersonville': 'Chicago', 'rogers park': 'Chicago', 'ukranian village': 'Chicago',
         // San Francisco
         'the mission': 'San Francisco', 'fishermans wharf': 'San Francisco',
-        'haight ashbury': 'San Francisco', 'castro': 'San Francisco',
+        'haight ashbury': 'San Francisco', 'castro': 'San Francisco', 'the castro': 'San Francisco',
         'soma': 'San Francisco', 'financial district sf': 'San Francisco',
         'nob hill sf': 'San Francisco', 'pacific heights': 'San Francisco',
         'noe valley': 'San Francisco', 'sunset sf': 'San Francisco',
@@ -894,7 +894,8 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'el montaza': 'Alexandria', 'sidi bishr': 'Alexandria',
     },
     MA: {
-        'medina': 'Marrakech', 'gueliz': 'Marrakech', 'hivernage': 'Marrakech',
+        'medina': 'Marrakech', 'medina marrakech': 'Marrakech', 'jemaa el fna': 'Marrakech',
+        'djemaa el fna': 'Marrakech', 'gueliz': 'Marrakech', 'hivernage': 'Marrakech',
         'palmeraie': 'Marrakech', 'mellah': 'Marrakech',
         'ain diab': 'Casablanca', 'maarif': 'Casablanca', 'anfa': 'Casablanca',
         'ville nouvelle': 'Casablanca',
@@ -1000,6 +1001,25 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'takayama old town': 'Takayama', 'sanmachi suji': 'Takayama',
         // Beppu / Onsen areas
         'beppu onsen': 'Beppu', 'yufuin': 'Yufuin',
+        // Tokyo — additional neighborhoods
+        'azabu': 'Tokyo', 'azabu-juban': 'Tokyo', 'hiroo': 'Tokyo',
+        'nishi-azabu': 'Tokyo', 'takanawa': 'Tokyo', 'sengakuji': 'Tokyo',
+        'kabukicho': 'Tokyo', 'shin-okubo': 'Tokyo', 'okubo': 'Tokyo',
+        'jingumae': 'Tokyo', 'aoyama': 'Tokyo', 'yoyogi': 'Tokyo',
+        'hongo': 'Tokyo', 'suidobashi': 'Tokyo', 'iidabashi': 'Tokyo', 'yushima': 'Tokyo',
+        'korakuen': 'Tokyo', 'kojimachi': 'Tokyo', 'nagatacho': 'Tokyo',
+        'takadanobaba': 'Tokyo', 'mejiro': 'Tokyo', 'sugamo': 'Tokyo', 'komagome': 'Tokyo',
+        'nakano': 'Tokyo', 'kichijoji': 'Tokyo', 'musashino': 'Tokyo', 'mitaka': 'Tokyo',
+        'kasai': 'Tokyo', 'nishikasai': 'Tokyo', 'edogawa': 'Tokyo',
+        'koiwa': 'Tokyo', 'tennozu isle': 'Tokyo', 'shin-kiba': 'Tokyo',
+        'minami-senju': 'Tokyo', 'shibaura': 'Tokyo', 'shiba': 'Tokyo',
+        // Osaka — additional
+        'abeno': 'Osaka', 'yodoyabashi': 'Osaka', 'kitahama': 'Osaka',
+        'bentencho': 'Osaka', 'naniwa osaka': 'Osaka',
+        // Kyoto — additional
+        'shijo': 'Kyoto', 'oike': 'Kyoto', 'demachiyanagi': 'Kyoto',
+        'sannenzaka': 'Kyoto', 'nishijin': 'Kyoto', 'tofukuji': 'Kyoto',
+        'kyoto station area': 'Kyoto', 'shijo-kawaramachi': 'Kyoto',
     },
     KR: {
         // Seoul
@@ -1039,6 +1059,21 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'gwangju city centre': 'Gwangju',
         // Daejeon
         'daejeon city centre': 'Daejeon',
+        // Seoul — additional
+        'ewha': 'Seoul', 'edae': 'Seoul', 'ewha womans': 'Seoul',
+        'yeonnam': 'Seoul', 'seocho': 'Seoul', 'banpo': 'Seoul',
+        'daechi': 'Seoul', 'dogok': 'Seoul', 'haebangchon': 'Seoul',
+        'gyeongnidan': 'Seoul', 'noksapyeong': 'Seoul', 'ichon': 'Seoul',
+        'ikseon-dong': 'Seoul', 'ikseondong': 'Seoul', 'gyeongbokgung': 'Seoul',
+        'lotte world area': 'Seoul', 'olympic park seoul': 'Seoul',
+        'sanggye': 'Seoul', 'geumho': 'Seoul',
+        // Busan — additional
+        'yeongdo': 'Busan', 'songdo busan': 'Busan', 'gijang': 'Busan',
+        'biff square': 'Busan', 'suyeong': 'Busan', 'millak': 'Busan',
+        'dadaepo': 'Busan', 'oncheon-dong': 'Busan',
+        // Jeju — additional
+        'aewol': 'Jeju', 'seongsan': 'Jeju', 'seongsan ilchulbong': 'Jeju',
+        'hyeopjae beach': 'Jeju', 'udo island': 'Jeju',
     },
     CN: {
         'pudong': 'Shanghai', 'the bund': 'Shanghai', 'bund': 'Shanghai',
@@ -1119,6 +1154,7 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'orchard': 'Singapore', 'marina bay': 'Singapore', 'sentosa': 'Singapore',
         'clarke quay': 'Singapore', 'chinatown': 'Singapore', 'little india': 'Singapore',
         'kampong glam': 'Singapore', 'bugis': 'Singapore', 'tanjong pagar': 'Singapore',
+        'chinatown singapore': 'Singapore',
         'boat quay': 'Singapore', 'robertson quay': 'Singapore',
         'novena': 'Singapore', 'tiong bahru': 'Singapore', 'lavender': 'Singapore',
         'geylang': 'Singapore', 'katong': 'Singapore', 'joo chiat': 'Singapore',
@@ -1134,7 +1170,7 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'cheras kl': 'Kuala Lumpur', 'ampang': 'Kuala Lumpur', 'wangsa maju': 'Kuala Lumpur',
         'kepong': 'Kuala Lumpur', 'sentul': 'Kuala Lumpur',
         'george town': 'Penang', 'batu ferringhi': 'Penang', 'gurney drive': 'Penang',
-        'georgetown penang': 'Penang', 'air itam': 'Penang', 'jelutong': 'Penang',
+        'georgetown penang': 'Penang', 'penang hill': 'Penang', 'air itam': 'Penang', 'jelutong': 'Penang',
         'johor bahru': 'Johor Bahru', 'jb city': 'Johor Bahru', 'iskandar': 'Johor Bahru',
         'kota kinabalu waterfront': 'Kota Kinabalu', 'likas': 'Kota Kinabalu',
         'kuching waterfront': 'Kuching',
@@ -1184,6 +1220,22 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'sukhothai old city': 'Sukhothai',
         // Pai
         'pai city': 'Pai',
+        // Bangkok — additional
+        'ratchaprasong': 'Bangkok', 'ratchathewi': 'Bangkok', 'lumphini': 'Bangkok',
+        'pathum wan': 'Bangkok', 'khlong toei': 'Bangkok', 'watthana': 'Bangkok',
+        'bang rak': 'Bangkok', 'thonburi': 'Bangkok', 'bang sue': 'Bangkok',
+        'don mueang': 'Bangkok', 'lat krabang': 'Bangkok', 'suvarnabhumi': 'Bangkok',
+        'silom road': 'Bangkok', 'phloen chit': 'Bangkok', 'chidlom': 'Bangkok',
+        'centralworld': 'Bangkok', 'mbk center': 'Bangkok', 'siam paragon area': 'Bangkok',
+        'ratchadamri': 'Bangkok', 'ratchawithi': 'Bangkok',
+        // Chiang Mai — additional
+        'tapae': 'Chiang Mai', 'tha phae': 'Chiang Mai', 'maya mall chiang mai': 'Chiang Mai',
+        'doi suthep area': 'Chiang Mai', 'hang dong': 'Chiang Mai', 'saraphi': 'Chiang Mai',
+        'phra sing': 'Chiang Mai', 'airport chiang mai': 'Chiang Mai',
+        // Phuket — additional
+        'nai yang': 'Phuket', 'cherngtalay': 'Phuket', 'thalang': 'Phuket',
+        'kata noi': 'Phuket', 'hat karon': 'Phuket', 'tri trang': 'Phuket',
+        'cape yamu': 'Phuket', 'kedonganan': 'Phuket',
     },
     VN: {
         'district 1': 'Ho Chi Minh City', 'ben thanh': 'Ho Chi Minh City',
@@ -1211,6 +1263,22 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'ninh kieu': 'Can Tho',
         // Halong extras
         'cat ba island': 'Ha Long',
+        // HCMC — additional districts
+        'saigon': 'Ho Chi Minh City', 'hcmc': 'Ho Chi Minh City', 'ho chi minh': 'Ho Chi Minh City',
+        'district 2': 'Ho Chi Minh City', 'district 4': 'Ho Chi Minh City',
+        'district 5': 'Ho Chi Minh City', 'district 6': 'Ho Chi Minh City',
+        'district 8': 'Ho Chi Minh City', 'district 9': 'Ho Chi Minh City',
+        'district 10': 'Ho Chi Minh City', 'district 11': 'Ho Chi Minh City',
+        'district 12': 'Ho Chi Minh City', 'cholon': 'Ho Chi Minh City',
+        'phu nhuan': 'Ho Chi Minh City', 'thu duc': 'Ho Chi Minh City',
+        'pham ngu lao': 'Ho Chi Minh City', 'landmark 81': 'Ho Chi Minh City',
+        'ben nghe': 'Ho Chi Minh City', 'vinhomes central park': 'Ho Chi Minh City',
+        // Hanoi — additional
+        'my dinh': 'Hanoi', 'nam tu liem': 'Hanoi', 'hoang mai': 'Hanoi',
+        'ha dong': 'Hanoi', 'thanh xuan': 'Hanoi', 'tay ho tay': 'Hanoi',
+        'hoan kiem lake': 'Hanoi', 'sword lake': 'Hanoi',
+        'hang bai': 'Hanoi', 'hang bong': 'Hanoi', 'hang gai': 'Hanoi', 'ma may': 'Hanoi',
+        'xuan dieu': 'Hanoi', 'nhat tan': 'Hanoi',
     },
     ID: {
         // Bali
@@ -1220,6 +1288,12 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'berawa': 'Bali', 'pererenan': 'Bali', 'echo beach': 'Bali',
         'kedewatan': 'Bali', 'tegalalang': 'Bali', 'kerobokan': 'Bali',
         'tanjung benoa': 'Bali', 'renon': 'Bali',
+        // Bali — additional
+        'bukit peninsula': 'Bali', 'bukit bali': 'Bali', 'ungasan': 'Bali',
+        'lovina': 'Bali', 'singaraja bali': 'Bali', 'padangbai': 'Bali',
+        'candidasa': 'Bali', 'amed bali': 'Bali', 'tulamben': 'Bali',
+        'nusa penida': 'Bali', 'nusa lembongan': 'Bali', 'munduk': 'Bali',
+        'bedugul': 'Bali', 'sidemen bali': 'Bali', 'karangasem': 'Bali',
         // Jakarta
         'kemang': 'Jakarta', 'scbd': 'Jakarta', 'sudirman': 'Jakarta',
         'menteng': 'Jakarta', 'kebayoran baru': 'Jakarta', 'tebet': 'Jakarta',
@@ -1227,6 +1301,15 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'kebon jeruk': 'Jakarta', 'pluit': 'Jakarta', 'kota tua': 'Jakarta',
         'ancol': 'Jakarta', 'kelapa gading': 'Jakarta', 'puri': 'Jakarta',
         'bintaro': 'Jakarta', 'cipete': 'Jakarta', 'cilandak': 'Jakarta',
+        // Jakarta — additional
+        'thamrin': 'Jakarta', 'senayan': 'Jakarta', 'kuningan': 'Jakarta',
+        'gatot subroto': 'Jakarta', 'glodok': 'Jakarta', 'blok m': 'Jakarta',
+        'pondok indah': 'Jakarta', 'lebak bulus': 'Jakarta', 'fatmawati': 'Jakarta',
+        'pasar minggu': 'Jakarta', 'rawamangun': 'Jakarta', 'jatinegara': 'Jakarta',
+        'cengkareng': 'Jakarta', 'kalideres': 'Jakarta', 'sunter': 'Jakarta',
+        'pademangan': 'Jakarta', 'tanjung priok': 'Jakarta', 'mangga besar': 'Jakarta',
+        'pasar baru jakarta': 'Jakarta', 'senen': 'Jakarta', 'matraman': 'Jakarta',
+        'cipinang': 'Jakarta', 'pulogadung': 'Jakarta', 'utan kayu': 'Jakarta',
         // Yogyakarta
         'malioboro': 'Yogyakarta', 'prawirotaman': 'Yogyakarta', 'kraton': 'Yogyakarta',
         'kotagede': 'Yogyakarta',
@@ -1263,7 +1346,7 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'worli': 'Mumbai', 'prabhadevi': 'Mumbai', 'dadar': 'Mumbai',
         'chembur': 'Mumbai', 'malad': 'Mumbai', 'kandivali': 'Mumbai',
         'borivali': 'Mumbai', 'thane': 'Mumbai', 'navi mumbai': 'Mumbai',
-        'fort mumbai': 'Mumbai', 'churchgate': 'Mumbai', 'marine lines': 'Mumbai',
+        'fort mumbai': 'Mumbai', 'south mumbai': 'Mumbai', 'churchgate': 'Mumbai', 'marine lines': 'Mumbai',
         'versova': 'Mumbai', 'goregaon': 'Mumbai',
         // Delhi
         'connaught place': 'New Delhi', 'karol bagh': 'New Delhi', 'paharganj': 'New Delhi',
@@ -1364,7 +1447,7 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
     AU: {
         // Sydney
         'bondi': 'Sydney', 'bondi beach': 'Sydney', 'darling harbour': 'Sydney',
-        'manly': 'Sydney', 'surry hills': 'Sydney', 'newtown': 'Sydney',
+        'manly': 'Sydney', 'surry hills': 'Sydney', 'newtown': 'Sydney', 'newtown sydney': 'Sydney',
         'glebe': 'Sydney', 'potts point': 'Sydney', 'paddington': 'Sydney',
         'redfern': 'Sydney', 'chippendale': 'Sydney', 'pyrmont': 'Sydney',
         'balmain': 'Sydney', 'rozelle': 'Sydney', 'leichhardt': 'Sydney',
@@ -1422,76 +1505,265 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
     },
     // ── Philippines ────────────────────────────────────────────────────────────
     PH: {
-        // Metro Manila — core districts
-        'makati': 'Manila', 'bgc': 'Manila', 'bonifacio global city': 'Manila',
+        // Metro Manila — NCR catch-all
+        'metro manila': 'Manila', 'ncr': 'Manila', 'national capital region': 'Manila',
+        // Makati — CBD and sub-villages
+        'makati': 'Manila', 'makati cbd': 'Manila', 'makati city': 'Manila',
+        'rockwell': 'Manila', 'rockwell center': 'Manila',
+        'poblacion': 'Manila', 'poblacion makati': 'Manila',
+        'salcedo village': 'Manila', 'legaspi village': 'Manila', 'legazpi village': 'Manila',
+        'bel-air': 'Manila', 'bel air makati': 'Manila', 'urdaneta village': 'Manila',
+        'san antonio makati': 'Manila', 'ayala avenue': 'Manila', 'buendia': 'Manila',
+        'chino roces': 'Manila', 'dela rosa makati': 'Manila', 'jupiter makati': 'Manila',
+        'glorietta': 'Manila', 'greenbelt': 'Manila', 'ayala triangle': 'Manila',
+        'circuit makati': 'Manila', 'merville': 'Manila',
+        'forbes park': 'Manila', 'dasmarinas village': 'Manila', 'magallanes village': 'Manila',
+        'san lorenzo village': 'Manila', 'guadalupe nuevo': 'Manila', 'guadalupe viejo': 'Manila',
+        'bangkal': 'Manila', 'pio del pilar': 'Manila', 'olympia makati': 'Manila',
+        'pembo': 'Manila', 'cembo': 'Manila', 'south cembo': 'Manila',
+        'east rembo': 'Manila', 'west rembo': 'Manila', 'comembo': 'Manila',
+        'palanan': 'Manila', 'tejeros': 'Manila', 'san isidro makati': 'Manila',
+        'carmona makati': 'Manila', 'la paz makati': 'Manila', 'singkamas': 'Manila',
+        'century city makati': 'Manila', 'rcbc plaza': 'Manila', 'century city mall': 'Manila',
+        // BGC / Taguig
+        'bgc': 'Manila', 'bonifacio global city': 'Manila', 'taguig': 'Manila',
+        'fort bonifacio': 'Manila', 'the fort': 'Manila', 'bgc taguig': 'Manila',
+        'high street': 'Manila', 'bonifacio high street': 'Manila',
+        'uptown bonifacio': 'Manila', 'one bgc': 'Manila', 'net park': 'Manila',
+        'north bonifacio': 'Manila', 'central bgc': 'Manila', 'western bicutan': 'Manila',
+        'mckinley hill': 'Manila', 'mckinley west': 'Manila', 'c5 taguig': 'Manila',
+        'south bonifacio': 'Manila', 'pinagsama': 'Manila', 'lower bicutan': 'Manila',
+        'new lower bicutan': 'Manila', 'signal village': 'Manila',
+        'katuparan': 'Manila', 'bagumbayan taguig': 'Manila', 'hagonoy taguig': 'Manila',
+        'ususan': 'Manila', 'napindan': 'Manila', 'wawa taguig': 'Manila',
+        'ibayo-tipas': 'Manila', 'bambang taguig': 'Manila', 'calzada taguig': 'Manila',
+        'tuktukan': 'Manila', 'san miguel taguig': 'Manila',
+        'mahogany place': 'Manila', 'venice grand canal': 'Manila',
+        'market market bgc': 'Manila', 'sm aura': 'Manila', 'acacia estates': 'Manila',
+        // Pasay / Bay Area / Entertainment City
+        'pasay': 'Manila', 'entertainment city': 'Manila', 'mall of asia': 'Manila',
+        'moa area': 'Manila', 'bay area manila': 'Manila',
+        'harbour square': 'Manila', 'ccp complex': 'Manila',
+        'cultural center manila': 'Manila', 'ccplex': 'Manila',
+        'solaire': 'Manila', 'okada manila': 'Manila',
+        'city of dreams manila': 'Manila', 'resorts world manila': 'Manila',
+        'newport city': 'Manila', 'newport mall': 'Manila',
+        'paranaque integrated terminal': 'Manila', 'pitx': 'Manila',
+        'malibay': 'Manila', 'libertad pasay': 'Manila', 'villamor airbase': 'Manila',
+        'naia area': 'Manila', 'edsa taft': 'Manila',
+        // Manila city districts
         'intramuros': 'Manila', 'binondo': 'Manila', 'malate': 'Manila',
         'ermita': 'Manila', 'paco': 'Manila', 'pandacan': 'Manila',
         'sampaloc': 'Manila', 'santa ana': 'Manila', 'santa cruz': 'Manila',
         'tondo': 'Manila', 'port area': 'Manila', 'san miguel manila': 'Manila',
-        // Taguig / BGC
-        'taguig': 'Manila', 'fort bonifacio': 'Manila', 'western bicutan': 'Manila',
-        // Pasay / Entertainment City
-        'pasay': 'Manila', 'entertainment city': 'Manila', 'mall of asia': 'Manila',
-        'moa area': 'Manila', 'bay area manila': 'Manila',
-        // Mandaluyong / Ortigas
+        'quiapo': 'Manila', 'chinatown manila': 'Manila', 'divisoria manila': 'Manila',
+        'sta mesa': 'Manila', 'san andres manila': 'Manila',
+        'malacañang': 'Manila', 'roxas boulevard': 'Manila',
+        'san nicolas manila': 'Manila', 'gagalangin': 'Manila',
+        'san andres bukid': 'Manila', 'north harbor manila': 'Manila',
+        // Pateros
+        'pateros': 'Manila', 'sta ana pateros': 'Manila',
+        // Mandaluyong
         'mandaluyong': 'Manila', 'ortigas': 'Manila', 'ortigas center': 'Manila',
-        'shaw': 'Manila', 'wack-wack': 'Manila',
-        // Pasig / Eastwood
+        'shaw': 'Manila', 'wack-wack': 'Manila', 'boni avenue': 'Manila',
+        'pioneer mandaluyong': 'Manila', 'highway hills': 'Manila',
+        'hulo': 'Manila', 'addition hills': 'Manila', 'barangka': 'Manila',
+        'greenfield district': 'Manila', 'robinsons galleria': 'Manila',
+        'plainview mandaluyong': 'Manila', 'mauway': 'Manila', 'vergara': 'Manila',
+        // Pasig / Eastwood / Ortigas East
         'pasig': 'Manila', 'eastwood': 'Manila', 'kapitolyo': 'Manila',
         'ugong': 'Manila', 'bagong ilog': 'Manila',
+        'ortigas east': 'Manila', 'bridgetowne': 'Manila',
+        'san joaquin pasig': 'Manila', 'rosario pasig': 'Manila',
+        'c5 pasig': 'Manila', 'valley golf': 'Manila',
+        'pineda pasig': 'Manila', 'santa lucia pasig': 'Manila', 'manggahan': 'Manila',
+        'maybunga': 'Manila', 'dela paz pasig': 'Manila', 'oranbo': 'Manila',
+        'kalawaan': 'Manila', 'the 30th': 'Manila', 'ayala malls the 30th': 'Manila',
         // Quezon City
         'quezon city': 'Manila', 'cubao': 'Manila', 'diliman': 'Manila',
         'fairview': 'Manila', 'novaliches': 'Manila', 'commonwealth': 'Manila',
         'philcoa': 'Manila', 'kamuning': 'Manila', 'araneta': 'Manila',
         'timog': 'Manila', 'scout area': 'Manila', 'west triangle': 'Manila',
         'katipunan': 'Manila', 'up diliman': 'Manila',
-        // Marikina / San Juan
-        'marikina': 'Manila', 'san juan': 'Manila', 'greenhills': 'Manila',
-        // Parañaque / Las Piñas / Muntinlupa
-        'paranaque': 'Manila', 'las pinas': 'Manila', 'muntinlupa': 'Manila',
-        'alabang': 'Manila', 'bf homes': 'Manila', 'sucat': 'Manila',
-        // Caloocan / Malabon / Navotas / Valenzuela
-        'caloocan': 'Manila', 'malabon': 'Manila', 'navotas': 'Manila', 'valenzuela': 'Manila',
-        // Antipolo (Rizal)
-        'antipolo': 'Manila',
+        'new manila': 'Manila', 'project 4': 'Manila', 'batasan hills': 'Manila',
+        'kamias': 'Manila', 'philam homes': 'Manila', 'holy spirit qc': 'Manila',
+        'sikatuna village': 'Manila', 'greater lagro': 'Manila',
+        'sm north edsa': 'Manila', 'east triangle': 'Manila',
+        'quezon avenue': 'Manila', 'aurora blvd qc': 'Manila',
+        'alimangga': 'Manila', 'krus na ligas': 'Manila',
+        'libis': 'Manila', 'loyola heights': 'Manila',
+        'project 2': 'Manila', 'project 3': 'Manila', 'project 6': 'Manila',
+        'project 7': 'Manila', 'project 8': 'Manila',
+        'san francisco del monte': 'Manila', 'tandang sora': 'Manila',
+        'payatas': 'Manila', 'bago bantay': 'Manila',
+        'teachers village': 'Manila', 'up campus': 'Manila',
+        'camp crame': 'Manila', 'camp aguinaldo': 'Manila',
+        'vertis north': 'Manila', 'trinoma': 'Manila', 'east avenue qc': 'Manila',
+        'batasan complex': 'Manila', 'holy spirit': 'Manila', 'lagro': 'Manila',
+        'pasong tamo qc': 'Manila', 'cloverleaf': 'Manila',
+        // Marikina
+        'marikina': 'Manila', 'concepcion marikina': 'Manila',
+        'industrial valley': 'Manila', 'shoe avenue': 'Manila',
+        'sto nino marikina': 'Manila', 'parang marikina': 'Manila',
+        'calumpang marikina': 'Manila', 'nangka marikina': 'Manila',
+        'san roque marikina': 'Manila', 'fortune marikina': 'Manila', 'malanday': 'Manila',
+        // San Juan
+        'san juan': 'Manila', 'greenhills': 'Manila',
+        'little baguio san juan': 'Manila', 'salapan': 'Manila',
+        'pinaglabanan': 'Manila', 'addition hills san juan': 'Manila',
+        // Parañaque
+        'paranaque': 'Manila', 'bf resort': 'Manila', 'tambo paranaque': 'Manila',
+        'la huerta': 'Manila', 'moonwalk': 'Manila', 'baclaran': 'Manila',
+        'sucat': 'Manila', 'don bosco paranaque': 'Manila',
+        'multinational village': 'Manila', 'bf homes paranaque': 'Manila',
+        'sto nino paranaque': 'Manila', 'sun valley paranaque': 'Manila',
+        'don galo': 'Manila', 'san dionisio paranaque': 'Manila',
+        'bicutan': 'Manila', 'naia paranaque': 'Manila',
+        // Las Piñas
+        'las pinas': 'Manila', 'bf homes': 'Manila', 'pamplona': 'Manila',
+        'talon las pinas': 'Manila', 'almanza': 'Manila', 'alabang-zapote': 'Manila',
+        'zapote': 'Manila', 'moonwalk las pinas': 'Manila',
+        'pilar village': 'Manila', 'bf resort village': 'Manila',
+        // Muntinlupa / Alabang
+        'muntinlupa': 'Manila', 'alabang': 'Manila', 'muntinlupa city': 'Manila',
+        'filinvest city': 'Manila', 'festival alabang': 'Manila', 'festival mall': 'Manila',
+        'northgate': 'Manila', 'northgate cyberzone': 'Manila',
+        'ayala alabang': 'Manila', 'madrigal': 'Manila', 'madrigal business park': 'Manila',
+        'alabang town center': 'Manila', 'westgate alabang': 'Manila',
+        // Caloocan
+        'caloocan': 'Manila', 'balintawak': 'Manila', 'monumento': 'Manila',
+        'grace park': 'Manila', 'caloocan city': 'Manila',
+        'camarin': 'Manila', 'bagumbong': 'Manila', 'bagong silang caloocan': 'Manila',
+        'deparo': 'Manila', 'llano caloocan': 'Manila', 'maypajo': 'Manila',
+        'sangandaan': 'Manila', 'bagong barrio caloocan': 'Manila',
+        // Malabon / Navotas / Valenzuela
+        'malabon': 'Manila', 'navotas': 'Manila', 'valenzuela': 'Manila',
+        'paso de blas': 'Manila', 'malinta': 'Manila',
+        'tonsuya': 'Manila', 'potrero': 'Manila', 'tinajeros': 'Manila',
+        'navotas fishport': 'Manila', 'san jose navotas': 'Manila',
+        'marulas': 'Manila', 'ugong valenzuela': 'Manila', 'punturin': 'Manila',
+        'karuhatan': 'Manila', 'lingunan': 'Manila', 'canumay': 'Manila',
+        'dalandanan': 'Manila', 'lawang bato': 'Manila', 'mapulang lupa': 'Manila',
+        // Antipolo / Rizal province (served by Manila TGX zone)
+        'antipolo': 'Manila', 'cainta': 'Manila', 'taytay rizal': 'Manila',
+        'angono': 'Manila', 'binangonan': 'Manila',
         // Cebu
         'it park': 'Cebu City', 'cebu it park': 'Cebu City', 'lahug': 'Cebu City',
         'ayala cebu': 'Cebu City', 'cebu business park': 'Cebu City',
         'colon cebu': 'Cebu City', 'carbon cebu': 'Cebu City',
         'mactan': 'Cebu City', 'lapu-lapu': 'Cebu City', 'lapu lapu': 'Cebu City',
         'mandaue': 'Cebu City', 'sm seaside': 'Cebu City',
+        'ayala center cebu': 'Cebu City', 'srp cebu': 'Cebu City',
+        'south road properties': 'Cebu City', 'banilad': 'Cebu City',
+        'talamban': 'Cebu City', 'talisay cebu': 'Cebu City', 'mabolo': 'Cebu City',
+        'fuente osmena': 'Cebu City', 'capitol cebu': 'Cebu City',
+        'consolacion cebu': 'Cebu City', 'minglanilla': 'Cebu City',
+        'north reclamation cebu': 'Cebu City', 'punta engano': 'Cebu City',
+        'guadalupe cebu': 'Cebu City', 'punta princesa': 'Cebu City', 'apas': 'Cebu City',
+        'kasambagan': 'Cebu City', 'labangon': 'Cebu City', 'tisa': 'Cebu City',
+        'bulacao': 'Cebu City', 'mactan newtown': 'Cebu City', 'basak cebu': 'Cebu City',
+        'kamputhaw': 'Cebu City', 'hipodromo': 'Cebu City', 'barrio luz': 'Cebu City',
+        'cogon ramos': 'Cebu City', 'mambaling': 'Cebu City', 'busay': 'Cebu City',
+        'maribago': 'Cebu City', 'cordova cebu': 'Cebu City', 'opon': 'Cebu City',
+        'mactan cebu airport area': 'Cebu City', 'mandaue city': 'Cebu City',
+        'lapu-lapu city': 'Cebu City', 'cebu north': 'Cebu City', 'cebu south': 'Cebu City',
         // Davao
         'lanang': 'Davao City', 'downtown davao': 'Davao City',
         'toril': 'Davao City', 'buhangin': 'Davao City', 'matina': 'Davao City',
         'ecoland': 'Davao City', 'agdao': 'Davao City', 'talomo': 'Davao City',
+        'samal': 'Davao City', 'island garden city of samal': 'Davao City',
+        'igacos': 'Davao City', 'pearl farm beach': 'Davao City',
+        'f. torres davao': 'Davao City', 'davao del sur': 'Davao City',
+        'calinan': 'Davao City', 'panacan': 'Davao City', 'tibungco': 'Davao City',
+        'catalunan grande': 'Davao City', 'mintal davao': 'Davao City',
+        'bago aplaya': 'Davao City', 'lasang': 'Davao City', 'ulas': 'Davao City',
+        'davao central': 'Davao City', 'poblacion davao': 'Davao City',
+        'abreeza': 'Davao City', 'sm lanang premier': 'Davao City',
+        // Clark / Angeles
+        'clark': 'Angeles', 'clark freeport': 'Angeles', 'angeles city': 'Angeles',
+        'clark pampanga': 'Angeles', 'mabalacat': 'Angeles',
+        // Subic / Olongapo
+        'subic': 'Olongapo', 'subic bay': 'Olongapo', 'olongapo city': 'Olongapo',
+        'subic bay freeport': 'Olongapo', 'sbma': 'Olongapo',
         // Boracay
         'station 1': 'Boracay', 'station 2': 'Boracay', 'station 3': 'Boracay',
         'd mall': 'Boracay', 'diniwid': 'Boracay', 'bulabog': 'Boracay',
         'white beach boracay': 'Boracay', 'puka beach': 'Boracay',
+        'yapak': 'Boracay', 'ilig-iligan': 'Boracay', 'aklan boracay': 'Boracay',
+        'malay aklan': 'Boracay', 'caticlan': 'Boracay',
         // Palawan
         'el nido': 'El Nido', 'nacpan': 'El Nido', 'corong corong': 'El Nido',
+        'lio beach': 'El Nido', 'las cabanas beach': 'El Nido',
         'coron': 'Coron', 'coron town': 'Coron', 'busuanga': 'Coron',
+        'kayangan lake': 'Coron', 'basuanga': 'Coron',
         'underground river': 'Puerto Princesa', 'sabang palawan': 'Puerto Princesa',
+        'honda bay': 'Puerto Princesa', 'port barton': 'Puerto Princesa',
+        'san vicente palawan': 'Puerto Princesa',
         // Bohol
         'panglao': 'Tagbilaran', 'alona beach': 'Tagbilaran', 'chocolate hills': 'Tagbilaran',
-        'loboc': 'Tagbilaran',
+        'loboc': 'Tagbilaran', 'baclayon': 'Tagbilaran', 'anda bohol': 'Tagbilaran',
+        'tawala': 'Tagbilaran', 'dauis': 'Tagbilaran', 'doljo beach': 'Tagbilaran',
+        'danao bohol': 'Tagbilaran',
         // Siargao
         'cloud 9': 'Siargao', 'general luna siargao': 'Siargao',
         'union siargao': 'Siargao', 'pacifico': 'Siargao',
+        'del carmen siargao': 'Siargao', 'burgos siargao': 'Siargao',
+        'dapa': 'Siargao', 'pilar siargao': 'Siargao',
         // Iloilo
         'smallville': 'Iloilo City', 'esplanade iloilo': 'Iloilo City',
-        'festive walk': 'Iloilo City',
+        'festive walk': 'Iloilo City', 'jaro': 'Iloilo City', 'molo': 'Iloilo City',
+        'mandurriao': 'Iloilo City', 'city proper iloilo': 'Iloilo City',
+        'la paz iloilo': 'Iloilo City', 'villa iloilo': 'Iloilo City',
+        'diversion road iloilo': 'Iloilo City', 'pavia iloilo': 'Iloilo City',
         // Bacolod
         'lacson': 'Bacolod', 'libertad bacolod': 'Bacolod',
+        'downtown bacolod': 'Bacolod', 'mandalagan': 'Bacolod',
+        'north drive bacolod': 'Bacolod',
+        'capitol area bacolod': 'Bacolod', 'goldenfield bacolod': 'Bacolod',
+        'bata bacolod': 'Bacolod', 'estefania': 'Bacolod',
         // Cagayan de Oro
-        'limketkai': 'Cagayan de Oro',
-        // Tagaytay / Baguio
+        'limketkai': 'Cagayan de Oro', 'downtown cdo': 'Cagayan de Oro',
+        'xavier estates': 'Cagayan de Oro', 'pueblo de oro': 'Cagayan de Oro',
+        'divisoria cdo': 'Cagayan de Oro', 'carmen cdo': 'Cagayan de Oro',
+        'cagayan de oro city': 'Cagayan de Oro',
+        'bulua': 'Cagayan de Oro', 'gusa': 'Cagayan de Oro', 'lapasan': 'Cagayan de Oro',
+        'macabalan': 'Cagayan de Oro', 'kauswagan cdo': 'Cagayan de Oro',
+        // Tagaytay
         'tagaytay ridge': 'Tagaytay', 'taal vista': 'Tagaytay',
+        'sky ranch tagaytay': 'Tagaytay', 'twin lakes tagaytay': 'Tagaytay',
+        'antonio resort tagaytay': 'Tagaytay', 'picnic grove': 'Tagaytay',
+        // Baguio
         'session road': 'Baguio', 'burnham park': 'Baguio', 'camp john hay': 'Baguio',
-        // Zamboanga
-        'fort pilar': 'Zamboanga City',
-        // Batangas / Cavite
+        'mines view park': 'Baguio', 'wright park': 'Baguio',
+        'strawberry farm baguio': 'Baguio', 'military cut-off': 'Baguio',
+        'upper session baguio': 'Baguio', 'baguio city': 'Baguio',
+        'teachers camp baguio': 'Baguio', 'cabinet hill': 'Baguio',
+        'aurora hill baguio': 'Baguio', 'scout barrio baguio': 'Baguio',
+        // Batangas
         'anilao': 'Batangas', 'nasugbu': 'Batangas',
+        'batangas city': 'Batangas', 'laiya': 'Batangas', 'calatagan': 'Batangas',
+        'matabungkay': 'Batangas', 'lipa': 'Batangas',
+        // Vigan / Ilocos
+        'vigan': 'Vigan', 'vigan city': 'Vigan', 'calle crisologo': 'Vigan',
+        'ilocos sur': 'Vigan',
+        'laoag': 'Laoag', 'ilocos norte': 'Laoag', 'pagudpud': 'Laoag',
+        'bangui windmills': 'Laoag', 'burgos ilocos': 'Laoag',
+        // Dumaguete / Negros Oriental
+        'dumaguete': 'Dumaguete', 'rizal boulevard dumaguete': 'Dumaguete',
+        'dauin': 'Dumaguete', 'apo island': 'Dumaguete', 'silliman': 'Dumaguete',
+        // Siquijor
+        'siquijor': 'Siquijor', 'san juan siquijor': 'Siquijor', 'larena': 'Siquijor',
+        // Leyte / Samar
+        'tacloban': 'Tacloban', 'leyte': 'Tacloban', 'palo leyte': 'Tacloban',
+        // Zamboanga
+        'fort pilar': 'Zamboanga City', 'zamboanga city': 'Zamboanga City',
+        // General Santos
+        'general santos': 'General Santos', 'gen san': 'General Santos',
+        'gensan': 'General Santos',
+        // Sagada / Mountain Province
+        'sagada': 'Sagada', 'mountain province': 'Sagada',
+        // Camiguin
+        'mambajao': 'Camiguin', 'camiguin island': 'Camiguin',
     },
     // ── South / Southeast Asia additions ──────────────────────────────────────
     BD: {

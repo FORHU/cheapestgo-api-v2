@@ -255,6 +255,63 @@ router.get('/trending', async (_req: Request, res: Response) => {
     }
 });
 
+// ── User review submission ────────────────────────────────────────────────────
+// POST /api/v2/hotels/property/:id/reviews
+// Inserts a review into hotel_review_items and updates hotel_reviews aggregate.
+
+router.post('/property/:id/reviews', async (req: Request, res: Response) => {
+    const hotelId = req.params.id?.trim();
+    if (!hotelId) return res.status(400).json({ error: 'Missing hotel id' });
+
+    const { stars, name, body } = req.body ?? {};
+    if (!stars || !body) return res.status(400).json({ error: 'stars and body are required' });
+
+    const starsNum = Number(stars);
+    if (!Number.isInteger(starsNum) || starsNum < 1 || starsNum > 5) {
+        return res.status(400).json({ error: 'stars must be 1-5' });
+    }
+
+    // Map 1-5 stars → 2-10 score (consistent with existing 0-10 scale)
+    const score = starsNum * 2;
+
+    try {
+        await prisma.hotel_review_items.create({
+            data: {
+                hotel_id:      hotelId,
+                source_id:     `user-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                reviewer_name: String(name || 'Anonymous').slice(0, 60),
+                score,
+                pros:          String(body).slice(0, 800),
+            },
+        });
+
+        // Recalculate aggregate
+        const agg = await prisma.hotel_review_items.aggregate({
+            where:   { hotel_id: hotelId },
+            _avg:    { score: true },
+            _count:  { score: true },
+        });
+
+        await prisma.hotel_reviews.upsert({
+            where:  { hotel_id: hotelId },
+            update: {
+                rating:        agg._avg.score ?? 0,
+                reviews_count: agg._count.score,
+            },
+            create: {
+                hotel_id:      hotelId,
+                rating:        agg._avg.score ?? 0,
+                reviews_count: agg._count.score,
+            },
+        });
+
+        return res.json({ success: true });
+    } catch (err: any) {
+        console.error('[review POST]', err?.message);
+        return res.status(500).json({ error: 'Failed to save review' });
+    }
+});
+
 // Auth-protected
 router.post('/create-payment',  requireAuth, ctrl.createPayment);
 router.post('/confirm',         requireAuth, ctrl.confirmBooking);

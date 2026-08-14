@@ -98,6 +98,66 @@ async function fetchEtgBySlugs(slugs: string[]): Promise<Map<string, string[]>> 
     return map;
 }
 
+// ─── Google Places rating enrichment ─────────────────────────────────────────
+// Fetches guest rating + review count from Google Places and caches it in
+// hotel_content so we only pay for one API call per hotel per 30 days.
+
+const GOOGLE_ENRICH_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+async function enrichHotelRating(content: {
+    hotel_id: string;
+    name: string | null;
+    lat: unknown;
+    lng: unknown;
+    google_enriched_at: Date | null;
+}): Promise<{ rating: number; reviews_count: number } | null> {
+    // Skip if enriched recently (TTL guard)
+    if (content.google_enriched_at &&
+        Date.now() - content.google_enriched_at.getTime() < GOOGLE_ENRICH_TTL_MS) {
+        return null;
+    }
+
+    const key = process.env.GOOGLE_PLACES_API_KEY;
+    if (!key || !content.name) return null;
+
+    try {
+        const lat  = Number(content.lat);
+        const lng  = Number(content.lng);
+        const bias = lat && lng ? `&locationbias=point:${lat},${lng}` : '';
+        const url  = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json` +
+            `?input=${encodeURIComponent(content.name)}&inputtype=textquery${bias}` +
+            `&fields=place_id,rating,user_ratings_total&key=${key}`;
+
+        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        if (!res.ok) return null;
+        const json = await res.json() as any;
+
+        const candidate = json?.candidates?.[0];
+        if (!candidate?.rating) return null;
+
+        // Convert Google 1-5 scale → 0-10 to match our existing rating convention
+        const rating        = Math.round(candidate.rating * 2 * 10) / 10;
+        const reviews_count = candidate.user_ratings_total ?? 0;
+        const placeId       = candidate.place_id ?? null;
+
+        // Persist — one charge, reused for 30 days
+        await prisma.hotel_content.update({
+            where: { hotel_id: content.hotel_id },
+            data: {
+                review_rating:      rating,
+                review_count:       reviews_count,
+                google_place_id:    placeId,
+                google_enriched_at: new Date(),
+            },
+        });
+
+        return { rating, reviews_count };
+    } catch (e) {
+        console.warn('[enrichHotelRating] Google Places failed:', e instanceof Error ? e.message : e);
+        return null;
+    }
+}
+
 export class HotelsService {
     private repo = new HotelsRepository();
 
@@ -248,6 +308,32 @@ export class HotelsService {
         ]);
         if (!content) throw new AppError(404, 'Property not found', 'NOT_FOUND');
 
+        // ── Rating enrichment from Google Places (cached in hotel_content) ──────
+        let effectiveReviews: typeof reviews = reviews;
+        if (!effectiveReviews) {
+            const c = content as any;
+            if (c.review_rating !== null && c.review_rating !== undefined) {
+                // Already cached from a previous Google fetch — use it directly
+                effectiveReviews = {
+                    hotel_id:      hotelId,
+                    rating:        c.review_rating,
+                    reviews_count: c.review_count ?? 0,
+                    synced_at:     c.google_enriched_at ?? new Date(),
+                } as any;
+            } else {
+                // First time: call Google Places, save to DB so we're never charged twice
+                const enriched = await enrichHotelRating(content as any);
+                if (enriched) {
+                    effectiveReviews = {
+                        hotel_id:      hotelId,
+                        rating:        enriched.rating,
+                        reviews_count: enriched.reviews_count,
+                        synced_at:     new Date(),
+                    } as any;
+                }
+            }
+        }
+
         let rooms: any[] = [];
         if (dates?.checkIn && dates?.checkOut && (content as any).hotel_id) {
             try {
@@ -281,7 +367,7 @@ export class HotelsService {
             }
         }
 
-        return { content, reviews, reviewItems, rooms };
+        return { content, reviews: effectiveReviews, reviewItems, rooms };
     }
 
     // ── Pre-book (validate + quote) ───────────────────────────────────────────

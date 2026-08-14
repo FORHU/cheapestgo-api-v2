@@ -46,31 +46,49 @@ function resolveIsoCode(raw?: string): string | null {
     return COUNTRY_NAME_TO_ISO[raw.toLowerCase()] ?? null;
 }
 
+// Haversine distance in km between two lat/lng points.
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+    const R  = 6371;
+    const dL = ((lat2 - lat1) * Math.PI) / 180;
+    const dG = ((lng2 - lng1) * Math.PI) / 180;
+    const a  = Math.sin(dL / 2) ** 2 + Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dG / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 // ─── Instant hotel catalog from hotel_content ─────────────────────────────────
 
 export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<any[]> {
     const cityName: string = body.cityName ?? '';
     const countryCode: string = body.countryCode ?? '';
-    if (!cityName) return [];
+    if (!cityName && !(body.lat && body.lng)) return [];
 
     try {
-        const cityOnly   = cityName.split(',')[0].trim();
-        const normalized = cityOnly.replace(/-(si|do|gu|gun|eup)$/i, '').trim();
-        const isoCode    = resolveIsoCode(countryCode);
-        const dbCity     = resolveHotelDbCity(normalized, isoCode || countryCode);
+        let where: any;
 
-        const where: any = {
-            city: { contains: dbCity, mode: 'insensitive' },
-            images: { isEmpty: false },
-        };
-        if (isoCode) {
-            where.country = { equals: isoCode, mode: 'insensitive' };
+        if (body.lat && body.lng) {
+            // Prefer radius search — works correctly across admin boundaries (e.g. Jeju/Seogwipo,
+            // London/Greater London, etc.) without any hardcoding.
+            const RADIUS_KM = 50;
+            const DEG = RADIUS_KM / 111;
+            where = {
+                lat: { gte: body.lat - DEG, lte: body.lat + DEG },
+                lng: { gte: body.lng - DEG, lte: body.lng + DEG },
+                images: { isEmpty: false },
+            };
+        } else {
+            // Fallback: city-string match when no coordinates available.
+            const cityOnly   = cityName.split(',')[0].trim();
+            const normalized = cityOnly.replace(/-(si|do|gu|gun|eup)$/i, '').trim();
+            const isoCode    = resolveIsoCode(countryCode);
+            const dbCity     = resolveHotelDbCity(normalized, isoCode || countryCode);
+            where = { city: { contains: dbCity, mode: 'insensitive' }, images: { isEmpty: false } };
+            if (isoCode) where.country = { equals: isoCode, mode: 'insensitive' };
         }
 
         const rows = await prisma.hotel_content.findMany({
             where,
             orderBy: { review_count: { sort: 'desc', nulls: 'last' } },
-            take: 300,
+            take: body.lat && body.lng ? 1000 : 300,
             select: {
                 hotel_id: true, name: true, images: true, star_rating: true,
                 lat: true, lng: true, address: true, city: true, country: true,
@@ -78,7 +96,12 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
             },
         });
 
-        return rows.map((r: any) => ({
+        // When using radius search, cull to true circle (bounding box is rectangular).
+        const filtered = body.lat && body.lng
+            ? rows.filter((r: any) => haversineKm(body.lat!, body.lng!, Number(r.lat), Number(r.lng)) <= 50)
+            : rows;
+
+        return filtered.map((r: any) => ({
             hotelId:      r.hotel_id,
             id:           r.hotel_id,
             name:         r.name || r.hotel_id,
@@ -260,7 +283,25 @@ async function fetchHotelReviews(hotelCodes: string[]) {
     return map;
 }
 
-async function fetchHotelCodesByCity(cityName: string, countryCode?: string): Promise<string[]> {
+async function fetchHotelCodesByLocation(cityName: string, countryCode?: string, lat?: number, lng?: number): Promise<string[]> {
+    if (lat && lng) {
+        // Radius-based search — correctly covers cities that straddle admin boundaries.
+        const RADIUS_KM = 50;
+        const DEG = RADIUS_KM / 111;
+        const rows = await prisma.hotel_content.findMany({
+            where: {
+                lat: { gte: lat - DEG, lte: lat + DEG },
+                lng: { gte: lng - DEG, lte: lng + DEG },
+            },
+            take: 2000,
+            select: { hotel_id: true, lat: true, lng: true },
+        });
+        return rows
+            .filter((r: any) => haversineKm(lat, lng, Number(r.lat), Number(r.lng)) <= RADIUS_KM)
+            .map((r: any) => r.hotel_id);
+    }
+
+    // Fallback: city-string match when no coordinates available.
     const cityOnly   = cityName.split(',')[0].trim();
     const normalized = cityOnly.replace(/-(si|do|gu|gun|eup)$/i, '').trim();
     const isoCode    = countryCode && /^[A-Za-z]{2}$/.test(countryCode) ? countryCode : null;
@@ -1050,7 +1091,7 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
         return runCityFallback(
             cityName, countryCode, baseCriteria, settings,
             resolveTgxDestinationCode(cityName, prisma).catch(() => undefined),
-            fetchHotelCodesByCity(cityName, countryCode).catch(() => []),
+            fetchHotelCodesByLocation(cityName, countryCode, params.lat, params.lng).catch(() => []),
             params,
         );
     } else {
@@ -1074,7 +1115,7 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
         return runCityFallback(
             cityName, countryCode, baseCriteria, settings,
             Promise.resolve(undefined),
-            fetchHotelCodesByCity(cityName, countryCode).catch(() => []),
+            fetchHotelCodesByLocation(cityName, countryCode, params.lat, params.lng).catch(() => []),
             params,
         );
     }
