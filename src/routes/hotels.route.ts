@@ -3,6 +3,7 @@ import { HotelsController } from '@/controllers/hotels.controller';
 import { requireAuth } from '@/middleware/auth.middleware';
 import { prisma } from '@/lib/prisma';
 import { tgxGraphQL, getTgxConfig } from '@/lib/hotels/travelgatex';
+import { CITY_ALIASES } from '@/lib/cityAliases';
 
 const router = Router();
 const ctrl   = new HotelsController();
@@ -163,6 +164,96 @@ router.post('/prebook',                 ctrl.preBook);
 router.get( '/amenities',               ctrl.amenitiesByDestination);
 router.get( '/amenities/by-ids',        ctrl.amenitiesByHotelIds);
 router.get( '/nearby',                  ctrl.nearbyPlaces);
+
+// ── Trending destinations ─────────────────────────────────────────────────────
+// GET /api/v2/hotels/trending
+// Returns top 4 cities from hotel_search_stats (last 14 days), padded by
+// popular_destinations when there aren't enough real signals.
+
+function toTitleCase(str: string): string {
+    return str.replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function countryCodeToName(code: string): string {
+    if (!code) return '';
+    if (code.length === 2) {
+        try {
+            return new Intl.DisplayNames(['en'], { type: 'region' }).of(code.toUpperCase()) ?? code;
+        } catch {
+            return code;
+        }
+    }
+    // Already a full name stored in the DB — normalise casing
+    return toTitleCase(code.toLowerCase());
+}
+
+router.get('/trending', async (_req: Request, res: Response) => {
+    try {
+        const cutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+
+        const rows = await prisma.hotel_search_stats.findMany({
+            where:   { last_searched_at: { gt: cutoff } },
+            orderBy: { search_count: 'desc' },
+            take:    10, // fetch extra so we can filter bad rows and still get 4
+            select:  { city_key: true, country_code: true },
+        });
+
+        const validRows = rows.filter(r => {
+            const k = r.city_key?.toLowerCase().trim() ?? '';
+            return k.length > 1 && !k.includes('unknown') && !k.startsWith('(');
+        });
+
+        // Apply aliases first, then deduplicate by resolved city name
+        const resolved = validRows.map(r => {
+            const rawCity = r.city_key.split(',')[0].trim();
+            const cc      = r.country_code?.toUpperCase() ?? '';
+            const city    = toTitleCase(CITY_ALIASES[cc]?.[rawCity.toLowerCase()] ?? rawCity);
+            return { ...r, city };
+        });
+
+        const seenCities = new Set<string>();
+        const dedupedRows = resolved.filter(r => {
+            const key = r.city.toLowerCase();
+            if (seenCities.has(key)) return false;
+            seenCities.add(key);
+            return true;
+        });
+
+        const trending = dedupedRows.slice(0, 4).map(r => {
+            const countryName = countryCodeToName(r.country_code);
+            return {
+                city:        r.city,
+                countryCode: r.country_code,
+                countryName,
+                imageUrl:    `/api/v2/photos/destination?q=${encodeURIComponent(`${r.city} ${countryName} landmark`)}`,
+            };
+        });
+
+        if (trending.length < 4) {
+            const existing = new Set(trending.map(t => t.city.toLowerCase()));
+            const fallback = await prisma.popular_destinations.findMany({
+                take:   (4 - trending.length) * 2,
+                select: { city: true, country: true, image_url: true },
+            });
+            for (const d of fallback) {
+                if (!d.city || existing.has(d.city.toLowerCase())) continue;
+                existing.add(d.city.toLowerCase());
+                trending.push({
+                    city:        d.city,
+                    countryCode: '',
+                    countryName: d.country ?? '',
+                    imageUrl:    d.image_url ?? `/api/v2/photos/destination?q=${encodeURIComponent(`${d.city} ${d.country ?? ''} landmark`)}`,
+                });
+                if (trending.length >= 4) break;
+            }
+        }
+
+        return res.json({ success: true, data: trending.slice(0, 4) });
+    } catch (err: any) {
+        console.error('[trending]', err?.message);
+        return res.json({ success: true, data: [] });
+    }
+});
 
 // Auth-protected
 router.post('/create-payment',  requireAuth, ctrl.createPayment);

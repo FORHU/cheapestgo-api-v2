@@ -170,7 +170,37 @@ const PLACEHOLDER_SVG = Buffer.from(
 );
 
 router.get('/destination', async (req: Request, res: Response) => {
-    const iata = (req.query.iata as string)?.toUpperCase() ?? '';
+    const iata  = (req.query.iata as string)?.toUpperCase() ?? '';
+    const cityQ = (req.query.q as string)?.trim() ?? '';
+
+    // City / freetext query — used by trending-destinations
+    if (cityQ && !iata) {
+        const cacheKey = `q:${cityQ}`;
+        const cached = destCache.get(cacheKey);
+        if (cached && cached.expires > Date.now()) {
+            if (cached.url) {
+                const fetched = await proxyImageBytes(cached.url);
+                if (fetched) {
+                    res.set({ 'Content-Type': fetched.ct, 'Cache-Control': 'public, max-age=86400' });
+                    return res.send(fetched.buf);
+                }
+            }
+            res.set({ 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=60' });
+            return res.send(PLACEHOLDER_SVG);
+        }
+        let photoUrl = await fetchGoogleDestPhoto(cityQ);
+        if (!photoUrl) photoUrl = await fetchWikimediaPhoto(cityQ);
+        destCache.set(cacheKey, { url: photoUrl ?? '', expires: Date.now() + (photoUrl ? 86_400_000 : 5 * 60_000) });
+        if (photoUrl) {
+            const fetched = await proxyImageBytes(photoUrl);
+            if (fetched) {
+                res.set({ 'Content-Type': fetched.ct, 'Cache-Control': 'public, max-age=86400' });
+                return res.send(fetched.buf);
+            }
+        }
+        res.set({ 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=60' });
+        return res.send(PLACEHOLDER_SVG);
+    }
 
     const query = PLACE_QUERIES[iata];
     if (!query) {

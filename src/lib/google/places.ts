@@ -209,7 +209,17 @@ export async function autocompleteDestinations(
             ...cityResults.filter(c => citiesWithHotels.has(c.title.toLowerCase())),
             ...cityResults.filter(c => !citiesWithHotels.has(c.title.toLowerCase())),
         ];
-        return { success: true, data: [...countryResults, ...sorted] };
+
+        // Drop suggestions that resolve to the same canonical city as an earlier result.
+        const seen = new Set<string>();
+        const deduped = sorted.filter(c => {
+            const key = `${resolveAlias(c.title, c.countryCode).toLowerCase()}|${c.countryCode.toLowerCase()}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+
+        return { success: true, data: [...countryResults, ...deduped] };
     } catch (err) {
         return {
             success: false,

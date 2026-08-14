@@ -409,6 +409,17 @@ router.get('/cleanup-orphaned-duffel-orders', async (_req: Request, res: Respons
 
                 if (!quoteRes.ok) {
                     const txt = await quoteRes.text().catch(() => '');
+                    let parsed: any;
+                    try { parsed = JSON.parse(txt); } catch { /* not json */ }
+                    const code = parsed?.errors?.[0]?.code;
+                    if (code === 'already_cancelled') {
+                        await prisma.$executeRaw`
+                            UPDATE flight_bookings SET status = 'expired' WHERE id = ${fb.id}::uuid
+                        `;
+                        skipped++;
+                        console.log(`[cron/cleanup-orphaned] Order ${fb.provider_order_id} already cancelled — marked expired`);
+                        continue;
+                    }
                     throw new Error(`Duffel quote failed (${quoteRes.status}): ${txt.slice(0, 200)}`);
                 }
 
@@ -1162,6 +1173,68 @@ router.get('/refresh-hotel-content', async (req: Request, res: Response, next: N
 
         const elapsed = Date.now() - t0;
         console.log(`[refresh-hotel-content] Done: ${totalUpdated} hotels across ${cities.length} cities in ${elapsed}ms`);
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── Geocode hotels via Nominatim (OSM) ───────────────────────────────────────
+// GET /cron/geocode-hotels?batch=100&offset=0
+// Finds hotels with lat=0 & lng=0, geocodes each address via Nominatim (1 req/s),
+// and writes the precise coordinates back to hotel_content.
+router.get('/geocode-hotels', async (req: Request, res: Response, next: NextFunction) => {
+    const batch  = Math.min(parseInt(String(req.query.batch  ?? 100), 10), 500);
+    const offset = parseInt(String(req.query.offset ?? 0),   10);
+
+    try {
+        const hotels = await prisma.hotel_content.findMany({
+            where:   { address: { not: null }, osm_geocoded_at: null },
+            select:  { hotel_id: true, name: true, address: true, city: true, country: true },
+            take:    batch,
+            skip:    offset,
+            orderBy: { hotel_id: 'asc' },
+        });
+
+        if (!hotels.length) {
+            return res.json({ updated: 0, remaining: 0, message: 'Nothing to geocode' });
+        }
+
+        let updated = 0;
+        let failed  = 0;
+
+        for (const hotel of hotels) {
+            const query = [hotel.address, hotel.city, hotel.country].filter(Boolean).join(', ');
+            try {
+                const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
+                const nominatimRes = await fetch(url, {
+                    headers: { 'User-Agent': 'CheapestGo/1.0 (support@cheapestgo.com)' },
+                    signal: AbortSignal.timeout(8000),
+                });
+                const data = await nominatimRes.json() as { lat: string; lon: string }[];
+                if (data.length && data[0].lat && data[0].lon) {
+                    await prisma.hotel_content.update({
+                        where: { hotel_id: hotel.hotel_id },
+                        data:  { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), osm_geocoded_at: new Date() },
+                    });
+                    updated++;
+                } else {
+                    await prisma.hotel_content.update({
+                        where: { hotel_id: hotel.hotel_id },
+                        data:  { osm_geocoded_at: new Date() },
+                    });
+                    failed++;
+                }
+            } catch {
+                // network error — don't mark as done, will retry next run
+                failed++;
+            }
+            // Nominatim policy: max 1 request per second
+            await new Promise(r => setTimeout(r, 1100));
+        }
+
+        const remaining = await prisma.hotel_content.count({ where: { address: { not: null }, osm_geocoded_at: null } });
+
+        return res.json({ updated, failed, remaining, processed: hotels.length });
     } catch (err) {
         next(err);
     }

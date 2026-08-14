@@ -208,8 +208,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'university circle': 'Cleveland',
         // Sacramento
         'midtown sacramento': 'Sacramento', 'east sacramento': 'Sacramento',
-        // San Jose CA
-        'santana row': 'San Jose', 'downtown san jose': 'San Jose', 'willow glen': 'San Jose',
         // Oakland
         'grand lake': 'Oakland', 'rockridge': 'Oakland', 'temescal': 'Oakland',
         'fruitvale': 'Oakland', 'jack london square': 'Oakland',
@@ -522,8 +520,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'carmes toulouse': 'Toulouse', 'compans toulouse': 'Toulouse',
         // Cannes
         'la croisette': 'Cannes', 'suquet': 'Cannes', 'le cannet': 'Cannes',
-        // Monaco
-        'monte carlo': 'Monaco', 'port hercule monaco': 'Monaco',
         // Montpellier
         'ecusson': 'Montpellier', 'antigone': 'Montpellier',
         // Rennes
@@ -568,8 +564,7 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'ibiza old town': 'Ibiza', 'dalt vila': 'Ibiza', 'playa d en bossa': 'Ibiza',
         'ses salines ibiza': 'Ibiza', 'santa eulalia': 'Ibiza',
         // Mallorca (non-Palma areas)
-        'alcudia': 'Alcudia', 'port de pollenca': 'Pollensa', 'magaluf': 'Palma de Mallorca',
-        'can picafort': 'Alcudia',
+        'port de pollenca': 'Pollensa', 'magaluf': 'Palma de Mallorca',
         // Menorca
         'ciutadella': 'Ciutadella', 'es migjorn gran': 'Mahon', 'fornells': 'Mahon',
         // Tenerife
@@ -760,7 +755,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'bonfim': 'Porto', 'cedofeita': 'Porto', 'miragaia': 'Porto',
         'foz do douro': 'Porto',
         'albufeira old town': 'Albufeira', 'oura': 'Albufeira', 'falesia': 'Albufeira',
-        'vilamoura': 'Vilamoura', 'quarteira': 'Vilamoura',
         'praia da rocha': 'Portimao', 'alvor': 'Portimao',
         'lagos algarve': 'Lagos', 'meia praia': 'Lagos',
         'tavira old town': 'Tavira',
@@ -837,14 +831,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'jozsefvaros': 'Budapest', 'ferencvaros': 'Budapest', 'ujpest': 'Budapest',
         'obuda': 'Budapest',
     },
-    RU: {
-        'arbat': 'Moscow', 'red square': 'Moscow', 'kitay gorod': 'Moscow',
-        'tverskaya': 'Moscow', 'zamoskvorechye': 'Moscow', 'chistye prudy': 'Moscow',
-        'patriarshy ponds': 'Moscow', 'khamovniki': 'Moscow',
-        'nevsky prospekt': 'Saint Petersburg', 'vasilievsky island': 'Saint Petersburg',
-        'petrogradsky': 'Saint Petersburg', 'vyborg side': 'Saint Petersburg',
-        'sennaya': 'Saint Petersburg',
-    },
     // ── Middle East ────────────────────────────────────────────────────────────
     AE: {
         'marina': 'Dubai', 'dubai marina': 'Dubai', 'jbr': 'Dubai',
@@ -897,11 +883,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'sweifieh': 'Amman', 'downtown amman': 'Amman', 'jabal amman': 'Amman',
         'wadi musa': 'Petra',
     },
-    LB: {
-        'hamra': 'Beirut', 'mar mikhael': 'Beirut', 'gemmayzeh': 'Beirut',
-        'ashrafieh': 'Beirut', 'downtown beirut': 'Beirut', 'verdun': 'Beirut',
-        'jnah': 'Beirut',
-    },
     // ── Africa ─────────────────────────────────────────────────────────────────
     EG: {
         'zamalek': 'Cairo', 'maadi': 'Cairo', 'garden city': 'Cairo',
@@ -915,7 +896,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
     MA: {
         'medina': 'Marrakech', 'gueliz': 'Marrakech', 'hivernage': 'Marrakech',
         'palmeraie': 'Marrakech', 'mellah': 'Marrakech',
-        'fez el bali': 'Fez', 'fes medina': 'Fez', 'fes el jdid': 'Fez',
         'ain diab': 'Casablanca', 'maarif': 'Casablanca', 'anfa': 'Casablanca',
         'ville nouvelle': 'Casablanca',
         'agadir beach': 'Agadir', 'talborjt': 'Agadir',
@@ -1041,8 +1021,8 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'nampodong': 'Busan', 'jagalchi': 'Busan', 'busan station area': 'Busan',
         'oncheonjang': 'Busan', 'centum city': 'Busan', 'marine city': 'Busan',
         // Jeju
-        'jeju city center': 'Jeju', 'seogwipo': 'Jeju', 'hallasan': 'Jeju',
-        'jungmun': 'Jeju', 'hamdeok beach': 'Jeju',
+        'jeju-do': 'Jeju', 'jeju island': 'Jeju', 'jeju city center': 'Jeju',
+        'seogwipo': 'Jeju', 'hallasan': 'Jeju', 'jungmun': 'Jeju', 'hamdeok beach': 'Jeju',
         // Gyeongju (historic city)
         'gyeongju city': 'Gyeongju', 'bulguksa': 'Gyeongju',
         // Incheon
@@ -1053,8 +1033,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'jeonju hanok village': 'Jeonju',
         // Sokcho / Gangwon
         'sokcho city': 'Sokcho', 'seoraksan': 'Sokcho',
-        // Yeosu
-        'yeosu old town': 'Yeosu',
         // Daegu
         'dongseongno': 'Daegu', 'seomun market': 'Daegu',
         // Gwangju
@@ -1541,13 +1519,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'f-8': 'Islamabad', 'f-10': 'Islamabad', 'g-9': 'Islamabad',
         'dha islamabad': 'Islamabad', 'bahria town islamabad': 'Islamabad',
     },
-    MM: {
-        'downtown yangon': 'Yangon', 'chinatown yangon': 'Yangon', 'dagon': 'Yangon',
-        'insein': 'Yangon', 'hledan': 'Yangon', 'tamwe': 'Yangon',
-        'bagan old town': 'Bagan',
-        'mandalay hill': 'Mandalay',
-        'inle lake': 'Nyaungshwe',
-    },
     KH: {
         'bkk1': 'Phnom Penh', 'riverside phnom penh': 'Phnom Penh',
         'russian market': 'Phnom Penh', 'toul tom poung': 'Phnom Penh',
@@ -1566,7 +1537,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'thamel': 'Kathmandu', 'patan': 'Kathmandu', 'bhaktapur': 'Kathmandu',
         'boudhanath': 'Kathmandu', 'swayambhunath': 'Kathmandu',
         'lakeside pokhara': 'Pokhara',
-        'namche bazaar': 'Solukhumbu',
     },
     // ── Scandinavia ────────────────────────────────────────────────────────────
     SE: {
@@ -1728,7 +1698,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
     GT: {
         'zona viva': 'Guatemala City', 'zona 10': 'Guatemala City', 'zona 4': 'Guatemala City',
         'antigua guatemala': 'Antigua',
-        'san marcos la laguna': 'Lake Atitlan',
     },
     PA: {
         'casco viejo': 'Panama City', 'punta pacifica': 'Panama City',
@@ -1765,7 +1734,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'old harbour reykjavik': 'Reykjavik', '101 reykjavik': 'Reykjavik',
         'laugardalur': 'Reykjavik', 'vesturbær': 'Reykjavik', 'hafnarfjordur': 'Reykjavik',
         'akureyri town': 'Akureyri',
-        'blue lagoon area': 'Grindavik',
         'vik iceland': 'Vik',
     },
     // ── Monaco ────────────────────────────────────────────────────────────────
@@ -1808,7 +1776,7 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'gediminas avenue': 'Vilnius',
         'kaunas old town': 'Kaunas', 'laisves aleja': 'Kaunas',
         'klaipeda old town': 'Klaipeda', 'smiltyne': 'Klaipeda',
-        'nida': 'Nida', 'palanga beach': 'Palanga',
+        'palanga beach': 'Palanga',
     },
     // ── Slovenia ──────────────────────────────────────────────────────────────
     SI: {
@@ -1865,15 +1833,12 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'old tbilisi': 'Tbilisi', 'rustaveli': 'Tbilisi', 'vake': 'Tbilisi',
         'saburtalo': 'Tbilisi', 'vera': 'Tbilisi', 'abanotubani': 'Tbilisi',
         'batumi boulevard': 'Batumi', 'batumi old town': 'Batumi', 'new boulevard batumi': 'Batumi',
-        'kazbegi village': 'Kazbegi', 'stepantsminda': 'Kazbegi',
         'sighnaghi': 'Sighnaghi',
         'kutaisi city': 'Kutaisi',
     },
     AM: {
         'kentron yerevan': 'Yerevan', 'north avenue': 'Yerevan', 'erebuni': 'Yerevan',
         'cascade yerevan': 'Yerevan', 'mashtots': 'Yerevan',
-        'dilijan': 'Dilijan',
-        'tsaghkadzor': 'Tsaghkadzor',
     },
     AZ: {
         'icherisheher': 'Baku', 'old city baku': 'Baku', 'white city baku': 'Baku',
@@ -1884,8 +1849,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
     KZ: {
         'almaty centre': 'Almaty', 'medeu almaty': 'Almaty', 'alatau almaty': 'Almaty',
         'arbat almaty': 'Almaty',
-        'nur-sultan centre': 'Nur-Sultan', 'astana city': 'Nur-Sultan',
-        'shymkent city': 'Shymkent',
     },
     UZ: {
         'samarkand registan': 'Samarkand', 'samarkand old town': 'Samarkand',
@@ -1915,7 +1878,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'carthage ruins': 'Tunis', 'gammarth': 'Tunis',
         'sousse medina': 'Sousse', 'port el kantaoui': 'Sousse',
         'hammamet beach': 'Hammamet', 'yasmine hammamet': 'Hammamet',
-        'djerba zone touristique': 'Djerba', 'houmt souk': 'Djerba',
         'tozeur': 'Tozeur', 'douz': 'Douz',
         'monastir city': 'Monastir', 'sfax city': 'Sfax',
     },
@@ -1931,8 +1893,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
     RW: {
         'kigali city center': 'Kigali', 'nyamirambo': 'Kigali', 'kimihurura': 'Kigali',
         'kacyiru': 'Kigali', 'remera': 'Kigali',
-        'musanze': 'Musanze',
-        'gisenyi': 'Rubavu',
     },
     // ── Mozambique ────────────────────────────────────────────────────────────
     MZ: {
@@ -1946,7 +1906,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'old san juan': 'San Juan', 'condado': 'San Juan', 'miramar pr': 'San Juan',
         'isla verde': 'San Juan', 'ocean park': 'San Juan', 'santurce': 'San Juan',
         'ponce historic center': 'Ponce',
-        'rincon pr': 'Rincon',
     },
     // ── Caribbean additions ────────────────────────────────────────────────────
     CW: {
@@ -1972,7 +1931,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
     },
     GD: {
         'grand anse grenada': "St. George's", 'lance aux epines': "St. George's",
-        'gouyave': 'Gouyave',
     },
     TT: {
         'woodbrook': 'Port of Spain', 'st clair trinidad': 'Port of Spain',
@@ -1997,10 +1955,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'copan ruinas': 'Copan', 'roatan west end': 'Roatan', 'west bay roatan': 'Roatan',
         'la ceiba city': 'La Ceiba',
     },
-    NI: {
-        'granada centro': 'Granada', 'colonia pellas': 'Managua',
-        'leon colonial': 'Leon',
-    },
     // ── Bolivia ───────────────────────────────────────────────────────────────
     BO: {
         'sopocachi': 'La Paz', 'miraflores la paz': 'La Paz', 'zona sur la paz': 'La Paz',
@@ -2014,10 +1968,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'asuncion city centre': 'Asuncion', 'villa morra': 'Asuncion',
     },
     // ── Venezuela ─────────────────────────────────────────────────────────────
-    VE: {
-        'las mercedes': 'Caracas', 'altamira': 'Caracas', 'chacao': 'Caracas',
-        'isla margarita': 'Porlamar',
-    },
     // ── Mongolia ──────────────────────────────────────────────────────────────
     MN: {
         'sukhbaatar square': 'Ulaanbaatar', 'zaisan': 'Ulaanbaatar',
@@ -2030,9 +1980,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
     // ── Nepal additions ───────────────────────────────────────────────────────
     // (already has NP — extra spots below)
     // ── Additional Middle East ────────────────────────────────────────────────
-    IQ: {
-        'baghdad city': 'Baghdad', 'erbil city': 'Erbil', 'sulaymaniyah': 'Sulaymaniyah',
-    },
     // ── Algeria ───────────────────────────────────────────────────────────────
     DZ: {
         'algiers city': 'Algiers', 'casbah algiers': 'Algiers',
@@ -2062,7 +2009,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
     },
     // ── Malawi ────────────────────────────────────────────────────────────────
     MW: {
-        'cape maclear': 'Cape Maclear', 'lake malawi': 'Salima',
         'lilongwe old town': 'Lilongwe',
     },
     // ── Namibia ───────────────────────────────────────────────────────────────
@@ -2107,26 +2053,6 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'nukualofa': "Nuku'alofa",
     },
     // ── Cook Islands ──────────────────────────────────────────────────────────
-    CK: {
-        'avarua': 'Avarua', 'muri beach': 'Avarua',
-    },
-    // ── Reunion Island ────────────────────────────────────────────────────────
-    RE: {
-        'saint-denis reunion': 'Saint-Denis',
-        'saint-gilles': 'Saint-Gilles-les-Bains',
-        'cilaos': 'Cilaos',
-    },
-    // ── Martinique ────────────────────────────────────────────────────────────
-    MQ: {
-        'fort-de-france city': 'Fort-de-France',
-        'les trois-ilets': 'Les Trois-Ilets',
-        'sainte-anne martinique': 'Sainte-Anne',
-    },
-    // ── Guadeloupe ────────────────────────────────────────────────────────────
-    GP: {
-        'pointe-a-pitre': 'Pointe-a-Pitre', 'gosier': 'Gosier',
-        'saint-francois guadeloupe': 'Saint-Francois',
-    },
     // ── Guyana ────────────────────────────────────────────────────────────────
     GY: {
         'georgetown guyana': 'Georgetown',
@@ -2189,7 +2115,7 @@ export const HOTEL_DB_CITY_MAP: Record<string, string> = {
     'Los Cabos|MX':                 'Puerto Los Cabos',
     'Apia|WS':                      'Apia-Fagali',
     // OTV CSV uses alternative spellings for these cities
-    'Marrakech|MA':                 'Marrakes',   // DB uses "Marrakesch" (German); "Marrakes" prefix matches both spellings
+    'Marrakech|MA':                 'Marrakesch',
     'Koh Lanta|TH':                 'Ko Lanta',
     'Ho Chi Minh City|VN':          'Ho-Chi-Minh-Stadt',
     // ── German city names (other European capitals / cities) ────────────────
@@ -2207,6 +2133,7 @@ export const HOTEL_DB_CITY_MAP: Record<string, string> = {
     'Malmo|SE':                     'Malmö',
     'Krakow|PL':                    'Krakau',
     'Gdansk|PL':                    'Danzig',
+    'Warsaw|PL':                    'Warschau',
     'Bucharest|RO':                 'Bukarest',
     'Tbilisi|GE':                   'Tiflis',
     'Yerevan|AM':                   'Jerewan',
@@ -2218,10 +2145,15 @@ export const HOTEL_DB_CITY_MAP: Record<string, string> = {
     'Cologne|DE':                   'Köln',
     'Dusseldorf|DE':                'Düsseldorf',
     'Nuremberg|DE':                 'Nürnberg',
+    'Lubeck|DE':                    'Lübeck',
     // ── German names for French/Italian/Greek cities ─────────────────────────
     'Nice|FR':                      'Nizza',
     'Strasbourg|FR':                'Straßburg',
     'Genoa|IT':                     'Genua',
+    'Milan|IT':                     'Mailand',
+    'Venice|IT':                    'Venedig',
+    'Florence|IT':                  'Florenz',
+    'Naples|IT':                    'Neapel',
     'Rhodes|GR':                    'Rhodos',
     'Corfu|GR':                     'Korfu',
     // ── German names for Middle East / Africa / Americas ────────────────────
@@ -2232,6 +2164,8 @@ export const HOTEL_DB_CITY_MAP: Record<string, string> = {
     'Guatemala City|GT':            'Guatemala-Stadt',
     'Yaounde|CM':                   'Jaunde',
     'Windhoek|NA':                  'Windhuk',
+    'Sarajevo|BA':                  'Sarajewo',
+    'Muscat|OM':                    'Maskat',
     // ── Spanish/Portuguese accent variants ───────────────────────────────────
     'Seville|ES':                   'Sevilla',
     'San Sebastian|ES':             'San Sebastián',
@@ -2242,6 +2176,7 @@ export const HOTEL_DB_CITY_MAP: Record<string, string> = {
     'Pollensa|ES':                  'Pollença',
     'Las Palmas de Gran Canaria|ES':'Las Palmas, Gran Canaria',
     'Portimao|PT':                  'Portimão',
+    'Lisbon|PT':                    'Lissabon',
     // ── Mexican/Latin American accent variants ───────────────────────────────
     'Mexico City|MX':               'Mexiko-Stadt',
     'Cancun|MX':                    'Cancún',
@@ -2255,6 +2190,8 @@ export const HOTEL_DB_CITY_MAP: Record<string, string> = {
     'San Andres|CO':                'San Andrés',
     'Florianopolis|BR':             'Florianópolis',
     'Foz do Iguacu|BR':             'Foz do Iguaçu',
+    'Sao Paulo|BR':                 'São Paulo',
+    'Buzios|BR':                    'Armação dos Búzios',
     'Cusco|PE':                     'Cuzco',
     'Asuncion|PY':                  'Asunción (und Umgebung)',
     'Cordoba|AR':                   'Córdoba',
@@ -2264,6 +2201,9 @@ export const HOTEL_DB_CITY_MAP: Record<string, string> = {
     'Ooty|IN':                      'Udagamandalam',
     'Jorhat|IN':                    'Jorhãt',
     'Incheon|KR':                   "Inch'on",
+    'Goa|IN':                       'Süd-Goa',
+    'Dar es Salaam|TZ':             'Daressalam',
+    'Zanzibar|TZ':                  'Sansibar',
     'Bali|ID':                      'Kuta',
     'Lombok|ID':                    'Mataram',
     'Koh Tao|TH':                   'Ko Tao',
@@ -2272,7 +2212,9 @@ export const HOTEL_DB_CITY_MAP: Record<string, string> = {
     'Vung Tau|VN':                  'Vung Tàu',
     // ── Other name variants ──────────────────────────────────────────────────
     'Larnaca|CY':                   'Larnaka',
+    'Nicosia|CY':                   'North Nicosia',
     'Parnu|EE':                     'Pärnu',
+    'Reykjavik|IS':                 'Reykjavík',
     'Mauritius|MU':                 'Grand Baie',
     'Saint Petersburg|US':          'St. Petersburg',
 };

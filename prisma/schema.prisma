@@ -439,6 +439,7 @@ model hotel_content {
   ratehawk_hid          String?
   content_source        String?
   last_attempt_at       DateTime? @db.Timestamptz(6)
+  osm_geocoded_at       DateTime? @db.Timestamptz(6)
   check_in_time         String?
   check_out_time        String?
   review_rating         Decimal?  @db.Decimal(4, 2)
