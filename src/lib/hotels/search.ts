@@ -818,6 +818,10 @@ async function runCityFallback(
 ): Promise<HotelSearchResult> {
     await loadFailedDestCodes();
 
+    // Pre-declare so the dest-code block can populate it and fall through to hotel-code search.
+    let otvCodes: string[]              = [];
+    let otvContentMap = new Map<string, any>();
+
     console.warn(`[tgx-search] OTV destination search empty for "${cityName}" — resolving TGX dest code`);
     const resolvedCode = await prefetchDestCode;
     if (resolvedCode) {
@@ -853,26 +857,39 @@ async function runCityFallback(
                             .catch(() => {});
                     }
                 }
-                return buildCityResults(destMerchant, cityName, countryCode, otv.contentMap);
-            }
-            // WRONG_FIELD/Empty hotels = TGX mapping gap (OTV was never called).
-            // Don't blacklist — the city may have OTV coverage once TGX mapping syncs.
-            if (!hasEmptyHotelsError(destErrors)) {
-                persistFailedDestCode(resolvedCode, cityName);
-                if (destErrors.length) {
-                    console.warn(`[tgx-search] Dest code "${resolvedCode}" had errors — recorded as OTV miss`);
+                // If the DB has ≥2× more hotel codes than dest-code results, the dest-code
+                // search is under-counting (common for large cities where TGX's destination
+                // zone misses outer districts). Fall through to hotel-code search for broader
+                // coverage — matching v1's effective behaviour where the dest-code path is
+                // often skipped for well-seeded cities.
+                const dbCodes = await prefetchHotelCodes;
+                if (dbCodes.length >= destMerchant.length * 2) {
+                    console.log(`[tgx-search] DB has ${dbCodes.length} codes vs ${destMerchant.length} dest results — preferring hotel-code search for broader coverage`);
+                    otvCodes = dbCodes;
+                    // fall through to hotel-code search below
                 } else {
-                    console.warn(`[tgx-search] Dest code "${resolvedCode}" returned 0 options — recorded as OTV miss`);
+                    return buildCityResults(destMerchant, cityName, countryCode, otv.contentMap);
                 }
-            } else {
-                console.warn(`[tgx-search] Dest code "${resolvedCode}" has TGX mapping gap (Empty hotels) — not recorded as OTV miss`);
+            }
+            if (otvCodes.length === 0) {
+                // WRONG_FIELD/Empty hotels = TGX mapping gap (OTV was never called).
+                // Don't blacklist — the city may have OTV coverage once TGX mapping syncs.
+                if (!hasEmptyHotelsError(destErrors)) {
+                    persistFailedDestCode(resolvedCode, cityName);
+                    if (destErrors.length) {
+                        console.warn(`[tgx-search] Dest code "${resolvedCode}" had errors — recorded as OTV miss`);
+                    } else {
+                        console.warn(`[tgx-search] Dest code "${resolvedCode}" returned 0 options — recorded as OTV miss`);
+                    }
+                } else {
+                    console.warn(`[tgx-search] Dest code "${resolvedCode}" has TGX mapping gap (Empty hotels) — not recorded as OTV miss`);
+                }
             }
         }
     }
 
     console.warn(`[tgx-search] Dest-code empty for "${cityName}" — trying hotel-code search`);
-    let otvCodes      = await prefetchHotelCodes;
-    let otvContentMap = new Map<string, any>();
+    if (otvCodes.length === 0) otvCodes = await prefetchHotelCodes;
 
     if (otvCodes.length === 0) {
         console.log(`[tgx-search] DB empty for "${cityName}" — querying OTV portfolio`);

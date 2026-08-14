@@ -36,7 +36,13 @@ export class HotelsController {
     property = async (req: Request, res: Response, next: NextFunction) => {
         try {
             const { id } = z.object({ id: z.string() }).parse(req.params);
-            const result = await svc.getProperty(id);
+            const { checkIn, checkOut, adults, children } = z.object({
+                checkIn:  z.string().optional(),
+                checkOut: z.string().optional(),
+                adults:   z.coerce.number().optional().default(2),
+                children: z.coerce.number().optional().default(0),
+            }).parse(req.query);
+            const result = await svc.getProperty(id, { checkIn, checkOut, adults, children });
             res.json(result);
         } catch (err) { next(err); }
     };

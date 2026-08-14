@@ -240,14 +240,48 @@ export class HotelsService {
 
     // ── Property detail ───────────────────────────────────────────────────────
 
-    async getProperty(hotelId: string) {
+    async getProperty(hotelId: string, dates?: { checkIn?: string; checkOut?: string; adults?: number; children?: number }) {
         const [content, reviews, reviewItems] = await Promise.all([
             this.repo.findHotelContent(hotelId),
             this.repo.findHotelReviews(hotelId),
             this.repo.findHotelReviewItems(hotelId, 20),
         ]);
         if (!content) throw new AppError(404, 'Property not found', 'NOT_FOUND');
-        return { content, reviews, reviewItems };
+
+        let rooms: any[] = [];
+        if (dates?.checkIn && dates?.checkOut && (content as any).hotel_id) {
+            try {
+                const tgxResult = await searchHotels({
+                    hotelCode: (content as any).hotel_id,
+                    checkin:   dates.checkIn,
+                    checkout:  dates.checkOut,
+                    adults:    dates.adults ?? 2,
+                    children:  dates.children ?? 0,
+                });
+                const rawRooms: any[] = tgxResult.data?.[0]?.roomTypes ?? [];
+                // Deduplicate: keep cheapest offer per (name, refundable, boardCode) bucket
+                const seen = new Map<string, any>();
+                for (const r of rawRooms) {
+                    const key = `${r.roomName}|${r.refundable}|${r.boardCode}`;
+                    if (!seen.has(key) || r.price < seen.get(key).price) {
+                        seen.set(key, r);
+                    }
+                }
+                rooms = Array.from(seen.values()).map((r: any) => ({
+                    id:            r.offerId,
+                    offerId:       r.offerId,
+                    name:          r.roomName,
+                    price:         r.price,
+                    currency:      r.currency,
+                    refundableTag: r.refundable ? 'RFN' : 'NRFN',
+                    boardType:     r.boardCode,
+                }));
+            } catch (err) {
+                console.warn('[property] TGX room fetch failed:', err instanceof Error ? err.message : err);
+            }
+        }
+
+        return { content, reviews, reviewItems, rooms };
     }
 
     // ── Pre-book (validate + quote) ───────────────────────────────────────────
