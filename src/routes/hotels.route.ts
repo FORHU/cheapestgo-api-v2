@@ -154,6 +154,8 @@ router.get('/photo', async (req: Request, res: Response) => {
 router.post('/search',                  ctrl.search);
 router.post('/search/stream',           ctrl.searchStream);
 router.get( '/suggest',                 ctrl.suggest);
+router.get( '/count',                   ctrl.count);
+router.get( '/destinations',            ctrl.destinations);
 router.get( '/property/:id',            ctrl.property);
 router.get( '/deals',                   ctrl.deals);
 router.post('/autocomplete',            ctrl.autocomplete);

@@ -6,7 +6,7 @@ generator client {
 datasource db {
   provider   = "postgresql"
   url        = env("DATABASE_URL")
-  extensions = [pg_trgm]
+  extensions = [pg_trgm, uuid_ossp(map: "uuid-ossp", schema: "extensions")]
 }
 
 model admin_audit_log {
@@ -155,6 +155,7 @@ model booking_sessions {
   bag_service_ids           String[]
   bag_total                 Decimal?          @default(0) @db.Decimal
   completed_at              DateTime?         @db.Timestamptz(6)
+  payment_currency          String?
   flight_bookings           flight_bookings[]
 
   @@index([expires_at], map: "idx_booking_sessions_expires_at")
@@ -196,6 +197,11 @@ model bookings {
   charged_price                                                                  Decimal?                  @db.Decimal(12, 2)
   markup_pct                                                                     Decimal?                  @db.Decimal(6, 4)
   hotel_id                                                                       String?
+  source_brand                                                                   String?
+  usd_amount                                                                     Decimal?                  @db.Decimal(14, 4)
+  fx_rate                                                                        Decimal?                  @db.Decimal(20, 10)
+  fx_captured_at                                                                 DateTime?                 @db.Timestamptz(6)
+  fx_source                                                                      String?
   booking_policy_snapshots_booking_policy_snapshots_booking_idTobookings         booking_policy_snapshots? @relation("booking_policy_snapshots_booking_idTobookings")
   booking_policy_snapshots_bookings_policy_snapshot_idTobooking_policy_snapshots booking_policy_snapshots? @relation("bookings_policy_snapshot_idTobooking_policy_snapshots", fields: [policy_snapshot_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
@@ -316,6 +322,11 @@ model flight_bookings {
   confirmed_currency        String?
   ticket_numbers            Json?                      @default("[]")
   ticketed_at               DateTime?                  @db.Timestamptz(6)
+  source_brand              String?
+  usd_amount                Decimal?                   @db.Decimal(14, 4)
+  fx_rate                   Decimal?                   @db.Decimal(20, 10)
+  fx_captured_at            DateTime?                  @db.Timestamptz(6)
+  fx_source                 String?
   booking_financial_events  booking_financial_events[]
   flight_booking_notes      flight_booking_notes[]
   booking_sessions          booking_sessions?          @relation(fields: [session_id], references: [id], onUpdate: NoAction)
@@ -439,7 +450,6 @@ model hotel_content {
   ratehawk_hid          String?
   content_source        String?
   last_attempt_at       DateTime? @db.Timestamptz(6)
-  osm_geocoded_at       DateTime? @db.Timestamptz(6)
   check_in_time         String?
   check_out_time        String?
   review_rating         Decimal?  @db.Decimal(4, 2)
@@ -449,8 +459,17 @@ model hotel_content {
   room_groups           Json?     @default("[]")
   google_place_id       String?
   google_enriched_at    DateTime? @db.Timestamptz(6)
+  osm_geocoded_at       DateTime? @db.Timestamptz(6)
+  contact_info          Json?
+  chain_code            String?
+  giata_id              String?
+  room_groups_seeded_at DateTime? @db.Timestamptz(6)
+  serp_filters          String[]  @default([])
+  metapolicy_struct     Json?
+  metapolicy_extra_info String?
 
   @@index([fetched_at])
+  @@index([serp_filters], map: "hotel_content_serp_filters_gin", type: Gin)
 }
 
 model hotel_deals {
@@ -640,9 +659,9 @@ model profiles {
   nationality String?
   created_at  DateTime? @default(now()) @db.Timestamptz(6)
   updated_at  DateTime? @default(now()) @db.Timestamptz(6)
-  role        String?   @default("user")
   banned_at   DateTime? @db.Timestamptz(6)
   preferences Json      @default("{}")
+  role        String?   @default("user")
   users       users     @relation(fields: [id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([email], map: "idx_profiles_email")
@@ -736,16 +755,19 @@ model sessions {
 }
 
 model stripe_processed_events {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  event_id     String   @unique
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  event_id     String    @unique
   event_type   String?
-  processed_at DateTime @default(now()) @db.Timestamptz(6)
+  processed_at DateTime  @default(now()) @db.Timestamptz(6)
+  completed_at DateTime? @db.Timestamptz(6)
 }
 
 model tgx_destination_cache {
   city_key         String    @id
   destination_code String
   created_at       DateTime? @default(now()) @db.Timestamptz(6)
+  dest_type        String?   @default("CITY")
+  parent_code      String?
 }
 
 model travel_styles {
@@ -760,20 +782,25 @@ model travel_styles {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model unified_bookings {
-  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id       String    @db.Uuid
-  type          trip_type
-  provider      String
-  external_id   String?
-  status        String    @default("pending")
-  total_price   Decimal   @db.Decimal(12, 2)
-  currency      String    @default("USD")
-  metadata      Json      @default("{}")
-  created_at    DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at    DateTime  @default(now()) @db.Timestamptz(6)
-  supplier_cost Decimal?  @default(0) @db.Decimal(12, 2)
-  markup_amount Decimal?  @default(0) @db.Decimal(12, 2)
-  profit        Decimal?  @default(0) @db.Decimal(12, 2)
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id        String    @db.Uuid
+  type           trip_type
+  provider       String
+  external_id    String?
+  status         String    @default("pending")
+  total_price    Decimal   @db.Decimal(12, 2)
+  currency       String    @default("USD")
+  metadata       Json      @default("{}")
+  created_at     DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime  @default(now()) @db.Timestamptz(6)
+  supplier_cost  Decimal?  @default(0) @db.Decimal(12, 2)
+  markup_amount  Decimal?  @default(0) @db.Decimal(12, 2)
+  profit         Decimal?  @default(0) @db.Decimal(12, 2)
+  source_brand   String?
+  usd_amount     Decimal?  @db.Decimal(14, 4)
+  fx_rate        Decimal?  @db.Decimal(20, 10)
+  fx_captured_at DateTime? @db.Timestamptz(6)
+  fx_source      String?
 
   @@index([created_at(sort: Desc)], map: "idx_unified_bookings_created")
   @@index([metadata], map: "idx_unified_bookings_metadata", type: Gin)
@@ -807,6 +834,7 @@ model users {
   banned_at             DateTime?              @db.Timestamptz(6)
   created_at            DateTime               @default(now()) @db.Timestamptz(6)
   updated_at            DateTime               @default(now()) @db.Timestamptz(6)
+  birth_date            DateTime?              @db.Date
   api_keys              api_keys[]
   device_push_tokens    device_push_tokens[]
   flight_booking_notes  flight_booking_notes[]
@@ -873,6 +901,27 @@ model weekend_flight_deals {
   image_url      String?
   badge          String?
   created_at     DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model hotel_prebook_quotes {
+  prebook_id String   @id
+  net        Decimal  @default(0) @db.Decimal(12, 4)
+  gross      Decimal  @default(0) @db.Decimal(12, 4)
+  currency   String   @default("USD")
+  room_name  String?
+  check_in   String?
+  check_out  String?
+  expires_at DateTime @default(dbgenerated("(now() + '00:30:00'::interval)")) @db.Timestamptz(6)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([expires_at])
+}
+
+model tgx_failed_dest_codes {
+  dest_code  String   @id
+  city_key   String   @default("")
+  created_at DateTime @default(now()) @db.Timestamptz(6)
 }
 
 enum booking_policy_type {

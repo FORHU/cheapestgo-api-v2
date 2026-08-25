@@ -1,6 +1,17 @@
 import { prisma } from '@/lib/prisma';
 
 export class HotelsRepository {
+    /** How many catalogued hotels a city has. Drives the search bar's result-count hint. */
+    async countHotelContentByCity(cityName: string, countryCode?: string) {
+        const cityOnly = cityName.split(',')[0].trim();
+        const isoCode  = countryCode && /^[A-Za-z]{2}$/.test(countryCode) ? countryCode : null;
+
+        const where: any = { city: { equals: cityOnly, mode: 'insensitive' } };
+        if (isoCode) where.country = { equals: isoCode, mode: 'insensitive' };
+
+        return prisma.hotel_content.count({ where });
+    }
+
     // ─── Hotel content ────────────────────────────────────────────────────────
 
     async findHotelContent(hotelId: string) {
@@ -181,11 +192,21 @@ export class HotelsRepository {
 
     // ─── Deals ────────────────────────────────────────────────────────────────
 
+    /**
+     * `hotel_deals` has neither an `active` flag nor a `priority` column — both
+     * were assumed here and hidden behind `as any`, so every call to this failed
+     * at runtime with "Unknown argument `active`". v1 selects the table plainly
+     * and discards rows it cannot link to a hotel, which is what this now does.
+     * Most recently refreshed first, so the order is at least deterministic.
+     */
     async getHotelDeals(limit = 12) {
         return prisma.hotel_deals.findMany({
-            where:   { active: true } as any,
-            orderBy: { priority: 'desc' } as any,
-            take:    limit,
+            where:   { hotel_code: { not: null } },
+            orderBy: [
+                { last_refreshed_at: { sort: 'desc', nulls: 'last' } },
+                { updated_at: 'desc' },
+            ],
+            take: limit,
         });
     }
 }

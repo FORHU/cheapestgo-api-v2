@@ -7,10 +7,39 @@ import { resolveTgxDestinationCode } from '@/lib/hotels/travelgatex';
 import { getInstantHotelCatalog, runTgxSearch } from '@/lib/hotels/search';
 import { prisma } from '@/lib/prisma';
 import { CITY_ALIASES } from '@/lib/cityAliases';
+import { DestinationsService } from '@/services/destinations.service';
 
 const svc = new HotelsService();
+const destinations = new DestinationsService();
 
 export class HotelsController {
+
+    /**
+     * Destination autocomplete carrying the granularity rung, bbox and canonical
+     * city. Distinct from `autocomplete` below, which is Google Places and returns
+     * none of those - the search page cannot scope its map without them.
+     */
+    destinations = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { query, locale } = z.object({
+                query:  z.string(),
+                locale: z.string().optional(),
+            }).parse(req.query);
+            const data = await destinations.autocomplete(query, locale);
+            res.json({ success: true, data });
+        } catch (err) { next(err); }
+    };
+
+    count = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { city, cc } = z.object({
+                city: z.string().min(1),
+                cc:   z.string().length(2).optional(),
+            }).parse(req.query);
+            const count = await svc.countByCity(city, cc);
+            res.json({ count });
+        } catch (err) { next(err); }
+    };
 
     search = async (req: Request, res: Response, next: NextFunction) => {
         try {

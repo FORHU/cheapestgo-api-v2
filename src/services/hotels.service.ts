@@ -8,7 +8,7 @@ import { prisma } from '@/lib/prisma';
 import { applyMarkup, toStripeAmount, HOTEL_MARKUP, BUNDLE_MARKUP } from '@/lib/pricing';
 import { createHash } from 'crypto';
 
-// ─── TGX prebook helpers ─────────────────────────────────────────────────────
+// âââ TGX prebook helpers âââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 function parseTgxOptionToken(token: string): { hotelCode: string | null; checkIn: string | null; checkOut: string | null; nationality: string } {
     const segs: Record<string, string> = {};
@@ -48,7 +48,7 @@ function normalizeTgxCancelPolicy(tgxPolicy: any): object {
     return { refundableTag: refundable ? 'RFN' : 'NRFN', cancelPolicyInfos };
 }
 
-// ─── ETG hotel/info helpers ───────────────────────────────────────────────────
+// âââ ETG hotel/info helpers âââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 function getEtgToken(): string {
     const keyId  = process.env.ETG_KEY_ID  ?? '';
@@ -98,7 +98,7 @@ async function fetchEtgBySlugs(slugs: string[]): Promise<Map<string, string[]>> 
     return map;
 }
 
-// ─── Google Places rating enrichment ─────────────────────────────────────────
+// âââ Google Places rating enrichment âââââââââââââââââââââââââââââââââââââââââ
 // Fetches guest rating + review count from Google Places and caches it in
 // hotel_content so we only pay for one API call per hotel per 30 days.
 
@@ -135,12 +135,12 @@ async function enrichHotelRating(content: {
         const candidate = json?.candidates?.[0];
         if (!candidate?.rating) return null;
 
-        // Convert Google 1-5 scale → 0-10 to match our existing rating convention
+        // Convert Google 1-5 scale â 0-10 to match our existing rating convention
         const rating        = Math.round(candidate.rating * 2 * 10) / 10;
         const reviews_count = candidate.user_ratings_total ?? 0;
         const placeId       = candidate.place_id ?? null;
 
-        // Persist — one charge, reused for 30 days
+        // Persist â one charge, reused for 30 days
         await prisma.hotel_content.update({
             where: { hotel_id: content.hotel_id },
             data: {
@@ -161,7 +161,15 @@ async function enrichHotelRating(content: {
 export class HotelsService {
     private repo = new HotelsRepository();
 
-    // ── Search ────────────────────────────────────────────────────────────────
+    // ── Catalog counts ─────────────────────────────────────────
+
+    /** Catalogued hotel count for a city. Zero is a legitimate answer, not an error. */
+    async countByCity(cityName: string, countryCode?: string): Promise<number> {
+        if (!cityName.trim()) return 0;
+        return this.repo.countHotelContentByCity(cityName, countryCode);
+    }
+
+    // ââ Search ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
     async search(params: {
         destination:  string;
@@ -194,7 +202,7 @@ export class HotelsService {
         return results;
     }
 
-    // ── Amenities ─────────────────────────────────────────────────────────────
+    // ââ Amenities âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
     async getAmenitiesByDestination(destinationCode: string) {
         const hotels = await fetchAmenitiesByDestination(destinationCode);
@@ -298,7 +306,7 @@ export class HotelsService {
         });
     }
 
-    // ── Property detail ───────────────────────────────────────────────────────
+    // ââ Property detail âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
     async getProperty(hotelId: string, dates?: { checkIn?: string; checkOut?: string; adults?: number; children?: number }) {
         const [content, reviews, reviewItems] = await Promise.all([
@@ -308,12 +316,12 @@ export class HotelsService {
         ]);
         if (!content) throw new AppError(404, 'Property not found', 'NOT_FOUND');
 
-        // ── Rating enrichment from Google Places (cached in hotel_content) ──────
+        // ââ Rating enrichment from Google Places (cached in hotel_content) ââââââ
         let effectiveReviews: typeof reviews = reviews;
         if (!effectiveReviews) {
             const c = content as any;
             if (c.review_rating !== null && c.review_rating !== undefined) {
-                // Already cached from a previous Google fetch — use it directly
+                // Already cached from a previous Google fetch â use it directly
                 effectiveReviews = {
                     hotel_id:      hotelId,
                     rating:        c.review_rating,
@@ -370,7 +378,7 @@ export class HotelsService {
         return { content, reviews: effectiveReviews, reviewItems, rooms };
     }
 
-    // ── Pre-book (validate + quote) ───────────────────────────────────────────
+    // ââ Pre-book (validate + quote) âââââââââââââââââââââââââââââââââââââââââââ
 
     async preBook(params: {
         offerId:   string;
@@ -390,10 +398,10 @@ export class HotelsService {
 
         const { hotelCode, checkIn, checkOut, nationality } = parseTgxOptionToken(staleToken);
         if (!hotelCode || !checkIn || !checkOut) {
-            throw new AppError(400, 'Invalid TGX offer ID — could not decode hotel details', 'INVALID_OFFER');
+            throw new AppError(400, 'Invalid TGX offer ID â could not decode hotel details', 'INVALID_OFFER');
         }
 
-        console.log(`[prebook/tgx] Fresh search: hotel=${hotelCode} ${checkIn}→${checkOut} adults=${adults}`);
+        console.log(`[prebook/tgx] Fresh search: hotel=${hotelCode} ${checkIn}â${checkOut} adults=${adults}`);
         const freshResult = await searchHotels({
             hotelCode,
             checkin:  checkIn,
@@ -446,7 +454,7 @@ export class HotelsService {
                     successfulRoom = room;
                     break;
                 } catch (e: any) {
-                    console.warn('[prebook/tgx] Quote failed:', tok.substring(0, 40), '—', e.message?.substring(0, 100));
+                    console.warn('[prebook/tgx] Quote failed:', tok.substring(0, 40), 'â', e.message?.substring(0, 100));
                 }
             }
             if (optionQuote) break;
@@ -486,7 +494,7 @@ export class HotelsService {
         };
     }
 
-    // ── Create Stripe Payment Intent ──────────────────────────────────────────
+    // ââ Create Stripe Payment Intent ââââââââââââââââââââââââââââââââââââââââââ
 
     async createPayment(params: {
         userId:          string;
@@ -525,7 +533,7 @@ export class HotelsService {
 
         const maxAmount = MAX_AMOUNT_BY_CURRENCY[currencyLower] ?? 100_000;
         if (!params.amount || params.amount <= 0 || params.amount > maxAmount) {
-            throw new AppError(400, `Valid amount is required (0 – ${maxAmount.toLocaleString()} ${params.currency.toUpperCase()})`, 'INVALID_AMOUNT');
+            throw new AppError(400, `Valid amount is required (0 â ${maxAmount.toLocaleString()} ${params.currency.toUpperCase()})`, 'INVALID_AMOUNT');
         }
 
         // Duplicate booking guard
@@ -556,7 +564,7 @@ export class HotelsService {
 
         console.log(`[create-payment] Hotel pricing: original=${pricing.originalPrice} ${params.currency}, charged=${pricing.chargedPrice}, markup=${(markupRate * 100).toFixed(0)}%${params.bundleFlightId ? ' (bundle)' : ' (standalone)'}`);
 
-        // Idempotency key — scoped to prebookId + amount + currency so a prebook
+        // Idempotency key â scoped to prebookId + amount + currency so a prebook
         // refresh (different amount) produces a new PI rather than a Stripe rejection.
         const prebookHash = createHash('sha256')
             .update(`${params.prebookId}:${stripeAmount}:${currencyLower}`)
@@ -578,7 +586,7 @@ export class HotelsService {
                 markupRate:    String(markupRate),
                 markupAmount:  String(pricing.markupAmount),
             },
-            description: `CG: ${params.propertyName || 'Hotel'} — ${params.roomName || 'Room'}`,
+            description: `CG: ${params.propertyName || 'Hotel'} â ${params.roomName || 'Room'}`,
             automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
         }, { idempotencyKey });
 
@@ -591,7 +599,7 @@ export class HotelsService {
         };
     }
 
-    // ── Confirm booking ───────────────────────────────────────────────────────
+    // ââ Confirm booking âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
     async confirmBooking(params: {
         paymentIntentId:      string;
@@ -689,7 +697,7 @@ export class HotelsService {
 
         const booking     = tgxResult;
         const clientRef   = booking?.clientRef;
-        if (!clientRef) return { success: false, error: 'Booking failed — no reference returned from TravelgateX' };
+        if (!clientRef) return { success: false, error: 'Booking failed â no reference returned from TravelgateX' };
 
         const bookingId   = clientRef;
         const supplierRef = booking?.supplierRef;
@@ -734,7 +742,7 @@ export class HotelsService {
         // Capture Stripe payment
         await stripe.paymentIntents.capture(params.paymentIntentId);
 
-        // Save booking to DB (non-fatal — provider already confirmed)
+        // Save booking to DB (non-fatal â provider already confirmed)
         const providerConfirmed = true;
         try {
             await prisma.bookings.create({
@@ -789,7 +797,7 @@ export class HotelsService {
         };
     }
 
-    // ── Cancel booking ────────────────────────────────────────────────────────
+    // ââ Cancel booking ââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
     async cancelBooking(params: {
         bookingRef: string;
@@ -803,7 +811,7 @@ export class HotelsService {
         if (!booking) throw new AppError(404, 'Booking not found', 'BOOKING_NOT_FOUND');
         if (booking.user_id !== userId) throw new AppError(403, 'Not authorized to cancel this booking', 'FORBIDDEN');
 
-        // 2. Resolve payment_intent_id — from params, then DB, then Stripe search
+        // 2. Resolve payment_intent_id â from params, then DB, then Stripe search
         let paymentIntentId = params.paymentIntentId || booking.payment_intent_id || null;
         if (!paymentIntentId) {
             try {
@@ -844,7 +852,7 @@ export class HotelsService {
                 const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
                 if (pi.status === 'requires_capture') {
                     await stripe.paymentIntents.cancel(paymentIntentId, { cancellation_reason: 'requested_by_customer' });
-                    stripeRefundId = paymentIntentId; // void, not a refund ID — use PI id as marker
+                    stripeRefundId = paymentIntentId; // void, not a refund ID â use PI id as marker
                 } else if (pi.status === 'succeeded') {
                     const refund = await stripe.refunds.create({
                         payment_intent: paymentIntentId,
@@ -884,7 +892,7 @@ export class HotelsService {
         };
     }
 
-    // ── Deals ─────────────────────────────────────────────────────────────────
+    // ââ Deals âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
     async getDeals(limit = 12) {
         return this.repo.getHotelDeals(limit);
