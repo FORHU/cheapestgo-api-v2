@@ -9,8 +9,10 @@ import {
     normalizeOption, resolveTgxDestinationCode, fetchAmenitiesByHotelCodes,
     type TgxOption,
 } from './travelgatex';
-import { otvCodeToLabel } from './amenityCodes';
-import { resolveHotelDbCity } from '@/lib/cityAliases';
+import { otvCodeToLabel, normalizeAmenityList } from './amenityCodes';
+import { fetchEtgHotelContent, parseEtgHotel, type EtgHotelContent } from './etg';
+import { HotelsRepository } from '@/repositories/hotels.repository';
+import { resolveHotelDbCities } from '@/lib/cityAliases';
 import type { HotelSearchParams, HotelSearchResult } from '@/types/hotels';
 
 // ─── Country name → ISO lookup (shared by stream route and ETG fallback) ──────
@@ -80,8 +82,13 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
             const cityOnly   = cityName.split(',')[0].trim();
             const normalized = cityOnly.replace(/-(si|do|gu|gun|eup)$/i, '').trim();
             const isoCode    = resolveIsoCode(countryCode);
-            const dbCity     = resolveHotelDbCity(normalized, isoCode || countryCode);
-            where = { city: { contains: dbCity, mode: 'insensitive' }, images: { isEmpty: false } };
+            // A city can be filed under several spellings ("Seoul" and "Seúl"), so
+            // match any of them rather than picking one and losing the rest.
+            const dbCities   = resolveHotelDbCities(normalized, isoCode || countryCode);
+            where = {
+                OR: dbCities.map(n => ({ city: { contains: n, mode: 'insensitive' } })),
+                images: { isEmpty: false },
+            };
             if (isoCode) where.country = { equals: isoCode, mode: 'insensitive' };
         }
 
@@ -122,7 +129,10 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
             city:         r.city ?? cityName,
             country:      r.country ?? '',
             description:  r.description ?? '',
-            amenities:    Array.isArray(r.amenities) ? r.amenities : [],
+            // Stored amenities are a mix of prettified non-English strings and
+            // TGX `{ code }` objects; passed through raw they render in Spanish
+            // or Russian on an English page.
+            amenities:    normalizeAmenityList(r.amenities),
             provider:     'travelgatex',
             priceLoading: true,
         }));
@@ -355,55 +365,18 @@ async function fetchEtgHotelNames(hotelIds: string[]): Promise<Map<string, strin
     return nameMap;
 }
 
-async function fetchEtgAmenitiesBatch(hotelIds: string[]): Promise<Map<string, string[]>> {
-    const amenityMap = new Map<string, string[]>();
-    if (!hotelIds.length) return amenityMap;
-    const keyId  = process.env.ETG_KEY_ID;
-    const apiKey = process.env.ETG_API_KEY;
-    if (!keyId || !apiKey) return amenityMap;
-    const token = Buffer.from(`${keyId}:${apiKey}`).toString('base64');
-    const BATCH = 50;
-    for (let i = 0; i < hotelIds.length; i += BATCH) {
-        const batch = hotelIds.slice(i, i + BATCH);
-        try {
-            const abort   = new AbortController();
-            const timeout = setTimeout(() => abort.abort(), 8_000);
-            const res = await fetch('https://api.worldota.net/api/b2b/v3/hotel/info/', {
-                method:  'POST',
-                headers: { 'Authorization': `Basic ${token}`, 'Content-Type': 'application/json' },
-                body:    JSON.stringify({ ids: batch, language: 'en' }),
-                signal:  abort.signal,
-            });
-            clearTimeout(timeout);
-            if (!res.ok) {
-                const body = await res.text().catch(() => '');
-                console.warn(`[amenity-enrich] ETG batch ${res.status}:`, body.slice(0, 300));
-                continue;
-            }
-            const json: any    = await res.json();
-            const hotels: any[] = json?.data?.hotels ?? json?.hotels ?? [];
-            for (const h of hotels) {
-                const id = String(h.id ?? h.hotel_id ?? '');
-                if (!id) continue;
-                const amenities: string[] = (h.amenity_groups ?? [])
-                    .flatMap((g: any) => g.amenities ?? [])
-                    .filter((a: any) => typeof a === 'string' && a.length > 0);
-                if (amenities.length) amenityMap.set(id, amenities);
-            }
-        } catch (e: any) {
-            if (e?.name !== 'AbortError') console.warn('[amenity-enrich] ETG batch failed:', e.message);
-        }
-    }
-    return amenityMap;
-}
-
-// Fetch amenities for numeric RateHawk hids via ETG hotel/info (hid field).
-// Returns Map<hotelId(string), amenities[]>. Also returns resolved slug per hotel
-// so callers can persist it to ratehawk_hid for future batch calls.
+// Fetch content for numeric RateHawk hids via ETG hotel/info (hid field).
+// Returns the parsed content per hotel plus the resolved slug, so callers can
+// persist it to ratehawk_hid for future batch calls.
+//
+// Every hotel_id in the catalog is numeric, so this — not the slug batch — is the
+// path that actually runs. It previously read only `amenity_groups` from the
+// response and discarded the description arriving alongside it, which is why
+// 96.9% of the catalog has no description despite ETG returning one.
 async function fetchEtgAmenitiesByHids(
     hotelIds: string[],
-): Promise<Map<string, { amenities: string[]; slug: string }>> {
-    const result = new Map<string, { amenities: string[]; slug: string }>();
+): Promise<Map<string, { content: EtgHotelContent; amenities: string[]; slug: string }>> {
+    const result = new Map<string, { content: EtgHotelContent; amenities: string[]; slug: string }>();
     if (!hotelIds.length) return result;
     const keyId  = process.env.ETG_KEY_ID;
     const apiKey = process.env.ETG_API_KEY;
@@ -427,11 +400,11 @@ async function fetchEtgAmenitiesByHids(
                 const json: any = await res.json();
                 const d = json?.data;
                 if (!d) return;
-                const amenities: string[] = (d.amenity_groups ?? [])
-                    .flatMap((g: any) => g.amenities ?? [])
-                    .filter((a: any) => typeof a === 'string' && a.length > 0);
-                if (amenities.length || d.id) {
-                    result.set(id, { amenities, slug: d.id ?? '' });
+                // Same response, parsed for everything it carries rather than
+                // amenities alone.
+                const content = parseEtgHotel(d);
+                if (Object.keys(content).length || d.id) {
+                    result.set(id, { content, amenities: content.amenities ?? [], slug: d.id ?? '' });
                 }
             } catch { /* non-fatal */ }
         }));
@@ -1246,11 +1219,13 @@ async function buildCityResults(
                 try {
                     const amenityMap = new Map<string, string[]>();
                     if (isNumeric) {
-                        const etgResults = await fetchEtgAmenitiesByHids(noAmenityCodes);
+                        const etgResults  = await fetchEtgAmenitiesByHids(noAmenityCodes);
                         const slugUpdates = new Map<string, string>();
-                        for (const [id, { amenities, slug }] of etgResults) {
+                        const contentMapEtg = new Map<string, EtgHotelContent>();
+                        for (const [id, { content, amenities, slug }] of etgResults) {
                             if (amenities.length) amenityMap.set(id, amenities);
                             if (slug) slugUpdates.set(id, slug);
+                            if (Object.keys(content).length) contentMapEtg.set(id, content);
                         }
                         if (slugUpdates.size > 0) {
                             for (const [hotelId, slug] of slugUpdates) {
@@ -1260,11 +1235,35 @@ async function buildCityResults(
                                 }).catch(() => {});
                             }
                         }
-                        console.log(`[amenity-enrich] ETG hid lookup returned amenities for ${amenityMap.size}/${noAmenityCodes.length} hotels`);
+                        // Persist name and description as well as amenities. This is
+                        // what stops the next request re-fetching the same hotel, and
+                        // it is the only path that fills `description` for a catalog
+                        // whose ids are all numeric.
+                        if (contentMapEtg.size > 0) {
+                            new HotelsRepository().upsertEtgContent(contentMapEtg).catch(() => {});
+                        }
+                        const withDesc = [...contentMapEtg.values()].filter(c => c.description).length;
+                        console.log(`[amenity-enrich] ETG hid lookup: ${amenityMap.size} with amenities, ${withDesc} with description, of ${noAmenityCodes.length}`);
                     } else {
-                        const etgResult = await fetchEtgAmenitiesBatch(noAmenityCodes);
-                        for (const [id, amenities] of etgResult) amenityMap.set(id, amenities);
-                        console.log(`[amenity-enrich] ETG returned amenities for ${amenityMap.size} hotels`);
+                        // One call for name, description and amenities rather than
+                        // fetching amenities alone. Description is the reason: 96.9%
+                        // of the catalog has none, so property pages render with no
+                        // prose at all, and ETG returns it in the same response we
+                        // were already paying for.
+                        //
+                        // Amenities here come from `serp_filters`, ETG's own facet
+                        // vocabulary — smaller and cleaner than `amenity_groups`,
+                        // and what v1 reads.
+                        const etgContent = await fetchEtgHotelContent(noAmenityCodes);
+                        for (const [id, c] of etgContent) {
+                            if (c.amenities?.length) amenityMap.set(id, c.amenities);
+                        }
+                        console.log(`[amenity-enrich] ETG returned content for ${etgContent.size} hotels`);
+                        // Persisted whole, so the next request for any of these
+                        // hotels serves from the catalog instead of calling ETG again.
+                        if (etgContent.size > 0) {
+                            new HotelsRepository().upsertEtgContent(etgContent).catch(() => {});
+                        }
                     }
                     if (amenityMap.size > 0) {
                         updateHotelAmenitiesInDb(amenityMap).catch(() => {});

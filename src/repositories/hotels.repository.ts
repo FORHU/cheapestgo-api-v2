@@ -1,15 +1,120 @@
 import { prisma } from '@/lib/prisma';
+import { Prisma } from '@prisma/client';
+import { resolveHotelDbCities } from '@/lib/cityAliases';
+import type { EtgHotelContent } from '@/lib/hotels/etg';
 
 export class HotelsRepository {
-    /** How many catalogued hotels a city has. Drives the search bar's result-count hint. */
+    /**
+     * How many catalogued hotels a city has. Drives the search bar's result-count hint.
+     *
+     * Counts every spelling the catalog files the city under, not just the one the
+     * visitor typed: Seoul is stored as both "Seoul" and "Seúl", so counting one
+     * name reported roughly half the city.
+     */
     async countHotelContentByCity(cityName: string, countryCode?: string) {
         const cityOnly = cityName.split(',')[0].trim();
         const isoCode  = countryCode && /^[A-Za-z]{2}$/.test(countryCode) ? countryCode : null;
+        const spellings = resolveHotelDbCities(cityOnly, isoCode ?? '');
 
-        const where: any = { city: { equals: cityOnly, mode: 'insensitive' } };
+        const where: any = {
+            OR: spellings.map(n => ({ city: { equals: n, mode: 'insensitive' } })),
+        };
         if (isoCode) where.country = { equals: isoCode, mode: 'insensitive' };
 
         return prisma.hotel_content.count({ where });
+    }
+
+    /**
+     * Persist ETG-sourced name, description and amenities.
+     *
+     * api-v2 fetched this content on every request and threw it away; this is
+     * what makes the second request cheap. Each field is written only when the
+     * existing row has nothing better, so a richer TGX name or description is
+     * never overwritten by an ETG one:
+     *
+     *   name        — replaced only when missing, or when it is just the id
+     *   description — replaced only when null or empty
+     *   amenities   — replaced only when absent or an empty array
+     *
+     * Rows are written one at a time on purpose. A batch that fails loses every
+     * hotel in it, and enrichment is worth having partially.
+     */
+    async upsertEtgContent(content: Map<string, EtgHotelContent>): Promise<number> {
+        if (!content.size) return 0;
+
+        let saved = 0;
+        for (const [hotelId, c] of content) {
+            try {
+                await prisma.$executeRaw(Prisma.sql`
+                    INSERT INTO hotel_content (hotel_id, name, images, description, amenities, content_source, fetched_at)
+                    VALUES (
+                        ${hotelId}, ${c.name ?? null}, '{}',
+                        ${c.description ?? null},
+                        ${JSON.stringify(c.amenities ?? [])}::jsonb,
+                        'etg', now()
+                    )
+                    ON CONFLICT (hotel_id) DO UPDATE SET
+                        name        = CASE WHEN hotel_content.name IS NULL OR hotel_content.name = hotel_content.hotel_id
+                                      THEN COALESCE(EXCLUDED.name, hotel_content.name) ELSE hotel_content.name END,
+                        description = CASE WHEN (hotel_content.description IS NULL OR hotel_content.description = '')
+                                           AND EXCLUDED.description IS NOT NULL
+                                      THEN EXCLUDED.description ELSE hotel_content.description END,
+                        amenities   = CASE WHEN (hotel_content.amenities IS NULL
+                                                 OR jsonb_typeof(hotel_content.amenities) <> 'array'
+                                                 OR jsonb_array_length(hotel_content.amenities) = 0)
+                                           AND jsonb_typeof(EXCLUDED.amenities) = 'array'
+                                           AND jsonb_array_length(EXCLUDED.amenities) > 0
+                                      THEN EXCLUDED.amenities ELSE hotel_content.amenities END,
+                        fetched_at  = now()
+                `);
+                saved++;
+            } catch { /* one hotel failing must not cost the rest of the batch */ }
+        }
+
+        if (saved) console.log(`[etg-content] upserted ${saved} hotels into hotel_content`);
+        return saved;
+    }
+
+    // ─── Room groups ──────────────────────────────────────────────────────────
+
+    /**
+     * The stored room catalog for a hotel, plus the RateHawk slug needed to seed
+     * it from ETG when it is missing.
+     *
+     * `room_groups` holds one of two shapes by history: the ETG-seeded array of
+     * named groups, or an older TGX map keyed by room code. Callers have to
+     * handle both, so the raw value is returned rather than a guess.
+     */
+    async findRoomGroups(hotelId: string): Promise<{
+        roomGroups:  unknown;
+        ratehawkHid: string | null;
+        /** Null means never seeded. The column defaults to `[]`, so an empty
+         *  value on its own cannot tell "we asked and there is nothing" apart
+         *  from "we have never asked". */
+        seededAt:    Date | null;
+    } | null> {
+        const row = await prisma.hotel_content.findUnique({
+            where:  { hotel_id: hotelId },
+            select: { room_groups: true, ratehawk_hid: true, room_groups_seeded_at: true },
+        });
+        if (!row) return null;
+        return {
+            roomGroups:  row.room_groups,
+            ratehawkHid: row.ratehawk_hid ?? null,
+            seededAt:    row.room_groups_seeded_at ?? null,
+        };
+    }
+
+    /**
+     * Store the room catalog. Writing an empty result is deliberate: it records
+     * that the supplier has no room-level content for this hotel, so the next
+     * visit falls back to the hotel gallery instead of paying for the lookup again.
+     */
+    async saveRoomGroups(hotelId: string, groups: unknown): Promise<void> {
+        await prisma.hotel_content.updateMany({
+            where: { hotel_id: hotelId },
+            data:  { room_groups: groups as any, room_groups_seeded_at: new Date() },
+        });
     }
 
     // ─── Hotel content ────────────────────────────────────────────────────────

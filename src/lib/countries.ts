@@ -371,6 +371,21 @@ export const COUNTRY_SEARCH_LIST: { name: string; code: string }[] = [
  * If formattedAddress is empty (e.g., city-states like Singapore),
  * falls back to checking if displayName itself is a country name.
  */
+/**
+ * Normalise a country value to an ISO-3166 alpha-2 code.
+ *
+ * Country arrives as a code from Mapbox but as a name from other paths — stored
+ * search keys carry values like "FRANCE" — and code that compares the two forms
+ * directly treats "paris|FRANCE" and "paris|FR" as different places.
+ * Returns null when the value names no country we know.
+ */
+export function resolveIsoCode(raw?: string | null): string | null {
+    if (!raw) return null;
+    const trimmed = raw.trim();
+    if (/^[A-Za-z]{2}$/.test(trimmed)) return trimmed.toUpperCase();
+    return COUNTRY_NAME_TO_CODE[trimmed.toLowerCase()] ?? null;
+}
+
 export function extractCountryCode(formattedAddress: string, displayName?: string): string {
     if (formattedAddress) {
         // Get the last part (country name) after the last comma

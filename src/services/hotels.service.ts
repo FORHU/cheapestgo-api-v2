@@ -1,7 +1,9 @@
 import { HotelsRepository } from '@/repositories/hotels.repository';
 import { runTgxSearch as searchHotels } from '@/lib/hotels/search';
 import { quoteTgx, bookTgx, cancelTgx, fetchAmenitiesByDestination } from '@/lib/hotels/travelgatex';
-import { otvCodeToLabel } from '@/lib/hotels/amenityCodes';
+import { otvCodeToLabel, normalizeAmenityList } from '@/lib/hotels/amenityCodes';
+import { RoomCatalogService } from '@/services/roomCatalog.service';
+import { orderRoomPhotosByDistinctiveness } from '@/lib/hotels/roomMatch';
 import { stripe } from '@/lib/stripe';
 import { AppError } from '@/middleware/error.middleware';
 import { prisma } from '@/lib/prisma';
@@ -361,21 +363,64 @@ export class HotelsService {
                         seen.set(key, r);
                     }
                 }
-                rooms = Array.from(seen.values()).map((r: any) => ({
-                    id:            r.offerId,
-                    offerId:       r.offerId,
-                    name:          r.roomName,
-                    price:         r.price,
-                    currency:      r.currency,
-                    refundableTag: r.refundable ? 'RFN' : 'NRFN',
-                    boardType:     r.boardCode,
-                }));
+                const deduped = Array.from(seen.values());
+
+                // Room-level photos and amenities. TGX returns bookable offers with
+                // almost no static content, so these come from ETG matched by name.
+                let catalog = new Map<string, { photos: string[]; amenities: string[]; roomSize?: string }>();
+                try {
+                    const descMap = new Map<string, string>();
+                    for (const r of deduped) {
+                        if (r.roomCode && r.roomName) descMap.set(r.roomCode, r.roomName);
+                    }
+                    if (descMap.size) {
+                        catalog = await new RoomCatalogService().fetchRoomCatalog(
+                            (content as any).hotel_id,
+                            [...descMap.keys()],
+                            descMap,
+                        );
+                    }
+                } catch (err) {
+                    // Photos are an enrichment; a room without them is still bookable.
+                    console.warn('[property] room catalog failed:', err instanceof Error ? err.message : err);
+                }
+
+                rooms = deduped.map((r: any) => {
+                    const extra = r.roomCode ? catalog.get(r.roomCode) : undefined;
+                    return {
+                        id:            r.offerId,
+                        offerId:       r.offerId,
+                        name:          r.roomName,
+                        price:         r.price,
+                        currency:      r.currency,
+                        refundableTag: r.refundable ? 'RFN' : 'NRFN',
+                        boardType:     r.boardCode,
+                        roomCode:      r.roomCode,
+                        roomPhotos:    extra?.photos ?? [],
+                        amenities:     extra?.amenities ?? [],
+                        ...(extra?.roomSize ? { roomSize: extra.roomSize } : {}),
+                    };
+                });
+
+                // Suppliers give neighbouring rooms overlapping photo sets — at
+                // Hotel Naru Seoul two correctly-matched rooms shared 7 of 10 — and
+                // a card shows only the first few, so both read as identical. Lead
+                // with what is unique to each; nothing is discarded.
+                rooms = orderRoomPhotosByDistinctiveness(rooms);
             } catch (err) {
                 console.warn('[property] TGX room fetch failed:', err instanceof Error ? err.message : err);
             }
         }
 
-        return { content, reviews: effectiveReviews, reviewItems, rooms };
+        // `hotel_content.amenities` is heterogeneous — plain strings prettified
+        // from non-English supplier codes alongside `{ code }` objects from TGX.
+        // Returned raw, a Spanish or Russian label reaches an English page.
+        const normalized = {
+            ...(content as any),
+            amenities: normalizeAmenityList((content as any).amenities),
+        };
+
+        return { content: normalized, reviews: effectiveReviews, reviewItems, rooms };
     }
 
     // ââ Pre-book (validate + quote) âââââââââââââââââââââââââââââââââââââââââââ

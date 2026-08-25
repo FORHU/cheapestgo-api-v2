@@ -134,9 +134,15 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         // Honolulu / Oahu
         'waikiki': 'Honolulu', 'downtown honolulu': 'Honolulu', 'chinatown honolulu': 'Honolulu',
         'ala moana': 'Honolulu', 'kailua oahu': 'Honolulu', 'manoa': 'Honolulu',
-        // Maui
-        'lahaina': 'Kahului', 'kaanapali': 'Kahului', 'wailea maui': 'Kahului',
-        'kihei': 'Kahului', 'paia maui': 'Kahului', 'makawao': 'Kahului',
+        // Maui. These all pointed at Kahului, which is the airport town and holds
+        // 5 hotels — while Wailea has 369 and Kaanapali 255. Sending a Maui search
+        // there returned almost nothing. Resort areas now keep their own name
+        // where the catalog stocks them, and the island falls to the largest.
+        'maui': 'Wailea', 'maui island': 'Wailea',
+        'kaanapali': 'Kaanapali', 'kaanapali beach': 'Kaanapali',
+        'wailea maui': 'Wailea', 'wailea': 'Wailea',
+        'lahaina': 'Kaanapali', 'kihei': 'Wailea',
+        'paia maui': 'Kahului', 'makawao': 'Kahului',
         // Big Island Hawaii
         'kailua kona': 'Kailua-Kona', 'hilo city': 'Hilo', 'waikoloa': 'Waikoloa',
         // Kauai
@@ -1812,6 +1818,11 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'pico arieiro': 'Funchal', 'levada walks': 'Funchal',
     },
     GR: {
+        // Islands people search by island name, whose hotels the catalog files
+        // under the main town. Each was searched for and reached nothing.
+        'paros': 'Parikia', 'paros island': 'Parikia',
+        'kefalonia': 'Argostoli-Stadt', 'cephalonia': 'Argostoli-Stadt',
+        'lesbos': 'Mytilini', 'lesvos': 'Mytilini',
         'plaka': 'Athens', 'monastiraki': 'Athens', 'kolonaki': 'Athens',
         'psiri': 'Athens', 'thissio': 'Athens', 'exarchia': 'Athens',
         'gazi': 'Athens', 'koukaki': 'Athens', 'petralona': 'Athens',
@@ -2615,6 +2626,10 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
     },
     // ── Asia Pacific ───────────────────────────────────────────────────────────
     JP: {
+        // Mapbox returns the administrative name for a region rung, and the
+        // catalog files hotels under the city. Searched for and reached nothing.
+        'osaka prefecture': 'Osaka', 'tokyo prefecture': 'Tokyo',
+        'kyoto prefecture': 'Kyoto', 'hokkaido prefecture': 'Sapporo',
         // Tokyo
         'shibuya': 'Tokyo', 'shinjuku': 'Tokyo', 'ginza': 'Tokyo',
         'akihabara': 'Tokyo', 'harajuku': 'Tokyo', 'roppongi': 'Tokyo',
@@ -5715,7 +5730,10 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'loboc': 'Tagbilaran', 'baclayon': 'Tagbilaran', 'anda bohol': 'Tagbilaran',
         'tawala': 'Tawala', 'dauis': 'Dauis', 'doljo beach': 'Panglao',
         'danao bohol': 'Tagbilaran',
-        // Siargao
+        // Siargao. The island's own name was missing while every sub-area had an
+        // entry, so the one thing people actually type reached none of the 161
+        // hotels the catalog files under General Luna.
+        'siargao': 'General Luna', 'siargao island': 'General Luna',
         'cloud 9': 'General Luna', 'general luna siargao': 'General Luna',
         'union siargao': 'General Luna', 'pacifico': 'General Luna',
         'del carmen siargao': 'General Luna', 'burgos siargao': 'General Luna',
@@ -7411,7 +7429,11 @@ export const CITY_ALIASES: Record<string, Record<string, string>> = {
         'bel ombre seychelles': 'Bel Ombre', 'eden island': 'Victoria',
         'cote dor': 'Baie Sainte Anne', 'anse volbert': 'Baie Sainte Anne',
         'baie sainte anne': 'Baie Sainte Anne', 'vallee de mai': 'Baie Sainte Anne',
-        'la digue': 'La Passe', 'la passe': 'La Passe',
+        // La Passe is the island's village and holds no hotels in the catalog;
+        // all 53 are filed under the island name. Same shape as the Maui aliases
+        // that pointed at Kahului: the alias redirected a search away from the
+        // inventory rather than towards it.
+        'la digue': 'La Digue', 'la passe': 'La Digue',
         'anse source dargent': 'La Passe', 'bird island seychelles': 'Victoria',
     },
     MV: {
@@ -12137,6 +12159,17 @@ export const HOTEL_DB_CITY_MAP: Record<string, string> = {
     'Ooty|IN':                      'Udagamandalam',
     'Jorhat|IN':                    'Jorhãt',
     'Incheon|KR':                   "Inch'on",
+    // Found by scripts/city-spelling-candidates.mjs against real search demand —
+    // each was searched for and returned nothing at all.
+    'Fez|MA':                       'Fès',            // 354 hotels, French spelling
+    'Alcudia|ES':                   'Alcúdia',        // 330 hotels, Catalan accent
+    'Quebec City|CA':               'Québec',         // 192 hotels
+    'Quebec|CA':                    'Québec',
+    'Taipei|TW':                    'Taipeh',         // 697 hotels, German spelling
+    'San Jose|US':                  'San José',       // 104 hotels
+    'Koh Samui|TH':                 'Ko Samui',       // 1,182 hotels
+    'Can Tho|VN':                   'Cân Tho',        // 184 hotels
+    'Grindavik|IS':                 'Grindavík',
     'Goa|IN':                       'Süd-Goa',
     'Dar es Salaam|TZ':             'Daressalam',
     'Zanzibar|TZ':                  'Sansibar',
@@ -12156,10 +12189,116 @@ export const HOTEL_DB_CITY_MAP: Record<string, string> = {
     'Saint Petersburg|US':          'St. Petersburg',
 };
 
+/**
+ * Cities the catalog stores under more than one spelling at once.
+ *
+ * HOTEL_DB_CITY_MAP maps a canonical name to *one* DB value, which is right when
+ * a supplier consistently uses a single localization ("Tokio", "Rom"). It is
+ * wrong when several coexist, and several often do: Seoul is filed as both
+ * `Seoul` (1,094 hotels) and `Seúl` (936), so mapping it either way hid roughly
+ * half the city's inventory from a city-scoped search. Beijing has the same
+ * split — `Peking` 4,136 against `Beijing` 964.
+ *
+ * Each entry lists every spelling to search, including the canonical one.
+ *
+ * These were confirmed by hand, not derived. `scripts/city-spelling-candidates.mjs`
+ * finds candidates by clustering catalog cities on hotel centroid and name
+ * similarity, but its precision is about one in two: it cannot tell `Seoul`/`Seúl`
+ * apart from `Gili Air`/`Gili Meno`, two different Indonesian islands 2.9 km
+ * apart whose names are equally alike. Auto-merging would trade a visible bug
+ * (missing hotels) for an invisible one (wrong hotels), so the script reports and
+ * a person decides.
+ *
+ * _Avoid_ adding a district here — `Chersonissos` and `Limenas Hersonissos` are a
+ * town and its port, not two spellings. Sub-areas belong in CITY_ALIASES.
+ */
+export const HOTEL_DB_CITY_SYNONYMS: Record<string, string[]> = {
+    'Seoul|KR':             ['Seoul', 'Seúl', 'Seoel'],   // Seoel seen in production, absent locally
+    'Beijing|CN':           ['Peking', 'Beijing'],
+    'Tokyo|JP':             ['Tokio', 'Tokyo'],
+    'Athens|GR':            ['Athen', 'Athens'],
+    'London|GB':            ['London', 'Londen'],
+    'New Delhi|IN':         ['Neu Delhi', 'New Delhi'],
+    'Haridwar|IN':          ['Haridwar', 'Haridwār'],
+    'Jorhat|IN':            ['Jorhãt', 'Jorhat'],
+    'Marrakesh|MA':         ['Marrakesh', 'Marrakesch'],
+    // Three spellings, and the canonical is Kyiv — Mapbox returns the Ukrainian
+    // transliteration, not the Russian one.
+    'Kyiv|UA':              ['Kiew', 'Kiev', 'Kyiv'],
+    'Lucerne|CH':           ['Luzern', 'Lucerne'],
+    // The catalog holds almost nothing under the English name: 599 as "Singapur",
+    // 45 in Cyrillic, 4 as "Singapore". Mapbox returns "Singapore", so without
+    // this a search for the city reached 4 of its 648 hotels.
+    'Singapore|SG':         ['Singapur', 'Сингапур', 'Singapore'],
+    // "-stad" is Dutch for "town". Not a sub-area — the same island town under a
+    // localized name, which is why the containment rule that correctly rejects
+    // "Kerobokan Kelod" must not be trusted on its own.
+    'Skiathos|GR':          ['Skiathos', 'Skiathos-stad'],
+    'Ho Chi Minh City|VN':  ['Ho-Chi-Minh-Stadt', 'Ho Chi Minh City'],
+    'Ha Long|VN':           ['Ha Long', 'Halong'],
+};
+
+/**
+ * Every hotel_content city spelling to search for a canonical city name.
+ *
+ * Prefer this over `resolveHotelDbCity`: a city with two spellings needs both,
+ * and picking one silently halves the results.
+ */
+// Both tables are written with cities capitalised as Mapbox returns them, but a
+// city name reaches the resolver from several places — a URL, a stored search
+// key, a supplier payload — and not all of them preserve case. A case-sensitive
+// lookup fails silently and completely: "rome" misses `Rome|IT` and searches the
+// catalog for a spelling that has no rows, so Rome returns nothing at all.
+// Indexed once at module load rather than lower-casing on every call.
+const DB_CITY_INDEX: Record<string, string[]> = (() => {
+    const index: Record<string, string[]> = {};
+    for (const [key, mapped] of Object.entries(HOTEL_DB_CITY_MAP)) {
+        index[key.toLowerCase()] = [mapped];
+    }
+    // Synonyms win over the one-to-one map for the same city.
+    for (const [key, spellings] of Object.entries(HOTEL_DB_CITY_SYNONYMS)) {
+        index[key.toLowerCase()] = spellings;
+    }
+    return index;
+})();
+
+/**
+ * Fold a district or neighbourhood onto the city whose inventory it sits in:
+ * "Gangnam District" to Seoul, "Manhattan" to New York. Returns the input when
+ * nothing matches.
+ *
+ * The same rule the search path applies to Mapbox output, exposed for callers
+ * that start from a stored or user-typed name instead — the daily content
+ * refresh reads `hotel_search_stats`, where "gangnam", "gangnam district" and
+ * "seoul" are three separate rows competing for the same budget.
+ *
+ * Exact match first, then the longest whole-word prefix so "jamaica plain"
+ * (Boston) beats the shorter "jamaica" (New York).
+ */
+export function resolveCanonicalCity(city: string, countryCode: string): string {
+    const countryMap = CITY_ALIASES[countryCode.toUpperCase()];
+    if (!countryMap) return city;
+
+    const lower = city.toLowerCase().trim();
+    if (countryMap[lower]) return countryMap[lower];
+
+    const prefixKey = Object.keys(countryMap)
+        .filter(key => lower.startsWith(key + ' ') || lower.startsWith(key + '-'))
+        .sort((a, b) => b.length - a.length)[0];
+    return prefixKey ? countryMap[prefixKey] : city;
+}
+
+export function resolveHotelDbCities(city: string, countryCode: string): string[] {
+    const hit = DB_CITY_INDEX[`${city}|${countryCode}`.toLowerCase()];
+    return hit ?? [city];
+}
+
 /** Resolve the canonical city name to its actual hotel_content DB value.
- *  Returns the input unchanged when no mapping exists. */
+ *  Returns the input unchanged when no mapping exists.
+ *  Prefer `resolveHotelDbCities` — this returns only the first of several
+ *  spellings and will under-count any city the catalog files more than one way. */
 export function resolveHotelDbCity(city: string, countryCode: string): string {
-    return HOTEL_DB_CITY_MAP[`${city}|${countryCode.toUpperCase()}`] ?? city;
+    return resolveHotelDbCities(city, countryCode)[0];
 }
 
 // ─── Query-side alias index ───────────────────────────────────────────────────

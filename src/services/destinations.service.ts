@@ -1,5 +1,5 @@
 import { config } from '@/config';
-import { CITY_ALIASES, matchAliasQuery, resolveHotelDbCity } from '@/lib/cityAliases';
+import { CITY_ALIASES, matchAliasQuery, resolveHotelDbCities } from '@/lib/cityAliases';
 import { COUNTRY_SEARCH_LIST, extractCountryCode } from '@/lib/countries';
 import { DestinationsRepository } from '@/repositories/destinations.repository';
 import { logger } from '@/lib/logger';
@@ -329,29 +329,59 @@ export class DestinationsService {
      * name is mapped to its catalog spelling before querying.
      */
     private async filterCitiesWithHotels(
-        cities: Array<{ title: string; countryCode: string; canonicalCity?: string }>,
+        cities: Array<{
+            title: string;
+            countryCode: string;
+            canonicalCity?: string;
+            rung?: DestinationRung;
+            bbox?: [number, number, number, number];
+        }>,
     ): Promise<Set<string>> {
         if (!cities.length) return new Set();
         try {
             const pairs = cities.map(c => ({
                 canonical: (c.canonicalCity ?? c.title).toLowerCase(),
-                dbCity:    resolveHotelDbCity(c.canonicalCity ?? c.title, c.countryCode).toLowerCase(),
+                // A city can be filed under several spellings at once - Seoul is
+                // both "Seoul" and "Seúl" - so all of them have to be searched or
+                // a city we stock thousands of hotels in reports as uncovered.
+                dbCities:  resolveHotelDbCities(c.canonicalCity ?? c.title, c.countryCode)
+                    .map(n => n.toLowerCase()),
                 country:   c.countryCode.toLowerCase(),
             }));
 
-            const rows    = await this.repo.findCityCoverage(pairs.map(p => p.dbCity));
+            const rows    = await this.repo.findCityCoverage([...new Set(pairs.flatMap(p => p.dbCities))]);
             const matched = new Set(rows.map(r => `${r.city}|${r.country}`));
 
             const result = new Set<string>();
             for (const p of pairs) {
-                if (matched.has(`${p.dbCity}|${p.country}`)) result.add(p.canonical);
+                // Any one spelling having hotels means we cover the city.
+                if (p.dbCities.some(n => matched.has(`${n}|${p.country}`))) result.add(p.canonical);
             }
 
             // Fall back to a city-only match when nothing matched on country too.
             if (result.size === 0) {
                 const cityOnly = new Set(rows.map(r => r.city));
-                for (const p of pairs) if (cityOnly.has(p.dbCity)) result.add(p.canonical);
+                for (const p of pairs) if (p.dbCities.some(n => cityOnly.has(n))) result.add(p.canonical);
             }
+
+            // An area rung has no catalog row under its own name — Palawan's hotels
+            // are filed as El Nido, Coron and Puerto Princesa — so the name check
+            // above always calls it uncovered and it sorts below any city that
+            // merely resembles the query. Ask geographically instead.
+            const areas = cities.filter(c =>
+                (c.rung === 'province' || c.rung === 'country') &&
+                Array.isArray(c.bbox) &&
+                !result.has((c.canonicalCity ?? c.title).toLowerCase())
+            );
+            if (areas.length) {
+                const covered = await Promise.all(
+                    areas.map(a => this.repo.areaHasHotels(a.bbox!, a.countryCode).catch(() => false)),
+                );
+                areas.forEach((a, i) => {
+                    if (covered[i]) result.add((a.canonicalCity ?? a.title).toLowerCase());
+                });
+            }
+
             return result;
         } catch (err) {
             // Coverage is a ranking signal, not a filter: if the catalog cannot be
