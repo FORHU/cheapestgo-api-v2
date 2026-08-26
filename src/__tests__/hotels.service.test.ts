@@ -34,6 +34,14 @@ vi.mock('@/repositories/hotels.repository', () => ({
         this.findHotelContent     = vi.fn();
         this.findHotelReviews     = vi.fn();
         this.findHotelReviewItems = vi.fn();
+        this.savePrebookQuote     = vi.fn().mockResolvedValue(undefined);
+        this.savePolicySnapshot   = vi.fn().mockResolvedValue(undefined);
+        // Cancellation reads the terms recorded at booking time. Null is the
+        // "no policy on record" path, which refuses to refund rather than guess.
+        this.findPolicySnapshot   = vi.fn().mockResolvedValue(null);
+        // Checkout charges from this row rather than the client's payload, so these
+        // cases have to supply one; a null here is the QUOTE_NOT_FOUND path.
+        this.findPrebookQuote     = vi.fn();
     }),
 }));
 
@@ -59,6 +67,8 @@ vi.mock('@/middleware/error.middleware', () => ({
 vi.mock('@/lib/pricing', () => ({
     HOTEL_MARKUP:  0.05,
     BUNDLE_MARKUP: 0.04,
+    HOTEL_FX_DISPLAY_TOLERANCE: 0.005,
+    PREBOOK_QUOTE_TTL_MS: 30 * 60 * 1000,
     applyMarkup: (base: number, rate: number) => ({
         originalPrice: base,
         chargedPrice:  Math.round(base * (1 + rate) * 100) / 100,
@@ -166,6 +176,50 @@ describe('HotelsService.createPayment()', () => {
         checkIn:      '2026-09-01',
         checkOut:     '2026-09-05',
     };
+
+    // The recorded supplier quote these payments charge from. Same currency as the
+    // charge, so no FX is involved and the amount is taken as-is.
+    beforeEach(() => {
+        (service as any).repo.findPrebookQuote.mockResolvedValue({
+            gross:      300,
+            currency:   'USD',
+            expires_at: new Date(Date.now() + 20 * 60_000),
+        });
+    });
+
+    it('charges the recorded quote, not a tampered payload', async () => {
+        vi.mocked(stripe.paymentIntents.create).mockResolvedValue({
+            id: PI_ID, client_secret: 'cs_test_secret',
+        } as any);
+
+        // Browser claims the room costs 1 while the supplier quoted 300.
+        await expect(service.createPayment({ ...BASE_PARAMS, amount: 1 }))
+            .rejects.toMatchObject({ code: 'PRICE_CHANGED', status: 409 });
+
+        expect(stripe.paymentIntents.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses a prebookId with no recorded quote', async () => {
+        (service as any).repo.findPrebookQuote.mockResolvedValue(null);
+
+        await expect(service.createPayment(BASE_PARAMS))
+            .rejects.toMatchObject({ code: 'QUOTE_NOT_FOUND', status: 409 });
+
+        expect(stripe.paymentIntents.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses an expired quote', async () => {
+        (service as any).repo.findPrebookQuote.mockResolvedValue({
+            gross:      300,
+            currency:   'USD',
+            expires_at: new Date(Date.now() - 1_000),
+        });
+
+        await expect(service.createPayment(BASE_PARAMS))
+            .rejects.toMatchObject({ code: 'QUOTE_EXPIRED', status: 409 });
+
+        expect(stripe.paymentIntents.create).not.toHaveBeenCalled();
+    });
 
     it('throws 400 for unsupported currency', async () => {
         await expect(service.createPayment({ ...BASE_PARAMS, currency: 'XYZ' }))
@@ -336,6 +390,11 @@ describe('HotelsService.cancelBooking()', () => {
         provider:         'travelgatex',
         provider_metadata: { hotelCode: '10000352', supplierRef: 'SUP-REF' },
         property_name:    'The Grand Hotel',
+        // What was paid. Cancellation refuses outright without it, since a share of an
+        // unreadable amount is not something to hand back.
+        total_price:      1000,
+        currency:         'PHP',
+        check_in:         new Date(Date.now() + 30 * 86_400_000),
     };
 
     function mockBookingRow(overrides: Partial<typeof MOCK_BOOKING> = {}) {
@@ -396,8 +455,19 @@ describe('HotelsService.cancelBooking()', () => {
         expect(stripe.refunds.create).not.toHaveBeenCalled();
     });
 
-    it('issues a refund when the PI has already been captured', async () => {
+    /** Terms recorded at booking time; cancellation is judged against these. */
+    const givePolicy = (policy: unknown) =>
+        (service as any).repo.findPolicySnapshot.mockResolvedValue(policy);
+
+    const freeCancellation = {
+        policyType: 'free_cancellation' as const,
+        freeCancelDeadline: new Date(Date.now() + 7 * 86_400_000),
+        tiers: [],
+    };
+
+    it('refunds in full when the terms say free cancellation', async () => {
         mockBookingRow();
+        givePolicy(freeCancellation);
         vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
         vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 12000 } as any);
         vi.mocked(stripe.refunds.create).mockResolvedValue({ id: 're_test', status: 'succeeded' } as any);
@@ -405,10 +475,57 @@ describe('HotelsService.cancelBooking()', () => {
         await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID, paymentIntentId: PI_ID });
 
         expect(stripe.refunds.create).toHaveBeenCalledWith(
-            expect.objectContaining({ payment_intent: PI_ID, reason: 'requested_by_customer' }),
-            expect.objectContaining({ idempotencyKey: `hotel-refund-${BOOKING_REF}` })
+            expect.objectContaining({ payment_intent: PI_ID, amount: 12000, reason: 'requested_by_customer' }),
+            expect.objectContaining({ idempotencyKey: `hotel-refund-${BOOKING_REF}-12000` })
         );
         expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+    });
+
+    it('refunds nothing on a non-refundable rate', async () => {
+        // The bug this replaced: pi.amount went back regardless, so the guest was made
+        // whole out of our own pocket while the supplier still charged for the room.
+        mockBookingRow();
+        givePolicy({ policyType: 'non_refundable', freeCancelDeadline: null, tiers: [] });
+        vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 12000 } as any);
+
+        await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID, paymentIntentId: PI_ID });
+
+        expect(stripe.refunds.create).not.toHaveBeenCalled();
+    });
+
+    it('refunds nothing when no terms were ever recorded', async () => {
+        mockBookingRow();
+        givePolicy(null);
+        vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 12000 } as any);
+
+        await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID, paymentIntentId: PI_ID });
+
+        expect(stripe.refunds.create).not.toHaveBeenCalled();
+    });
+
+    it('scales the refund to the penalty in force', async () => {
+        // A 250 penalty against a 1000 booking leaves 75% of whatever was charged.
+        mockBookingRow({ total_price: 1000, currency: 'PHP' } as never);
+        givePolicy({
+            policyType: 'tiered',
+            freeCancelDeadline: new Date(Date.now() - 86_400_000),
+            tiers: [{
+                cancelDeadline: new Date(Date.now() + 3 * 86_400_000),
+                penaltyAmount: 250, penaltyType: 'fixed', currency: 'PHP', tierOrder: 0,
+            }],
+        });
+        vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 12000 } as any);
+        vi.mocked(stripe.refunds.create).mockResolvedValue({ id: 're_test', status: 'succeeded' } as any);
+
+        await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID, paymentIntentId: PI_ID });
+
+        expect(stripe.refunds.create).toHaveBeenCalledWith(
+            expect.objectContaining({ amount: 9000 }),
+            expect.anything(),
+        );
     });
 
     it('does not touch Stripe when no PI is found anywhere', async () => {
@@ -424,6 +541,7 @@ describe('HotelsService.cancelBooking()', () => {
 
     it('updates booking status in DB after cancel', async () => {
         mockBookingRow();
+        givePolicy(freeCancellation);
         vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
         vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 12000 } as any);
         vi.mocked(stripe.refunds.create).mockResolvedValue({ id: 're_test', status: 'succeeded' } as any);

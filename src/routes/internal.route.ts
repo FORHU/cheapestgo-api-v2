@@ -15,6 +15,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
 import { mystiflyRequest } from '../lib/flights/mystifly';
 import { stripe } from '../lib/stripe';
+import { lockFx } from '../lib/payments/fxLock';
 
 const internalRouter = Router();
 
@@ -146,6 +147,11 @@ async function handleDuffel(
     const tripType: string = flight.tripType ?? flight.trip_type ?? 'one-way';
     const bookingStatus = preOrderTicketed ? 'ticketed' : 'awaiting_ticket';
 
+    // The rate this booking was taken at, for USD reporting (ADR-0008). lockFx never
+    // throws; if it yields nulls the row is simply counted as unconverted until a
+    // backfill resolves it.
+    const fx = await lockFx(confirmedPrice, confirmedCurrency);
+
     // Insert flight_bookings
     const booking = await prisma.flight_bookings.create({
         data: {
@@ -166,6 +172,11 @@ async function handleDuffel(
             ticket_numbers: preOrderTickets.length > 0 ? preOrderTickets : [],
             fare_policy: farePolicy ?? undefined,
             trip_type: tripType,
+            usd_amount:     fx.usd_amount,
+            fx_rate:        fx.fx_rate,
+            fx_captured_at: fx.fx_captured_at,
+            fx_source:      fx.fx_source,
+            source_brand:   process.env.BRAND_NAME ?? 'CheapestGo',
         },
     });
 
@@ -271,6 +282,9 @@ async function handleMystifly(
         } catch { /* non-critical */ }
     }
 
+    // The rate this booking was taken at, for USD reporting (ADR-0008).
+    const mystiflyFx = await lockFx(confirmedPrice, confirmedCurrency);
+
     // Insert flight_bookings
     const booking = await prisma.flight_bookings.create({
         data: {
@@ -284,6 +298,11 @@ async function handleMystifly(
             payment_intent_id: paymentIntentId || null,
             confirmed_price: confirmedPrice,
             confirmed_currency: confirmedCurrency,
+            usd_amount:     mystiflyFx.usd_amount,
+            fx_rate:        mystiflyFx.fx_rate,
+            fx_captured_at: mystiflyFx.fx_captured_at,
+            fx_source:      mystiflyFx.fx_source,
+            source_brand:   process.env.BRAND_NAME ?? 'CheapestGo',
         },
     });
 

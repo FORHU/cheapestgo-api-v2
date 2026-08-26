@@ -314,4 +314,147 @@ export class HotelsRepository {
             take: limit,
         });
     }
+
+    /**
+     * Record what the supplier quoted at prebook, so checkout charges from this row
+     * rather than from the browser's payload.
+     *
+     * Upserted on `prebook_id`: re-quoting the same book token replaces the figure
+     * instead of leaving a stale one that checkout might charge from.
+     */
+    async savePrebookQuote(quote: {
+        prebookId: string;
+        net:       number;
+        gross:     number;
+        currency:  string;
+        roomName:  string | null;
+        checkIn:   string | null;
+        checkOut:  string | null;
+        expiresAt: Date;
+    }) {
+        const row = {
+            net:        new Prisma.Decimal(quote.net),
+            gross:      new Prisma.Decimal(quote.gross),
+            currency:   quote.currency.toUpperCase(),
+            room_name:  quote.roomName,
+            check_in:   quote.checkIn,
+            check_out:  quote.checkOut,
+            expires_at: quote.expiresAt,
+        };
+
+        return prisma.hotel_prebook_quotes.upsert({
+            where:  { prebook_id: quote.prebookId },
+            create: { prebook_id: quote.prebookId, ...row },
+            update: row,
+        });
+    }
+
+    /**
+     * Record the supplier's cancellation terms as they stood when the booking was
+     * taken, with one tier row per penalty step.
+     *
+     * The terms are evidence, like the FX rate: a cancellation weeks later is judged
+     * against what the guest agreed to, not against whatever the supplier is quoting
+     * that day. `booking_id` is unique, so a retry replaces rather than duplicates.
+     */
+    async savePolicySnapshot(input: {
+        bookingId:          string;
+        policyType:         'free_cancellation' | 'non_refundable' | 'partial_refund' | 'tiered';
+        summary:            string;
+        refundableTag:      string;
+        freeCancelDeadline: Date | null;
+        rawResponse:        unknown;
+        tiers: Array<{
+            cancelDeadline: Date;
+            penaltyAmount:  number;
+            penaltyType:    string;
+            currency:       string;
+        }>;
+    }) {
+        return prisma.$transaction(async (tx) => {
+            const snapshot = await tx.booking_policy_snapshots.upsert({
+                where:  { booking_id: input.bookingId },
+                create: {
+                    booking_id:           input.bookingId,
+                    policy_type:          input.policyType,
+                    summary:              input.summary,
+                    refundable_tag:       input.refundableTag,
+                    free_cancel_deadline: input.freeCancelDeadline,
+                    raw_provider_response: input.rawResponse as never,
+                },
+                update: {
+                    policy_type:          input.policyType,
+                    summary:              input.summary,
+                    refundable_tag:       input.refundableTag,
+                    free_cancel_deadline: input.freeCancelDeadline,
+                    raw_provider_response: input.rawResponse as never,
+                },
+            });
+
+            // Rewritten wholesale so a replaced snapshot cannot keep stale tiers that
+            // would then be read as the booking's terms.
+            await tx.policy_tiers.deleteMany({ where: { snapshot_id: snapshot.id } });
+
+            for (const [i, t] of input.tiers.entries()) {
+                await tx.policy_tiers.create({
+                    data: {
+                        snapshot_id:     snapshot.id,
+                        cancel_deadline: t.cancelDeadline,
+                        penalty_amount:  new Prisma.Decimal(t.penaltyAmount),
+                        penalty_type:    t.penaltyType,
+                        currency:        t.currency,
+                        tier_order:      i,
+                    },
+                });
+            }
+
+            await tx.bookings.update({
+                where: { booking_id: input.bookingId },
+                data:  { policy_snapshot_id: snapshot.id },
+            });
+
+            return snapshot;
+        });
+    }
+
+    /** The recorded terms a cancellation must be judged against, tiers included. */
+    async findPolicySnapshot(bookingId: string) {
+        const snapshot = await prisma.booking_policy_snapshots.findUnique({
+            where:   { booking_id: bookingId },
+            include: { policy_tiers: { orderBy: { tier_order: 'asc' } } },
+        });
+        if (!snapshot) return null;
+
+        return {
+            policyType:         snapshot.policy_type,
+            freeCancelDeadline: snapshot.free_cancel_deadline,
+            tiers: snapshot.policy_tiers.map((t) => ({
+                cancelDeadline: t.cancel_deadline,
+                penaltyAmount:  t.penalty_amount.toNumber(),
+                penaltyType:    t.penalty_type,
+                currency:       t.currency,
+                tierOrder:      t.tier_order,
+            })),
+        };
+    }
+
+    /**
+     * The quote a checkout must charge from. Returns null when prebook never recorded
+     * one — checkout rejects that rather than falling back to the client's figure.
+     */
+    async findPrebookQuote(prebookId: string): Promise<{
+        gross:      number;
+        currency:   string;
+        expires_at: Date;
+    } | null> {
+        const row = await prisma.hotel_prebook_quotes.findUnique({
+            where:  { prebook_id: prebookId },
+            select: { gross: true, currency: true, expires_at: true },
+        });
+        if (!row) return null;
+
+        // Prisma hands back a Decimal; the charge rule works in plain numbers, and
+        // converting here keeps Prisma's types at the repository boundary.
+        return { gross: row.gross.toNumber(), currency: row.currency, expires_at: row.expires_at };
+    }
 }

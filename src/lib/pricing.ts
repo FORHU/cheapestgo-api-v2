@@ -42,3 +42,16 @@ function parseMarkupEnv(key: string, defaultValue: number): number {
     if (isNaN(parsed)) return defaultValue;
     return Math.max(0, Math.min(0.50, parsed));
 }
+
+/**
+ * How far the server's own conversion of the supplier quote may sit from the figure
+ * the browser says it displayed, before checkout is stopped and the customer is shown
+ * the new total.
+ *
+ * Set below the markup so that absorbing a difference inside this band always costs
+ * less than the booking earns.
+ */
+export const HOTEL_FX_DISPLAY_TOLERANCE = 0.005; // 0.5%
+
+/** How long a recorded prebook quote may be charged from before it must be re-taken. */
+export const PREBOOK_QUOTE_TTL_MS = 30 * 60 * 1000; // 30 minutes

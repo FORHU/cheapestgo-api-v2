@@ -7,7 +7,12 @@ import { orderRoomPhotosByDistinctiveness } from '@/lib/hotels/roomMatch';
 import { stripe } from '@/lib/stripe';
 import { AppError } from '@/middleware/error.middleware';
 import { prisma } from '@/lib/prisma';
-import { applyMarkup, toStripeAmount, HOTEL_MARKUP, BUNDLE_MARKUP } from '@/lib/pricing';
+import { applyMarkup, toStripeAmount, HOTEL_MARKUP, BUNDLE_MARKUP, PREBOOK_QUOTE_TTL_MS } from '@/lib/pricing';
+import { resolveHotelChargeBase } from '@/lib/payments/chargeBase';
+import { makeStrictConverter } from '@/lib/payments/convertStrict';
+import { lockFx } from '@/lib/payments/fxLock';
+import { calculateCancellation } from '@/lib/policies/cancellationEngine';
+import { ExchangeRatesService } from '@/services/exchange-rates.service';
 import { createHash } from 'crypto';
 
 // âââ TGX prebook helpers âââââââââââââââââââââââââââââââââââââââââââââââââââââ
@@ -519,10 +524,30 @@ export class HotelsService {
 
         console.log(`[prebook/tgx] Success | book token: ${bookToken.substring(0, 60)} | room: ${bookedRoomName} | price: ${optionQuote.price?.gross || optionQuote.price?.net} ${optionQuote.price?.currency}`);
 
+        // Record what TGX quoted. createPayment charges from this row rather than from
+        // the client's payload, so the Stripe base comes from the supplier instead of
+        // the browser. Failing to record must not fail the prebook: checkout rejects a
+        // prebookId it has no quote for, so the worst case is the customer retrying.
+        const prebookId = `TGX:${bookToken}`;
+        try {
+            await this.repo.savePrebookQuote({
+                prebookId,
+                net:       optionQuote.price?.net   || 0,
+                gross:     optionQuote.price?.gross || optionQuote.price?.net || 0,
+                currency:  optionQuote.price?.currency || currency,
+                roomName:  bookedRoomName || null,
+                checkIn,
+                checkOut,
+                expiresAt: new Date(Date.now() + PREBOOK_QUOTE_TTL_MS),
+            });
+        } catch (persistErr) {
+            console.error('[prebook/tgx] Failed to persist quote — checkout will reject this prebookId:', persistErr);
+        }
+
         return {
             success: true,
             data: {
-                prebookId:  `TGX:${bookToken}`,
+                prebookId,
                 provider:   'travelgatex',
                 price: {
                     subtotal: optionQuote.price?.net  || 0,
@@ -602,9 +627,46 @@ export class HotelsService {
             }
         }
 
-        // Apply platform markup
+        // ── Establish the trusted base price ──
+        //
+        // `params.amount` is what the browser says it displayed: client-controlled, and
+        // computed with client-side FX. Charge from the supplier quote recorded at
+        // prebook instead, converting it here (ADR-0021).
+        const quote = await this.repo.findPrebookQuote(params.prebookId);
+
+        // Rates are only needed when the quote is in another currency; fetching them
+        // unconditionally would make a same-currency booking fail on an FX outage.
+        const needsFx = !!quote && String(quote.currency).toUpperCase() !== params.currency.toUpperCase();
+        const rates   = needsFx ? await new ExchangeRatesService().getLiveRates() : null;
+
+        const resolved = resolveHotelChargeBase(
+            quote,
+            params.amount,
+            params.currency,
+            makeStrictConverter(rates),
+        );
+
+        if (!resolved.ok) {
+            console.warn(
+                `[create-payment] Rejected (${resolved.code}) prebookId=${params.prebookId.slice(0, 40)} `
+                + `client=${params.amount} ${params.currency.toUpperCase()}`
+                + (resolved.serverPrice !== undefined ? ` server=${resolved.serverPrice}` : '')
+            );
+            throw Object.assign(
+                new AppError(
+                    resolved.code === 'FX_UNAVAILABLE' ? 503 : 409,
+                    resolved.message,
+                    resolved.code,
+                ),
+                resolved.serverPrice !== undefined
+                    ? { serverPrice: resolved.serverPrice, currency: resolved.currency }
+                    : {},
+            );
+        }
+
+        // Apply platform markup to the server's figure, never the client's.
         const markupRate = params.bundleFlightId ? BUNDLE_MARKUP : HOTEL_MARKUP;
-        const pricing    = applyMarkup(params.amount, markupRate);
+        const pricing    = applyMarkup(resolved.base, markupRate);
         const stripeAmount = toStripeAmount(pricing.chargedPrice, params.currency);
 
         console.log(`[create-payment] Hotel pricing: original=${pricing.originalPrice} ${params.currency}, charged=${pricing.chargedPrice}, markup=${(markupRate * 100).toFixed(0)}%${params.bundleFlightId ? ' (bundle)' : ' (standalone)'}`);
@@ -776,13 +838,39 @@ export class HotelsService {
         const isRefundable     = hasPrebookPolicy
             ? (prebookPolicy.refundableTag === 'RFN' || prebookPolicy.refundableTag === 'REFUNDABLE')
             : booking.cancelPolicy?.refundable === true;
-        const policyType       = isRefundable ? 'free_cancellation' : 'non_refundable';
         const storedCancelPolicy = hasPrebookPolicy ? prebookPolicy : (booking.cancelPolicy ? {
             refundableTag: isRefundable ? 'RFN' : 'NRFN',
             cancelPolicyInfos: (booking.cancelPolicy.cancelPenalties || []).map((p: any) => ({
                 cancelTime: p.deadline, amount: p.value ?? 0, currency: p.currency || storedCurrency, type: p.penaltyType || 'AMOUNT',
             })),
         } : null);
+
+        // The supplier's penalty steps, cheapest deadline first. A refundable rate is
+        // rarely refundable outright — it is usually free until some date and then
+        // charged, and those steps are what a cancellation is judged against.
+        const cancelTiers = ((storedCancelPolicy?.cancelPolicyInfos ?? []) as any[])
+            .map((p: any) => ({
+                cancelDeadline: p.cancelTime ? new Date(p.cancelTime) : null,
+                penaltyAmount:  Number(p.amount) || 0,
+                penaltyType:    String(p.type || 'fixed').toUpperCase() === 'PERCENT' ? 'percent' : 'fixed',
+                currency:       p.currency || storedCurrency,
+            }))
+            .filter((t): t is { cancelDeadline: Date; penaltyAmount: number; penaltyType: string; currency: string } =>
+                t.cancelDeadline instanceof Date && !isNaN(t.cancelDeadline.getTime()))
+            .sort((a, b) => a.cancelDeadline.getTime() - b.cancelDeadline.getTime());
+
+        // A refundable rate with penalty steps is 'tiered', not 'free_cancellation'.
+        // Collapsing it to the latter is what let a cancellation past the free window
+        // be refunded in full: the terms said "free", and nothing recorded the steps.
+        const policyType: 'free_cancellation' | 'non_refundable' | 'tiered' =
+            !isRefundable      ? 'non_refundable'
+            : cancelTiers.length ? 'tiered'
+            : 'free_cancellation';
+
+        // The moment the rate stops being free: the earliest penalty deadline.
+        const freeCancelDeadline = isRefundable && cancelTiers.length
+            ? cancelTiers[0].cancelDeadline
+            : null;
 
         // Capture Stripe payment
         await stripe.paymentIntents.capture(params.paymentIntentId);
@@ -827,6 +915,44 @@ export class HotelsService {
             return { success: false, providerConfirmed, error: dbErr.message, data: { bookingId, status: bookingStatus, policyType, policySummary: '' } };
         }
 
+        // The rate this booking was taken at, for USD reporting (ADR-0008). Deliberately
+        // after the insert and in its own try: the money has moved and the booking is
+        // already recorded, so a rates outage must leave the FX columns null for a
+        // backfill to resolve — never cost us the row.
+        try {
+            const fx = await lockFx(totalPrice, storedCurrency);
+            await prisma.bookings.update({
+                where: { booking_id: bookingId },
+                data: {
+                    usd_amount:     fx.usd_amount,
+                    fx_rate:        fx.fx_rate,
+                    fx_captured_at: fx.fx_captured_at,
+                    fx_source:      fx.fx_source,
+                    source_brand:   process.env.BRAND_NAME ?? 'CheapestGo',
+                },
+            });
+        } catch (fxErr) {
+            console.error('[confirm] FX lock failed — booking recorded unconverted:', fxErr);
+        }
+
+        // The cancellation terms as they stood when the guest agreed to them. Written
+        // after the booking row so a failure here cannot cost the booking; a snapshot
+        // that is missing later makes the cancellation refuse rather than over-refund,
+        // which is the safe direction (ADR-0023).
+        try {
+            await this.repo.savePolicySnapshot({
+                bookingId:          bookingId,
+                policyType,
+                summary:            isRefundable ? 'Refundable rate' : 'Non-refundable rate',
+                refundableTag:      isRefundable ? 'RFN' : 'NRFN',
+                freeCancelDeadline,
+                rawResponse:        storedCancelPolicy ?? {},
+                tiers:              cancelTiers,
+            });
+        } catch (policyErr) {
+            console.error('[confirm] Policy snapshot failed — cancellation will need support:', policyErr);
+        }
+
         console.log(JSON.stringify({ _event: 'tgx_confirmed', bookingId, supplierRef, userId: params.userId, email: params.holder.email, checkIn: params.checkIn, checkOut: params.checkOut, timestamp: new Date().toISOString() }));
 
         return {
@@ -855,6 +981,18 @@ export class HotelsService {
         const booking = await prisma.bookings.findFirst({ where: { booking_id: bookingRef } });
         if (!booking) throw new AppError(404, 'Booking not found', 'BOOKING_NOT_FOUND');
         if (booking.user_id !== userId) throw new AppError(403, 'Not authorized to cancel this booking', 'FORBIDDEN');
+
+        // 1b. What the recorded terms say this cancellation returns. Decided before
+        //     anything is cancelled, so the supplier call and the refund agree on the
+        //     same answer, and computed from the snapshot taken at booking time rather
+        //     than from whatever the supplier quotes today (ADR-0023).
+        const policy = await this.repo.findPolicySnapshot(bookingRef);
+        const cancellation = calculateCancellation({
+            totalPrice: Number(booking.total_price),
+            currency:   booking.currency ?? 'PHP',
+            checkIn:    booking.check_in ?? new Date(),
+            policy,
+        });
 
         // 2. Resolve payment_intent_id â from params, then DB, then Stripe search
         let paymentIntentId = params.paymentIntentId || booking.payment_intent_id || null;
@@ -899,14 +1037,39 @@ export class HotelsService {
                     await stripe.paymentIntents.cancel(paymentIntentId, { cancellation_reason: 'requested_by_customer' });
                     stripeRefundId = paymentIntentId; // void, not a refund ID â use PI id as marker
                 } else if (pi.status === 'succeeded') {
-                    const refund = await stripe.refunds.create({
-                        payment_intent: paymentIntentId,
-                        amount:         pi.amount,
-                        reason:         'requested_by_customer',
-                        metadata:       { bookingId: bookingRef, type: 'hotel_cancellation' },
-                    }, { idempotencyKey: `hotel-refund-${bookingRef}` });
-                    if (refund.status === 'failed') throw new Error(`Stripe refund created but failed: ${refund.id}`);
-                    stripeRefundId = refund.id;
+                    // How much comes back is the policy's decision, not the charge's.
+                    // This used to refund pi.amount outright, which returned the full
+                    // price on a non-refundable stay while the supplier still billed us.
+                    const refundAmountCents = Math.min(
+                        Math.round(pi.amount * cancellation.refundRatio),
+                        pi.amount,
+                    );
+
+                    console.log(
+                        `[hotels.cancelBooking] policy=${cancellation.policyUsed} type=${cancellation.refundType} `
+                        + `ratio=${cancellation.refundRatio.toFixed(4)} penalty=${cancellation.penaltyAmount} `
+                        + `${cancellation.currency} -> refunding ${refundAmountCents} of ${pi.amount}`,
+                    );
+
+                    if (refundAmountCents > 0) {
+                        const refund = await stripe.refunds.create({
+                            payment_intent: paymentIntentId,
+                            amount:         refundAmountCents,
+                            reason:         'requested_by_customer',
+                            metadata:       {
+                                bookingId:  bookingRef,
+                                type:       'hotel_cancellation',
+                                refundType: cancellation.refundType,
+                                penalty:    String(cancellation.penaltyAmount),
+                            },
+                        }, {
+                            // Scoped to the amount so a corrected policy produces a new
+                            // refund rather than silently reusing the previous figure.
+                            idempotencyKey: `hotel-refund-${bookingRef}-${refundAmountCents}`,
+                        });
+                        if (refund.status === 'failed') throw new Error(`Stripe refund created but failed: ${refund.id}`);
+                        stripeRefundId = refund.id;
+                    }
                 }
             } catch (stripeErr: any) {
                 stripeError = stripeErr.message;
