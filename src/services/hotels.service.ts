@@ -2,6 +2,8 @@ import { HotelsRepository } from '@/repositories/hotels.repository';
 import { runTgxSearch as searchHotels } from '@/lib/hotels/search';
 import { quoteTgx, bookTgx, cancelTgx, fetchAmenitiesByDestination } from '@/lib/hotels/travelgatex';
 import { groupByRoomName } from '@/lib/hotels/property';
+import { ensureEtgContent } from '@/lib/hotels/etgContent';
+import { buildRoomContent, buildPolicySections, buildAdditionalInfo } from '@/lib/hotels/roomContent';
 import { otvCodeToLabel } from '@/lib/hotels/amenityCodes';
 import { stripe } from '@/lib/stripe';
 import { AppError } from '@/middleware/error.middleware';
@@ -56,6 +58,16 @@ async function fetchEtgBySlugs(slugs: string[]): Promise<Map<string, string[]>> 
         }
     } catch { /* non-fatal */ }
     return map;
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+    return Promise.race([
+        p,
+        new Promise<null>((resolve) => {
+            const t = setTimeout(() => resolve(null), ms);
+            t.unref?.();
+        }),
+    ]).catch(() => null);
 }
 
 export class HotelsService {
@@ -218,8 +230,27 @@ export class HotelsService {
         if (!content) throw new AppError(404, 'Property not found', 'NOT_FOUND');
 
         const rawTypes = tgxResult?.data?.[0]?.roomTypes ?? [];
-        const rooms     = groupByRoomName(rawTypes);
-        return { content, reviews, reviewItems, rooms };
+        let rooms = groupByRoomName(rawTypes);
+
+        const etg = await withTimeout(ensureEtgContent(hotelId, content), 8_000);
+        if (etg) {
+            rooms = rooms.map((room) => ({ ...room, content: buildRoomContent(room.name, etg) }));
+        }
+
+        const outContent = etg
+            ? {
+                  ...content,
+                  amenityGroups:      etg.amenityGroups,
+                  roomPolicySections: buildPolicySections(etg.metapolicy),
+                  additionalInfo:     buildAdditionalInfo(
+                      content.important_information ?? null,
+                      etg.metapolicy,
+                      etg.metapolicyExtraInfo,
+                  ),
+              }
+            : content;
+
+        return { content: outContent, reviews, reviewItems, rooms };
     }
 
     // ── Pre-book (validate + hold) ────────────────────────────────────────────

@@ -1,4 +1,5 @@
 import type { RoomType } from '@/types/hotels';
+import type { AmenityGroup, DetailSection, RoomContent } from './roomContent.types';
 
 export interface RateRow {
     offerId:               string;
@@ -23,6 +24,13 @@ export interface RoomOption {
     cancellationDeadline?: string;
     cancelPolicy?:         RoomType['cancelPolicy'];
     rates:                 RateRow[];
+    content?:              RoomContent;
+}
+
+export interface PropertyContentExtras {
+  amenityGroups?: AmenityGroup[];
+  roomPolicySections?: DetailSection[];
+  additionalInfo?: string;
 }
 
 const BOARD_LABELS: Record<string, string> = {
