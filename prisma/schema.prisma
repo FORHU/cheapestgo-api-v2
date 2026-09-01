@@ -446,6 +446,9 @@ model hotel_content {
   amenity_groups        Json      @default("[]")
   important_information String?
   room_groups           Json?     @default("[]")
+  metapolicy_struct     Json?
+  metapolicy_extra_info String?
+  etg_content_seeded_at DateTime? @db.Timestamptz(6)
   google_place_id       String?
   google_enriched_at    DateTime? @db.Timestamptz(6)
 
