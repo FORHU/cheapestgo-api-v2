@@ -35,6 +35,7 @@ const MAP: Record<string, Classified> = {
   'dental-kit':      { label: 'Dental kit',       section: 'toiletries', icon: 'toiletries' },
   // food & drink
   'minibar':         { label: 'Minibar',          section: 'food-drink', icon: 'fridge' },
+  'mini-bar':        { label: 'Minibar',          section: 'food-drink', icon: 'fridge' },
   'coffee':          { label: 'Coffee maker/teapot', section: 'food-drink', icon: 'coffee' },
   'coffee-machine':  { label: 'Coffee machine',   section: 'food-drink', icon: 'coffee' },
   'tea-or-coffee':   { label: 'Coffee/tea for guests', section: 'food-drink', icon: 'coffee' },
@@ -111,7 +112,7 @@ const MAP: Record<string, Classified> = {
 const RULES: [RegExp, SectionId, IconId][] = [
   [/toiletr|towel|slipper|bathrobe|shampoo|soap/i,           'toiletries',     'toiletries'],
   [/bathroom|shower|bidet|(^|-)(bath|bathtub|toilet)(-|$)/i, 'bathroom',       'bath'],
-  [/coffee-(maker|machine|pot)|\bkettle\b|minibar|\btea\b/i, 'food-drink',     'coffee'],
+  [/coffee-(maker|machine|pot)|\bkettle\b|mini-?bar|\btea\b/i, 'food-drink',    'coffee'],
   [/kitchen|fridge|refrigerat|microwave|oven|stove|dishwash/i, 'kitchen',      'kitchen'],
   [/wi-?fi|internet|telephone|(^|-)phone(-|$)/i,             'internet-comms', 'wifi'],
   [/\btv\b|television|channels|streaming|dvd/i,              'media-tech',     'tv'],

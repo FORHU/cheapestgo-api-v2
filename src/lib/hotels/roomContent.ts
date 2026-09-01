@@ -12,6 +12,33 @@ function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/** ETG sends price as a string ("600", "0"). Coerce; non-numeric → 0. */
+const priceNum = (e: MetapolicyEntry): number => {
+  const n = Number(e.price);
+  return Number.isFinite(n) ? n : 0;
+};
+
+/** cot/extra_bed/internet inclusion values that mean "the hotel offers this". */
+const NOT_OFFERED = new Set(['not_available', 'unavailable', 'unspecified', '']);
+const isOffered = (e: MetapolicyEntry): boolean => !!e.inclusion && !NOT_OFFERED.has(e.inclusion);
+
+/** ETG free-text policy fields are sometimes HTML. Flatten headings + list items
+ *  to lines, strip remaining tags, decode the common entities. */
+function htmlToText(s: string): string {
+  if (!/[<&]/.test(s)) return s.trim();
+  return s
+    .replace(/<\s*(p|div|h[1-6])[^>]*>/gi, '\n')
+    .replace(/<\s*li[^>]*>/gi, '\n• ')
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>').replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, '"')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /** Bed line: prefer ETG bedding_type, else a bed phrase or TGX noise string from the name. */
 function buildBedLine(roomName: string, match: RoomGroupEntry | null): string | undefined {
   if (match?.beddingType) return cap(match.beddingType);
@@ -24,19 +51,17 @@ function buildBedLine(roomName: string, match: RoomGroupEntry | null): string | 
 
 /**
  * A key fact only when internet has a *catch* — the `internet-comms` section
- * already lists free Wi-Fi, so `included` adds nothing here. Driven off
- * `inclusion`, never `price`: ETG sends `price: 0` as a default even on
- * `not_available`, so a price test would stamp "Free Wi-Fi" onto hotels with none.
+ * already lists free Wi-Fi, so `included` adds nothing here.
  */
 function internetFact(mp: MetapolicyStruct | null): DetailItem | null {
   const e = mp?.internet?.[0];
   if (!e) return null;
-  if (e.inclusion === 'included') return null;
-  if (e.inclusion === 'not_available') return { label: 'No internet in the room', icon: 'wifi' };
-  if (e.inclusion === 'paid') {
-    const price = [e.currency, e.price].filter(Boolean).join(' ');
-    const unit  = e.price_unit ? ` ${e.price_unit.replace(/_/g, ' ')}` : '';
-    return { label: price ? `Paid Wi-Fi (${price}${unit})` : 'Paid Wi-Fi', icon: 'wifi' };
+  if (e.inclusion === 'included') return null;              // section already lists free Wi-Fi
+  if (e.inclusion === 'not_available' || e.inclusion === 'unavailable') {
+    return { label: 'No internet in the room', icon: 'wifi' };
+  }
+  if (priceNum(e) > 0) {
+    return { label: `Paid Wi-Fi (${money(e)})`, icon: 'wifi' };
   }
   return { label: 'Internet: contact hotel', icon: 'wifi' };
 }
@@ -60,18 +85,18 @@ function buildKeyFacts(match: RoomGroupEntry | null, mp: MetapolicyStruct | null
 
 /**
  * "Extra beds and cribs are unavailable for this room type" — but ONLY when the
- * policy explicitly carries cot/extra_bed entries that are all `not_available`.
- * Absent metapolicy, or a policy that simply doesn't mention them, says nothing
- * (a missing policy is not evidence of unavailability). When one IS available,
- * this stays silent too — Task 6's `beds-extra` section renders the priced row.
+ * policy explicitly carries cot/extra_bed entries that are none of them offered
+ * (`not_available` / `unavailable` / `unspecified` / ``). Absent metapolicy, or a
+ * policy that simply doesn't mention them, says nothing (a missing policy is not
+ * evidence of unavailability). When one IS offered, this stays silent too — the
+ * `beds-extra` section renders the priced row.
  */
 export function buildBedsExtraSummary(mp: MetapolicyStruct | null): string | undefined {
   if (!mp) return undefined;
   const cot = mp.cot ?? [];
   const extra = mp.extra_bed ?? [];
   if (!cot.length && !extra.length) return undefined;
-  const available = (arr: typeof cot) => arr.some((e) => e.inclusion && e.inclusion !== 'not_available');
-  return available(cot) || available(extra)
+  return cot.some(isOffered) || extra.some(isOffered)
     ? undefined
     : 'Extra beds and cribs are unavailable for this room type';
 }
@@ -104,17 +129,12 @@ export function buildRoomContent(roomName: string, etg: EtgContent): RoomContent
   };
 }
 
-/** "EUR 20 per night" — currency + price + humanised unit, empty parts dropped. */
+/** "THB 600 per guest per night" — currency + numeric price + humanised unit. */
 function money(e: MetapolicyEntry): string {
+  const n = priceNum(e);
   const unit = e.price_unit ? ` ${e.price_unit.replace(/_/g, ' ')}` : '';
-  return `${[e.currency, e.price].filter(Boolean).join(' ')}${unit}`.trim();
+  return `${[e.currency, n || null].filter(Boolean).join(' ')}${unit}`.trim();
 }
-
-const isAvailable = (e: MetapolicyEntry) => !!e.inclusion && e.inclusion !== 'not_available';
-
-// Free / paid / available classification is driven by `inclusion`, never by the
-// price value — ETG sends `price: 0` as a default on `not_available` and free
-// entries. `e.price` is only tested as "is there a number to render".
 
 export function buildPolicySections(mp: MetapolicyStruct | null): DetailSection[] {
   if (!mp) return [];
@@ -122,8 +142,8 @@ export function buildPolicySections(mp: MetapolicyStruct | null): DetailSection[
 
   const childItems: DetailItem[] = (mp.children ?? []).map((e) => {
     const range = e.age_start != null && e.age_end != null ? `${e.age_start}–${e.age_end}` : 'any age';
-    if (e.inclusion === 'included')          return { label: `Children ${range} stay free`, icon: 'child' };
-    if (e.inclusion === 'paid' && e.price)   return { label: `Children ${range}: ${money(e)}`, icon: 'child' };
+    if (e.inclusion === 'included')  return { label: `Children ${range} stay free`, icon: 'child' };
+    if (priceNum(e) > 0)             return { label: `Children ${range}: ${money(e)}`, icon: 'child' };
     return { label: `Children ${range} welcome`, icon: 'child' };
   });
   for (const e of mp.children_meal ?? []) {
@@ -136,12 +156,12 @@ export function buildPolicySections(mp: MetapolicyStruct | null): DetailSection[
   const bedItems: DetailItem[] = [];
   const bedRow = (kind: 'Cot' | 'Extra bed', e: MetapolicyEntry): DetailItem => ({
     label: e.inclusion === 'included' ? `${kind} available free`
-         : e.price                    ? `${kind}: ${money(e)}`
-         :                              `${kind} available on request`,
+         : priceNum(e) > 0            ? `${kind}: ${money(e)}`
+         :                              `${kind} available`,
     icon: 'bed',
   });
-  for (const e of mp.cot ?? [])       if (isAvailable(e)) bedItems.push(bedRow('Cot', e));
-  for (const e of mp.extra_bed ?? []) if (isAvailable(e)) bedItems.push(bedRow('Extra bed', e));
+  for (const e of mp.cot ?? [])       if (isOffered(e)) bedItems.push(bedRow('Cot', e));
+  for (const e of mp.extra_bed ?? []) if (isOffered(e)) bedItems.push(bedRow('Extra bed', e));
   if (bedItems.length) {
     out.push({ id: 'beds-extra', title: SECTION_TITLES['beds-extra'], scope: 'property', items: bedItems });
   }
@@ -155,21 +175,21 @@ export function buildAdditionalInfo(
   extraInfo: string | null,
 ): string {
   const parts: string[] = [];
-  if (importantInfo?.trim()) parts.push(importantInfo.trim());
-  if (extraInfo?.trim()) parts.push(extraInfo.trim());
+  if (importantInfo?.trim()) parts.push(htmlToText(importantInfo));
+  if (extraInfo?.trim()) parts.push(htmlToText(extraInfo));
 
   const pet = mp?.pets?.[0];
   if (pet) {
     if (pet.inclusion === 'not_allowed') parts.push('Pets are not allowed.');
-    else if (pet.inclusion === 'paid' && pet.price) parts.push(`Pets are allowed for ${money(pet)}.`);
+    else if (priceNum(pet) > 0) parts.push(`Pets are allowed for ${money(pet)}.`);
     else if (pet.inclusion === 'included') parts.push('Pets are allowed free of charge.');
   }
   const dep = mp?.deposit?.[0];
-  if (dep?.price) parts.push(`A deposit of ${[dep.currency, dep.price].filter(Boolean).join(' ')} may be required.`);
+  if (dep && priceNum(dep) > 0) parts.push(`A deposit of ${[dep.currency, priceNum(dep)].filter(Boolean).join(' ')} may be required.`);
   const park = mp?.parking?.[0];
   if (park) {
     if (park.inclusion === 'included') parts.push('Free parking is available.');
-    else if (park.inclusion === 'paid' && park.price) parts.push(`Parking is available for ${money(park)}.`);
+    else if (priceNum(park) > 0) parts.push(`Parking is available for ${money(park)}.`);
   }
   return parts.join('\n\n');
 }

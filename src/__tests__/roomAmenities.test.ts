@@ -36,4 +36,10 @@ describe('classifyRoomAmenity', () => {
       label: 'Walk in shower', section: 'bathroom', icon: 'bath',
     });
   });
+
+  it('maps the hyphenated mini-bar slug to food & drink', () => {
+    expect(classifyRoomAmenity('mini-bar')).toEqual({
+      label: 'Minibar', section: 'food-drink', icon: 'fridge',
+    });
+  });
 });

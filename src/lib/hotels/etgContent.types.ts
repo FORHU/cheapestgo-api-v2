@@ -11,8 +11,8 @@ export interface RoomGroupEntry {
 }
 
 export interface MetapolicyEntry {
-  inclusion?: string;        // "included" | "paid" | "not_available" | ...
-  price?: number;
+  inclusion?: string;        // "included" | "not_included" | "not_available" | "unavailable" | "unspecified" | ""
+  price?: number | string;   // ETG sends this as a string ("600", "0")
   currency?: string;
   price_unit?: string;       // "per_night" | "per_day" | "per_stay"
   amount?: number;

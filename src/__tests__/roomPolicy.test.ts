@@ -23,20 +23,22 @@ describe('buildPolicySections', () => {
     ]);
   });
 
-  it('builds a beds-extra section only from an available cot / extra bed', () => {
+  it('renders an available (not_included) extra bed with its price, and a free cot', () => {
     const mp: MetapolicyStruct = {
-      cot: [{ inclusion: 'paid', price: 15, currency: 'EUR', price_unit: 'per_night' }],
-      extra_bed: [{ inclusion: 'not_available' }],
+      cot: [{ inclusion: 'not_included', price: '0', currency: 'THB', price_unit: 'per_room_per_night' }],
+      extra_bed: [{ inclusion: 'not_included', price: '600', currency: 'THB', price_unit: 'per_guest_per_night' }],
     };
     const beds = buildPolicySections(mp).find((s) => s.id === 'beds-extra')!;
-    expect(beds.scope).toBe('property');
-    expect(beds.items).toEqual([{ label: 'Cot: EUR 15 per night', icon: 'bed' }]);
+    expect(beds.items.map((i) => i.label)).toEqual([
+      'Cot available',
+      'Extra bed: THB 600 per guest per night',
+    ]);
   });
 
-  it('emits no beds-extra section when cot and extra bed are both unavailable', () => {
+  it('emits no beds-extra section when cot/extra bed are not_available', () => {
     const mp: MetapolicyStruct = {
       cot: [{ inclusion: 'not_available' }],
-      extra_bed: [{ inclusion: 'not_available' }],
+      extra_bed: [{ inclusion: 'unavailable' }],
     };
     expect(buildPolicySections(mp).some((s) => s.id === 'beds-extra')).toBe(false);
   });
@@ -76,5 +78,15 @@ describe('buildAdditionalInfo', () => {
   it('phrases free parking', () => {
     const out = buildAdditionalInfo(null, { parking: [{ inclusion: 'included' }] }, null);
     expect(out).toBe('Free parking is available.');
+  });
+
+  it('flattens HTML in the ETG free-text fields', () => {
+    const out = buildAdditionalInfo(
+      '<p><b>Check-in and Check-out Times</b></p> <ul>   <li>Check-in:  After 14:00</li>   <li>Check-out:  Before 12:00</li> </ul>',
+      null, null,
+    );
+    expect(out).not.toMatch(/<[a-z]/i);
+    expect(out).toContain('Check-in and Check-out Times');
+    expect(out).toContain('• Check-in: After 14:00');
   });
 });
