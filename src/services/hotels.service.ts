@@ -237,18 +237,29 @@ export class HotelsService {
             rooms = rooms.map((room) => ({ ...room, content: buildRoomContent(room.name, etg) }));
         }
 
+        // The property response is client-facing: drop the raw ETG blobs and the
+        // internal bookkeeping columns `findHotelContent` returns. The FE reads
+        // only the plain hotel facts plus the three derived fields below.
+        const {
+            room_groups, amenity_groups, metapolicy_struct, metapolicy_extra_info,
+            important_information, ratehawk_hid, content_source, last_attempt_at,
+            ...publicContent
+        } = content;
+        void room_groups; void amenity_groups; void metapolicy_struct; void metapolicy_extra_info;
+        void important_information; void ratehawk_hid; void content_source; void last_attempt_at;
+
         const outContent = etg
             ? {
-                  ...content,
+                  ...publicContent,
                   amenityGroups:      etg.amenityGroups,
                   roomPolicySections: buildPolicySections(etg.metapolicy),
                   additionalInfo:     buildAdditionalInfo(
-                      content.important_information ?? null,
+                      etg.importantInformation,
                       etg.metapolicy,
                       etg.metapolicyExtraInfo,
                   ),
               }
-            : content;
+            : publicContent;
 
         return { content: outContent, reviews, reviewItems, rooms };
     }

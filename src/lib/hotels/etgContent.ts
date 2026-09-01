@@ -137,6 +137,8 @@ export async function ensureEtgContent(
 
     const metapolicyExtraInfo =
       typeof d.metapolicy_extra_info === 'string' ? d.metapolicy_extra_info : null;
+    const importantInformation =
+      typeof d.important_information === 'string' ? d.important_information : (row.important_information ?? null);
 
     await prisma.hotel_content.update({
       where: { hotel_id: hotelId },
@@ -146,6 +148,7 @@ export async function ensureEtgContent(
         metapolicy_struct: (d.metapolicy_struct ?? null) as any,
         metapolicy_extra_info: metapolicyExtraInfo,
         etg_content_seeded_at: new Date(),
+        ...(typeof d.important_information === 'string' ? { important_information: d.important_information } : {}),
         ...(typeof d.check_in_time === 'string' ? { check_in_time: d.check_in_time } : {}),
         ...(typeof d.check_out_time === 'string' ? { check_out_time: d.check_out_time } : {}),
       },
@@ -156,7 +159,7 @@ export async function ensureEtgContent(
       amenity_groups: d.amenity_groups,
       metapolicy_struct: d.metapolicy_struct,
       metapolicy_extra_info: metapolicyExtraInfo,
-      important_information: row.important_information ?? null,
+      important_information: importantInformation,
     });
   } catch (e: any) {
     console.warn(`[etg-content] hotel/info error for ${hotelId}:`, e?.message ?? e);
