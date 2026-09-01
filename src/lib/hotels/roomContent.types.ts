@@ -2,7 +2,14 @@ export type SectionId =
   | 'room-layout' | 'toiletries' | 'food-drink' | 'bathroom' | 'internet-comms'
   | 'room-amenities' | 'media-tech' | 'kitchen' | 'general' | 'child-policy' | 'beds-extra';
 
-export interface DetailItem { label: string; icon?: string; note?: string }
+/** Icon vocabulary shared with the FE renderer. Every member must have an entry
+ *  in the FE `SECTION_ICONS` map (frontend Task 12). */
+export type IconId =
+  | 'bath' | 'shower' | 'toiletries' | 'fridge' | 'coffee' | 'kitchen' | 'wifi'
+  | 'phone' | 'tv' | 'wardrobe' | 'desk' | 'window' | 'safe' | 'ac' | 'heating'
+  | 'smoking' | 'bed' | 'view' | 'child' | 'check';
+
+export interface DetailItem { label: string; icon?: IconId; note?: string }
 
 export interface DetailSection {
   id: SectionId;
