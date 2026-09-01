@@ -1,4 +1,4 @@
-import type { EtgContent, MetapolicyStruct, RoomGroupEntry } from './etgContent.types';
+import type { EtgContent, MetapolicyStruct, MetapolicyEntry, RoomGroupEntry } from './etgContent.types';
 import { matchEtgRoomGroup } from './roomMatch';
 import { classifyRoomAmenity } from './roomAmenities';
 import {
@@ -102,4 +102,74 @@ export function buildRoomContent(roomName: string, etg: EtgContent): RoomContent
     bedsExtraSummary: buildBedsExtraSummary(etg.metapolicy),
     sections,
   };
+}
+
+/** "EUR 20 per night" — currency + price + humanised unit, empty parts dropped. */
+function money(e: MetapolicyEntry): string {
+  const unit = e.price_unit ? ` ${e.price_unit.replace(/_/g, ' ')}` : '';
+  return `${[e.currency, e.price].filter(Boolean).join(' ')}${unit}`.trim();
+}
+
+const isAvailable = (e: MetapolicyEntry) => !!e.inclusion && e.inclusion !== 'not_available';
+
+// Free / paid / available classification is driven by `inclusion`, never by the
+// price value — ETG sends `price: 0` as a default on `not_available` and free
+// entries. `e.price` is only tested as "is there a number to render".
+
+export function buildPolicySections(mp: MetapolicyStruct | null): DetailSection[] {
+  if (!mp) return [];
+  const out: DetailSection[] = [];
+
+  const childItems: DetailItem[] = (mp.children ?? []).map((e) => {
+    const range = e.age_start != null && e.age_end != null ? `${e.age_start}–${e.age_end}` : 'any age';
+    if (e.inclusion === 'included')          return { label: `Children ${range} stay free`, icon: 'child' };
+    if (e.inclusion === 'paid' && e.price)   return { label: `Children ${range}: ${money(e)}`, icon: 'child' };
+    return { label: `Children ${range} welcome`, icon: 'child' };
+  });
+  for (const e of mp.children_meal ?? []) {
+    if (e.inclusion === 'included') childItems.push({ label: "Children's meals included", icon: 'child' });
+  }
+  if (childItems.length) {
+    out.push({ id: 'child-policy', title: SECTION_TITLES['child-policy'], scope: 'property', items: childItems });
+  }
+
+  const bedItems: DetailItem[] = [];
+  const bedRow = (kind: 'Cot' | 'Extra bed', e: MetapolicyEntry): DetailItem => ({
+    label: e.inclusion === 'included' ? `${kind} available free`
+         : e.price                    ? `${kind}: ${money(e)}`
+         :                              `${kind} available on request`,
+    icon: 'bed',
+  });
+  for (const e of mp.cot ?? [])       if (isAvailable(e)) bedItems.push(bedRow('Cot', e));
+  for (const e of mp.extra_bed ?? []) if (isAvailable(e)) bedItems.push(bedRow('Extra bed', e));
+  if (bedItems.length) {
+    out.push({ id: 'beds-extra', title: SECTION_TITLES['beds-extra'], scope: 'property', items: bedItems });
+  }
+
+  return out;
+}
+
+export function buildAdditionalInfo(
+  importantInfo: string | null,
+  mp: MetapolicyStruct | null,
+  extraInfo: string | null,
+): string {
+  const parts: string[] = [];
+  if (importantInfo?.trim()) parts.push(importantInfo.trim());
+  if (extraInfo?.trim()) parts.push(extraInfo.trim());
+
+  const pet = mp?.pets?.[0];
+  if (pet) {
+    if (pet.inclusion === 'not_allowed') parts.push('Pets are not allowed.');
+    else if (pet.inclusion === 'paid' && pet.price) parts.push(`Pets are allowed for ${money(pet)}.`);
+    else if (pet.inclusion === 'included') parts.push('Pets are allowed free of charge.');
+  }
+  const dep = mp?.deposit?.[0];
+  if (dep?.price) parts.push(`A deposit of ${[dep.currency, dep.price].filter(Boolean).join(' ')} may be required.`);
+  const park = mp?.parking?.[0];
+  if (park) {
+    if (park.inclusion === 'included') parts.push('Free parking is available.');
+    else if (park.inclusion === 'paid' && park.price) parts.push(`Parking is available for ${money(park)}.`);
+  }
+  return parts.join('\n\n');
 }
