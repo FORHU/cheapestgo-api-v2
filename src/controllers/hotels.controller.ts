@@ -5,6 +5,7 @@ import { autocompleteDestinations, getPlaceDetails, geocode as geoCodePlace } fr
 import { config } from '@/config';
 import { resolveTgxDestinationCode } from '@/lib/hotels/travelgatex';
 import { getInstantHotelCatalog, runTgxSearch } from '@/lib/hotels/search';
+import { resolveStayDates } from '@/lib/hotels/property';
 import { prisma } from '@/lib/prisma';
 
 const svc = new HotelsService();
@@ -35,7 +36,15 @@ export class HotelsController {
     property = async (req: Request, res: Response, next: NextFunction) => {
         try {
             const { id } = z.object({ id: z.string() }).parse(req.params);
-            const result = await svc.getProperty(id);
+            const { checkIn, checkOut, adults, children } = z.object({
+                checkIn:  z.string().optional(),
+                checkOut: z.string().optional(),
+                adults:   z.coerce.number().int().min(1).optional(),
+                children: z.coerce.number().int().min(0).optional(),
+            }).parse(req.query);
+
+            const stay   = resolveStayDates(checkIn, checkOut);
+            const result = await svc.getProperty(id, { ...stay, adults, children });
             res.json(result);
         } catch (err) { next(err); }
     };
@@ -239,6 +248,13 @@ export class HotelsController {
         let closed = false;
         req.on('close', () => { closed = true; });
 
+        // The DB-backed instant catalog and the live TGX city search are different
+        // sets by nature — TGX only confirms a rate for hotels it actually has live
+        // inventory for on these dates, so plenty of catalog hotels never get one.
+        // Those are tracked here so their placeholder `priceLoading` pin can be
+        // removed rather than left stuck at a fake $0 once TGX has had its say.
+        let instantIds = new Set<string>();
+
         try {
             const instant = await getInstantHotelCatalog({
                 cityName:    params.destination,
@@ -248,6 +264,7 @@ export class HotelsController {
                 adults:      params.adults,
                 children:    params.children,
             } as any);
+            instantIds = new Set(instant.map((h: any) => h.id));
             if (!closed) emit({ type: 'instant', hotels: instant });
 
             if (!closed) {
@@ -261,9 +278,18 @@ export class HotelsController {
                     currency:    params.currency,
                 } as any);
                 if (!closed) emit({ type: 'hotels', hotels: result.data, totalCount: result.totalCount });
+
+                const confirmedIds = new Set(result.data.map((h: any) => h.id));
+                const unresolved   = Array.from(instantIds).filter(id => !confirmedIds.has(id));
+                if (!closed && unresolved.length > 0) emit({ type: 'remove', ids: unresolved });
             }
         } catch (err: any) {
-            if (!closed) emit({ type: 'error', message: err.message ?? 'Search failed' });
+            if (!closed) {
+                emit({ type: 'error', message: err.message ?? 'Search failed' });
+                // TGX never returned at all — none of the catalog's placeholders
+                // got confirmed, so none of them keep their pin.
+                if (instantIds.size > 0) emit({ type: 'remove', ids: Array.from(instantIds) });
+            }
         } finally {
             if (!res.writableEnded) {
                 emit({ type: 'done' });

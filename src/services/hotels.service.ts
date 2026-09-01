@@ -1,6 +1,7 @@
 import { HotelsRepository } from '@/repositories/hotels.repository';
 import { runTgxSearch as searchHotels } from '@/lib/hotels/search';
 import { quoteTgx, bookTgx, cancelTgx, fetchAmenitiesByDestination } from '@/lib/hotels/travelgatex';
+import { groupByRoomName } from '@/lib/hotels/property';
 import { otvCodeToLabel } from '@/lib/hotels/amenityCodes';
 import { stripe } from '@/lib/stripe';
 import { AppError } from '@/middleware/error.middleware';
@@ -199,14 +200,26 @@ export class HotelsService {
 
     // ── Property detail ───────────────────────────────────────────────────────
 
-    async getProperty(hotelId: string) {
-        const [content, reviews, reviewItems] = await Promise.all([
+    async getProperty(hotelId: string, stay: { checkIn: string; checkOut: string; adults?: number; children?: number }) {
+        const [content, reviews, reviewItems, tgxResult] = await Promise.all([
             this.repo.findHotelContent(hotelId),
             this.repo.findHotelReviews(hotelId),
             this.repo.findHotelReviewItems(hotelId, 20),
+            searchHotels({
+                hotelCode:         hotelId,
+                checkin:           stay.checkIn,
+                checkout:          stay.checkOut,
+                adults:            stay.adults ?? 2,
+                children:          stay.children ?? 0,
+                currency:          'USD',
+                guest_nationality: 'US',
+            }).catch(() => null),
         ]);
         if (!content) throw new AppError(404, 'Property not found', 'NOT_FOUND');
-        return { content, reviews, reviewItems };
+
+        const rawTypes = tgxResult?.data?.[0]?.roomTypes ?? [];
+        const rooms     = groupByRoomName(rawTypes);
+        return { content, reviews, reviewItems, rooms };
     }
 
     // ── Pre-book (validate + hold) ────────────────────────────────────────────
