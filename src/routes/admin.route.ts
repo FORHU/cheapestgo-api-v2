@@ -8,6 +8,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '@/middleware/auth.middleware';
 import { AppError } from '@/middleware/error.middleware';
+import { mergeAdminBookings } from '@/lib/admin/normaliseBooking';
 import { prisma } from '@/lib/prisma';
 
 const router = Router();
@@ -85,68 +86,49 @@ router.get('/bookings', async (req: Request, res: Response, next: NextFunction) 
         const search = typeof req.query.q === 'string' ? req.query.q.trim() : '';
         const skip   = (page - 1) * PAGE_SIZE;
 
-        // Build a where clause that searches booking ID or user ID
-        const where = search
-            ? {
-                OR: [
-                    { id:      { contains: search } },
-                    { user_id: { contains: search } },
-                ],
-            }
-            : {};
+        // Both kinds of booking, because admin previously queried `bookings` alone and
+        // so could not show a flight at all — no PNR lookup, no ticket state. They live
+        // in separate tables with different column names, so each is read on its own
+        // terms and normalised below.
+        const like = `%${search}%`;
 
-        const [bookings, total] = await Promise.all([
-            (prisma as any).bookings.findMany({
-                where,
-                skip,
-                take:    PAGE_SIZE,
-                orderBy: { created_at: 'desc' },
-                include: {
-                    users: {
-                        select: { id: true, email: true, first_name: true, last_name: true },
-                    },
-                },
-            }).catch(async () => {
-                // Raw fallback if model not in generated types
-                if (search) {
-                    return prisma.$queryRaw<any[]>`
-                        SELECT b.*, u.email, u.first_name, u.last_name
-                        FROM bookings b
-                        LEFT JOIN users u ON u.id = b.user_id
-                        WHERE b.id ILIKE ${'%' + search + '%'}
-                           OR b.user_id ILIKE ${'%' + search + '%'}
-                        ORDER BY b.created_at DESC
-                        LIMIT ${PAGE_SIZE} OFFSET ${skip}
-                    `;
-                }
-                return prisma.$queryRaw<any[]>`
-                    SELECT b.*, u.email, u.first_name, u.last_name
-                    FROM bookings b
-                    LEFT JOIN users u ON u.id = b.user_id
-                    ORDER BY b.created_at DESC
-                    LIMIT ${PAGE_SIZE} OFFSET ${skip}
-                `;
-            }),
+        const [hotelRows, flightRows] = await Promise.all([
+            prisma.$queryRawUnsafe<any[]>(
+                search
+                    ? `SELECT b.id, b.user_id, b.booking_id, b.status, b.total_price::float8 AS total_price, b.currency,
+                              b.created_at, b.property_name
+                         FROM bookings b
+                        WHERE b.id::text ILIKE $1 OR b.user_id::text ILIKE $1
+                           OR b.booking_id ILIKE $1 OR b.property_name ILIKE $1
+                           OR b.holder_email ILIKE $1
+                        ORDER BY b.created_at DESC LIMIT 500`
+                    : `SELECT b.id, b.user_id, b.booking_id, b.status, b.total_price::float8 AS total_price, b.currency,
+                              b.created_at, b.property_name
+                         FROM bookings b
+                        ORDER BY b.created_at DESC LIMIT 500`,
+                ...(search ? [like] : []),
+            ).catch(() => []),
 
-            (prisma as any).bookings.count({ where }).catch(async () => {
-                if (search) {
-                    const rows = await prisma.$queryRaw<{ count: bigint }[]>`
-                        SELECT COUNT(*)::int AS count FROM bookings
-                        WHERE id ILIKE ${'%' + search + '%'}
-                           OR user_id ILIKE ${'%' + search + '%'}
-                    `;
-                    return Number(rows[0]?.count ?? 0);
-                }
-                const rows = await prisma.$queryRaw<{ count: bigint }[]>`SELECT COUNT(*)::int AS count FROM bookings`;
-                return Number(rows[0]?.count ?? 0);
-            }),
+            prisma.$queryRawUnsafe<any[]>(
+                search
+                    ? `SELECT f.id, f.user_id, f.pnr, f.status, f.total_price::float8 AS total_price, f.charged_price::float8 AS charged_price,
+                              f.currency, f.created_at
+                         FROM flight_bookings f
+                        WHERE f.id::text ILIKE $1 OR f.user_id::text ILIKE $1 OR f.pnr ILIKE $1
+                        ORDER BY f.created_at DESC LIMIT 500`
+                    : `SELECT f.id, f.user_id, f.pnr, f.status, f.total_price::float8 AS total_price, f.charged_price::float8 AS charged_price,
+                              f.currency, f.created_at
+                         FROM flight_bookings f
+                        ORDER BY f.created_at DESC LIMIT 500`,
+                ...(search ? [like] : []),
+            ).catch(() => []),
         ]);
 
-        const totalPages = Math.ceil(total / PAGE_SIZE);
+        const merged = mergeAdminBookings(hotelRows, flightRows);
 
-        if (page > totalPages && totalPages > 0) {
-            throw new AppError(400, 'Page out of range', 'VALIDATION_ERROR');
-        }
+        const total      = merged.length;
+        const totalPages = Math.ceil(total / PAGE_SIZE);
+        const bookings   = merged.slice(skip, skip + PAGE_SIZE);
 
         return res.json({ bookings, total, page, totalPages });
     } catch (err) {
