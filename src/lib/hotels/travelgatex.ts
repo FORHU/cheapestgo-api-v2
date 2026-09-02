@@ -119,6 +119,41 @@ export interface TgxOption {
     }>;
 }
 
+/**
+ * Canonicalise refundability at the supplier boundary.
+ *
+ * TGX answers with a boolean; every consumer downstream — the policy normaliser, the
+ * cancellation engine, the search filter — tests `'RFN'`. Emitting `'REFUNDABLE'` here
+ * instead meant those tests silently failed: a "free cancellation only" filter matched
+ * nothing and simply looked like a search with no results. Converting once, here, is
+ * why the rest of the codebase can assume one spelling.
+ */
+export function toRefundableTag(refundable: boolean | null | undefined): 'RFN' | 'NRFN' {
+    return refundable ? 'RFN' : 'NRFN';
+}
+
+/**
+ * The cancellation terms in the shape the client already expects.
+ *
+ * app-v2's `RoomOption` has declared `cancelPolicy` all along, so the only thing
+ * missing was sending it. Two renames happen here rather than on the client, for the
+ * same reason `toRefundableTag` exists: the supplier's vocabulary stops at this file.
+ * TGX names the figure `value`; the client's shape calls it `amount`. `penaltyType`
+ * travels with it because without it a 20% penalty and a 20-unit one are one number.
+ */
+export function toClientCancelPolicy(policy: TgxCancelPolicy | null | undefined) {
+    if (!policy) return undefined;
+    return {
+        refundable: policy.refundable,
+        cancelPenalties: (policy.cancelPenalties ?? []).map(p => ({
+            deadline:    p.deadline,
+            amount:      p.value,
+            currency:    p.currency,
+            penaltyType: p.penaltyType,
+        })),
+    };
+}
+
 export function normalizeOption(opt: TgxOption) {
     // TGX docs: id is the canonical identifier that goes to Quote; token is supplier-native.
     const quoteId = opt.id || opt.token;
@@ -132,14 +167,14 @@ export function normalizeOption(opt: TgxOption) {
         gross:         opt.price.gross,
         currency:      opt.price.currency,
         refundable:    opt.cancelPolicy?.refundable ?? false,
-        refundableTag: opt.cancelPolicy?.refundable ? 'REFUNDABLE' : 'NON_REFUNDABLE',
+        refundableTag: toRefundableTag(opt.cancelPolicy?.refundable),
         cancelPolicy:  opt.cancelPolicy,
         rates: [{
             retailRate: {
                 total:    [{ amount: opt.price.gross || opt.price.net, currency: opt.price.currency }],
                 currency: opt.price.currency,
             },
-            refundableTag:         opt.cancelPolicy?.refundable ? 'REFUNDABLE' : 'NON_REFUNDABLE',
+            refundableTag:         toRefundableTag(opt.cancelPolicy?.refundable),
             cancellationPolicies:  opt.cancelPolicy?.cancelPenalties || [],
             _tgx: {
                 token:       opt.token,
@@ -444,6 +479,12 @@ export async function resolveTgxDestinationCode(cityName: string, prisma: any): 
 
     try {
         const row = await prisma.tgx_destination_cache.findUnique({ where: { city_key: key } });
+        // `NONE` is a sentinel, not a code. It records that destinationSearcher had no
+        // destination for this city, so the search must skip Search by Destination and
+        // fall through to Hotel-Code Fallback. Returning it sends the literal string to
+        // TGX as a destination. v1 writes these rows and v2 reads the same schema
+        // (ADR-0014), so they are present here whether or not v2 ever writes one.
+        if (row?.destination_code === 'NONE') return undefined;
         if (row?.destination_code) {
             _destCodeCache.set(key, row.destination_code);
             return row.destination_code;

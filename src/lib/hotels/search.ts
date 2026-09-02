@@ -6,10 +6,10 @@
 import { prisma } from '@/lib/prisma';
 import {
     tgxGraphQL, getTgxSettings, getTgxConfig, getTgxFilterSearch, buildOccupancies,
-    normalizeOption, resolveTgxDestinationCode, fetchAmenitiesByHotelCodes,
+    normalizeOption, resolveTgxDestinationCode, fetchAmenitiesByHotelCodes, toRefundableTag,
     type TgxOption,
 } from './travelgatex';
-import { otvCodeToLabel, normalizeAmenityList } from './amenityCodes';
+import { otvCodeToLabel } from './amenityCodes';
 import { fetchEtgHotelContent, parseEtgHotel, type EtgHotelContent } from './etg';
 import { HotelsRepository } from '@/repositories/hotels.repository';
 import { resolveHotelDbCities } from '@/lib/cityAliases';
@@ -96,10 +96,16 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
             where,
             orderBy: { review_count: { sort: 'desc', nulls: 'last' } },
             take: body.lat && body.lng ? 1000 : 300,
+            // `description` and `amenities` are not read from a catalog card. app-v2's
+            // consumed shape is `MappableProperty` (features/search/utils/search.utils.ts),
+            // and neither field is on it — they were selected, normalised and streamed for
+            // nothing. Note this differs from v1's trim: v1 also dropped `location`, which
+            // app-v2 *does* read, so that one stays. v2 owns its own design (ADR-0016), so
+            // what v1 measured as unread does not transfer.
             select: {
                 hotel_id: true, name: true, images: true, star_rating: true,
                 lat: true, lng: true, address: true, city: true, country: true,
-                description: true, amenities: true, review_rating: true, review_count: true,
+                review_rating: true, review_count: true,
             },
         });
 
@@ -114,7 +120,10 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
             name:         r.name || r.hotel_id,
             price:        0,
             currency:     'USD',
-            images:       r.images ?? [],
+            // Only the first image is ever rendered on a card, and `toMappable` reads
+            // `images[0]` before falling back to `image`. Streaming the whole array cost
+            // bytes for URLs nothing displays.
+            images:       (r.images as string[] | null)?.length ? [(r.images as string[])[0]] : [],
             image:        (r.images as string[] | null)?.[0] ?? '',
             starRating:   r.star_rating ?? 0,
             reviewRating: Number(r.review_rating ?? 0),
@@ -124,15 +133,10 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
             lat:          Number(r.lat ?? 0),
             lng:          Number(r.lng ?? 0),
             coordinates:  { lat: Number(r.lat ?? 0), lng: Number(r.lng ?? 0) },
-            address:      r.address ?? '',
+            // `location` is what app-v2's card reads; `address` echoed it with no reader.
             location:     r.address ?? '',
             city:         r.city ?? cityName,
             country:      r.country ?? '',
-            description:  r.description ?? '',
-            // Stored amenities are a mix of prettified non-English strings and
-            // TGX `{ code }` objects; passed through raw they render in Spanish
-            // or Russian on an English page.
-            amenities:    normalizeAmenityList(r.amenities),
             provider:     'travelgatex',
             priceLoading: true,
         }));
@@ -821,6 +825,28 @@ function normalizeHotelName(name: string): string {
 
 // ─── City search fallback ─────────────────────────────────────────────────────
 
+/**
+ * A search that ended without the supplier ever giving a usable answer — a TGX timeout,
+ * a `513` handler overload, a destination code that never resolved, or an empty catalog
+ * to fall back on.
+ *
+ * Distinct from a No-Availability result, where the supplier *did* answer and reported no
+ * inventory: that is a real answer and the Phase 1 catalog is correctly pruned. An
+ * Unanswered Search has learned nothing about availability, so the catalog must stay on
+ * screen and the user is told prices could not be loaded.
+ *
+ * Thrown rather than returned so `runTgxSearch`'s `.then(cache)` is skipped and an
+ * unanswered search can never be written to `hotel_search_cache`.
+ */
+export class UnansweredSearchError extends Error {
+    readonly cityName: string;
+    constructor(cityName: string, detail: string) {
+        super(`Unanswered search for "${cityName}": ${detail}`);
+        this.name = 'UnansweredSearchError';
+        this.cityName = cityName;
+    }
+}
+
 async function runCityFallback(
     cityName: string,
     countryCode: string | undefined,
@@ -831,6 +857,12 @@ async function runCityFallback(
     searchParams: HotelSearchParams,
 ): Promise<HotelSearchResult> {
     await loadFailedDestCodes();
+
+    // Records every path that failed to complete rather than answering. If we reach the
+    // end with no results AND something in here, the search is Unanswered, not empty.
+    // A path that answered cleanly with zero options never lands here, so a genuine
+    // No-Availability result still returns normally and is still cached.
+    const unansweredReasons: string[] = [];
 
     // Pre-declare so the dest-code block can populate it and fall through to hotel-code search.
     let otvCodes: string[]              = [];
@@ -886,17 +918,27 @@ async function runCityFallback(
                 }
             }
             if (otvCodes.length === 0) {
-                // WRONG_FIELD/Empty hotels = TGX mapping gap (OTV was never called).
-                // Don't blacklist — the city may have OTV coverage once TGX mapping syncs.
-                if (!hasEmptyHotelsError(destErrors)) {
+                // WRONG_FIELD/Empty hotels = TGX mapping gap (OTV was never called), and
+                // the city may gain coverage once TGX mapping syncs. ALL_PROCESSES_FAILED
+                // = every OTV connection failed to respond, which TGX documents as
+                // transient and worth retrying. Blacklisting on either permanently skips
+                // a destination code that is still valid, so neither is recorded.
+                const isTransient = hasEmptyHotelsError(destErrors) ||
+                    destErrors.some((e: any) => e.code === 'ALL_PROCESSES_FAILED');
+                if (isTransient) {
+                    const cause = destErrors[0]?.code ?? 'empty hotels';
+                    console.warn(`[tgx-search] Dest code "${resolvedCode}" transient failure (${cause}) — not recorded as OTV miss`);
+                    // The reasoning that keeps this out of the blacklist keeps it out of a
+                    // No-Availability verdict too: OTV either timed out or was never
+                    // called, so nothing has been learned about inventory.
+                    unansweredReasons.push(`dest-code ${resolvedCode} transient (${cause})`);
+                } else {
                     persistFailedDestCode(resolvedCode, cityName);
                     if (destErrors.length) {
                         console.warn(`[tgx-search] Dest code "${resolvedCode}" had errors — recorded as OTV miss`);
                     } else {
                         console.warn(`[tgx-search] Dest code "${resolvedCode}" returned 0 options — recorded as OTV miss`);
                     }
-                } else {
-                    console.warn(`[tgx-search] Dest code "${resolvedCode}" has TGX mapping gap (Empty hotels) — not recorded as OTV miss`);
                 }
             }
         }
@@ -930,11 +972,17 @@ async function runCityFallback(
         const chunks: string[][] = [];
         for (let i = 0; i < otvCodes.length; i += CHUNK) chunks.push(otvCodes.slice(i, i + CHUNK));
 
+        // One chunk failing must not discard the chunks that answered — a partial answer
+        // is still a real answer for the hotels it covers. `Promise.all` rejected the
+        // whole batch on a single timeout, which turned a partial result into an empty
+        // one indistinguishable from a city with no availability.
+        let unansweredChunks = 0;
         const runChunks = async (chunkList: string[][]): Promise<{ options: TgxOption[]; errors: any[] }[]> => {
+            unansweredChunks = 0;
             const results: { options: TgxOption[]; errors: any[] }[] = [];
             for (let i = 0; i < chunkList.length; i += CONCURRENCY) {
                 const batch = chunkList.slice(i, i + CONCURRENCY);
-                const batchResults = await Promise.all(batch.map(async chunk => {
+                const settled = await Promise.allSettled(batch.map(async chunk => {
                     const r = await tgxGraphQL(CITY_SEARCH_QUERY, {
                         criteria: { ...baseCriteria, hotels: chunk },
                         settings,
@@ -945,7 +993,10 @@ async function runCityFallback(
                         errors:  (r?.data?.hotelX?.search?.errors  || []) as any[],
                     };
                 }));
-                results.push(...batchResults);
+                for (const s of settled) {
+                    if (s.status === 'fulfilled') results.push(s.value);
+                    else unansweredChunks++;
+                }
             }
             return results;
         };
@@ -964,6 +1015,10 @@ async function runCityFallback(
                 fallbackOptions = chunkResults.flatMap(r => r.options);
             }
 
+            if (unansweredChunks > 0) {
+                unansweredReasons.push(`${unansweredChunks}/${chunks.length} hotel-code batches did not answer`);
+            }
+
             const fallbackMerchant = fallbackOptions.filter(
                 o => o.paymentType === 'MERCHANT' && (o.status === 'AVAILABLE' || o.status === 'OK')
             );
@@ -972,7 +1027,12 @@ async function runCityFallback(
             }
         } catch (tgxErr: any) {
             console.warn(`[tgx-search] Hotel-code search threw for "${cityName}" — falling through to ETG: ${tgxErr.message}`);
+            unansweredReasons.push(`hotel-code fallback errored (${tgxErr.message?.slice(0, 60)})`);
         }
+    } else {
+        // Nothing to ask about. The catalog is empty for this city and the OTV portfolio
+        // query returned nothing either, so no hotel was ever put to the supplier.
+        unansweredReasons.push('no catalog hotel codes to fall back on');
     }
 
     // ETG B2B direct fallback
@@ -981,6 +1041,13 @@ async function runCityFallback(
     if (etgResult.data.length > 0) {
         console.log(`[tgx-search] ETG fallback: ${etgResult.data.length} hotels for "${cityName}"`);
         return etgResult;
+    }
+
+    // Nothing came back. Whether that is an answer or a silence decides what the user
+    // sees: a No-Availability result prunes the Phase 1 catalog, an Unanswered Search
+    // leaves it on screen and reports that prices could not be loaded.
+    if (unansweredReasons.length > 0) {
+        throw new UnansweredSearchError(cityName, unansweredReasons.join('; '));
     }
 
     return buildCityResults([], cityName, countryCode);
@@ -1287,7 +1354,7 @@ async function buildCityResults(
             price:        opt.price.gross || opt.price.net,
             currency:     opt.price.currency,
             offerId:      `TGX:${tokenId}`,
-            refundableTag: opt.cancelPolicy?.refundable ? 'REFUNDABLE' : 'NON_REFUNDABLE',
+            refundableTag: toRefundableTag(opt.cancelPolicy?.refundable),
             starRating:   content?.star_rating ?? 0,
             images:       imageList,
             image:        imageList[0] ?? '',

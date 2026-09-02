@@ -320,25 +320,179 @@ const OTV_AMENITY_MAP: Record<string, string> = {
     ОБСЛУЖИВАНИЕ_НОМЕРОВ: 'Room Service',
     ХИМЧИСТКА: 'Dry Cleaning',
     БАНКОМАТЫ: 'ATM on Site',
+
+    // ─── Non-English supplier codes ───────────────────────────────────────────
+    // OTV sends amenity codes in the property's own language for a large minority of
+    // hotels — German, Spanish, Italian and Dutch all observed, 22% of all stored
+    // amenity labels. Unmapped, the fallback prettifier turned them into user-facing
+    // text ("GepäCklagerung", "RecepcióN Las 24 Horas"), which is what customers saw
+    // on the property page.
+    //
+    // Mapping the codes fixes both directions at once: otvCodeToLabel for new ingests,
+    // and normalizeStoredAmenity for the ~178k labels already stored, because the
+    // prettifier is reversible. No backfill and no re-fetch needed.
+    //
+    // Keys are post-normalisation: accents stripped, uppercased, spaces and slashes
+    // collapsed to underscores — the exact form toAmenityKey produces.
+
+    // German
+    GEPACKLAGERUNG: 'Luggage Storage',
+    WASCHEREI: 'Laundry',
+    ZUSATZLICHE_DESINFEKTIONSMASSNAHMEN: 'Extra Disinfection Measures',
+    FUR_GASTE_MIT_BEHINDERUNGEN: 'Accessible for Guests with Disabilities',
+    FEUERLOSCHER: 'Fire Extinguisher',
+    KEINE_AUFZUGE: 'No Elevators',
+    FON: 'Hairdryer',
+    FOHN: 'Hairdryer',
+    ZUSATZLICHE_MASSNAHMEN_GEGEN_COVID_19: 'Additional COVID-19 Measures',
+    FRUHSTUCKSBUFFET: 'Buffet Breakfast',
+    FRUHSTUCK_IM_ZIMMER: 'Breakfast in Room',
+    KAFFEE_TEE_FUR_GASTE: 'Coffee/Tea for Guests',
+    PARKPLATZ_IN_DER_NAHE: 'Parking Nearby',
+    KOSTENLOSER_PARKPLATZ_IN_DER_NAHE: 'Free Parking Nearby',
+    KOSTENLOSER_PARKPLATZ_AUF_DEM_GELANDE: 'Free On-Site Parking',
+    KONTAKTLOSER_CHECK_IN_UND_ODER_CHECK_OUT: 'Contactless Check-In/Out',
+    KUHLSCHRANK: 'Refrigerator',
+    FLUGHAFENBEFORDERUNG: 'Airport Transfer',
+    FAX_UND_KOPIERER: 'Fax and Photocopying',
+    GESCHAFTSZENTRUM: 'Business Centre',
+    TICKETUNTERSTUTZUNG: 'Ticket Assistance',
+    GARTENMOBEL: 'Garden Furniture',
+    TEMPERATURSTEUERUNG_FUR_GASTE: 'Temperature Control for Guests',
+    TEMPERATURSTEUERUNG_FUR_PERSONAL: 'Temperature Control for Staff',
+    WAHRUNGSTAUSCH: 'Currency Exchange',
+    GEMEINSCHAFTSKUCHE: 'Shared Kitchen',
+    PERSONLICHE_SCHUTZAUSRUSTUNG_FUR_GASTE: 'PPE for Guests',
+    PERSONLICHE_SCHUTZAUSRUSTUNG_FUR_PERSONAL: 'PPE for Staff',
+    STRAND_POOLHANDTUCHER: 'Beach/Pool Towels',
+    BUGELN: 'Ironing',
+    BUGELEISEN: 'Iron',
+    BUGELEISEN_UND_BRETT: 'Iron and Ironing Board',
+    'ALLE_(OFFENTLICHEN_UND_PRIVATEN)_BEREICHE_SIND_RAUCHFREI': 'Entirely Non-Smoking',
+    KONFERENZ_UND_PRASENTATIONSEINRICHTUNGEN: 'Meeting and Presentation Facilities',
+    BABYSITTING_UND_KINDERBETREUUNG: 'Babysitting and Childcare',
+    SCHONHEITSBEHANDLUNGEN: 'Beauty Treatments',
+    'DIATMENU_(AUF_ANFRAGE)': 'Dietary Menu (On Request)',
+    ZUGANG_ZU_OBEREN_STOCKWERKEN_MIT_AUFZUG: 'Elevator to Upper Floors',
+
+    // Spanish
+    HABITACIONES_PARA_NO_FUMADORES: 'Non-Smoking Rooms',
+    CONSIGNA_DE_EQUIPAJES: 'Luggage Storage',
+    TINTORERIA: 'Dry Cleaning',
+    RECEPCION_LAS_24_HORAS: '24-Hour Reception',
+    MOSTRADOR_DE_RECEPCION: 'Reception Desk',
+    SERVICIO_DE_PLANCHADO: 'Ironing Service',
+    SERVICIO_DE_DESPERTADOR: 'Wake-Up Service',
+    ACCESIBLE_PARA_SILLAS_DE_RUEDAS: 'Wheelchair Accessible',
+    HABITACION_FAMILIAR: 'Family Rooms',
+    ARTICULOS_DE_ASEO_PERSONAL: 'Toiletries',
+    INGLES: 'English Spoken',
+    SERVICIOS_DE_CONSERJERIA: 'Concierge Service',
+    SALA_DE_CONFERENCIAS: 'Conference Room',
+    'PARRILLA(S)_PARA_BARBACOA(S)': 'Barbecue Facilities',
+    TELEVISION_POR_CABLE: 'Cable TV',
+    TELEVISOR_CON_PANTALLA_PLANA: 'Flat-Screen TV',
+    MEDIDAS_DE_DESINFECCION_ADICIONALES: 'Extra Disinfection Measures',
+    MEDIDAS_ADICIONALES_CONTRA_LA_COVID_19: 'Additional COVID-19 Measures',
+    ASISTENCIA_PARA_TOURS: 'Tour Assistance',
+    ASISTENCIA_PARA_RESERVAS: 'Booking Assistance',
+    CAFE_TE_PARA_LOS_HUESPEDES: 'Coffee/Tea for Guests',
+    CHECK_IN_CHECK_OUT_RAPIDO: 'Express Check-In/Out',
+    CENTRO_DE_NEGOCIOS: 'Business Centre',
+    TELEFONO: 'Telephone',
+    BOTIQUIN_DE_PRIMEROS_AUXILIOS: 'First Aid Kit',
+    PERIODICOS: 'Newspapers',
+    'NO_ESTA_PERMITIDO_FUMAR_(ESPACIOS_COMPARTIDOS_NI_PRIVADOS)': 'Entirely Non-Smoking',
+    HORNO_DE_MICROONDAS: 'Microwave',
+    CAMBIO_DE_DIVISAS: 'Currency Exchange',
+    PERSONAL_PLURILINGUE: 'Multilingual Staff',
+    DUCHA_BANERA: 'Shower/Bathtub',
+    CONTROL_DE_TEMPERATURA_PARA_LOS_HUESPEDES: 'Temperature Control for Guests',
+    CONTROL_DE_TEMPERATURA_PARA_EL_PERSONAL: 'Temperature Control for Staff',
+    COCINA_COMUN: 'Shared Kitchen',
+    DETECTOR_DE_HUMOS: 'Smoke Detector',
+    INSTALACIONES_PARA_REUNIONES_Y_PRESENTACIONES: 'Meeting and Presentation Facilities',
+    ZONA_DE_COMPRAS_EN_LAS_INSTALACIONES: 'On-Site Shopping',
+    ALQUILER_DE_COCHES: 'Car Rental',
+    CAJERO_AUTOMATICO: 'ATM',
+    TOALLAS_DE_PLAYA_PISCINA: 'Beach/Pool Towels',
+    CAFETERIA: 'Cafe',
+    ARMARIO_CLOSET: 'Wardrobe/Closet',
+    EQUIPO_DE_PROTECCION_PERSONAL_PARA_LOS_HUESPEDES: 'PPE for Guests',
+    ZONA_DE_BRONCEADO: 'Sun Terrace',
+    ZONA_PARA_PICNICS: 'Picnic Area',
+
+    // Italian
+    CAMERE_NON_FUMATORI: 'Non-Smoking Rooms',
+    "ARTICOLI_PER_L'IGIENE_PERSONALE": 'Toiletries',
+    COLAZIONE: 'Breakfast',
+    CAFFE_TE_PER_GLI_OSPITI: 'Coffee/Tea for Guests',
+    BANCOMAT: 'ATM',
+    CAMBIO_VALUTA: 'Currency Exchange',
+    GIORNALI: 'Newspapers',
+    SHOPPING_IN_LOCO: 'On-Site Shopping',
+    NEGOZIO_DI_SOUVENIR: 'Souvenir Shop',
+
+    // Dutch
+    TELEVISIE_IN_DE_LOBBY: 'TV in Lobby',
+    'ALLE_RUIMTES_NIET_ROKEN_(OPENBAAR_EN_PRIVE)': 'Entirely Non-Smoking',
+
+    // English the supplier sends with inconsistent punctuation
+    'NON-SMOKING_ROOMS': 'Non-Smoking Rooms',
+    NON_SMOKING_ROOMS: 'Non-Smoking Rooms',
+    'ALL_SPACES_NON_SMOKING_(PUBLIC_AND_PRIVATE)': 'Entirely Non-Smoking',
 };
+
+/**
+ * The one key shape OTV_AMENITY_MAP is indexed by.
+ *
+ * Both directions must agree on it: `otvCodeToLabel` looking up a supplier code, and
+ * `normalizeStoredAmenity` reversing a label that the prettifier already produced. They
+ * disagreed — the first did not collapse spaces — so a supplier sending spaced text
+ * missed entries the map already contained.
+ */
+function toAmenityKey(raw: string): string {
+    return raw
+        .normalize('NFD').replace(/[̀-ͯ]/g, '') // strip accents (Cyrillic й/ё decompose too)
+        .toUpperCase()
+        .replace(/[«»""‹›]/g, '')  // typographic quotes, e.g. «звонок будильник»
+        .replace(/[\s/-]+/g, '_')  // spaces, slashes and hyphens → underscore
+        .replace(/_+/g, '_')       // collapse runs
+        .replace(/^_|_$/g, '');    // trim
+}
 
 /** Convert an OTV amenity code to a display label. Unknown codes are prettified. */
 export function otvCodeToLabel(code: string | null | undefined): string {
     if (!code) return '';
     const upper = code.toUpperCase().trim();
     if (OTV_AMENITY_MAP[upper]) return OTV_AMENITY_MAP[upper];
-    // Fallback: replace underscores/hyphens with spaces, title-case each word
+
+    // Look up the canonical form as well. OTV sends the same amenity as a code
+    // (`ARIA_CONDIZIONATA`) *and* as spaced text (`Aria Condizionata`), and only the
+    // first matched — the second uppercased to `ARIA CONDIZIONATA`, missed a map that
+    // already held the underscored key, and fell through to the prettifier below.
+    // That is why Italian and German reached the property page while the dictionary
+    // had known those words all along. Same normalisation normalizeStoredAmenity uses,
+    // so both directions agree on one key shape.
+    const canonical = toAmenityKey(upper);
+    if (OTV_AMENITY_MAP[canonical]) return OTV_AMENITY_MAP[canonical];
+
+    // Still unmapped. Prettify — but note this is how "GepäCklagerung" reached the
+    // property page: `\b\w` treats an accented letter as a word boundary, so it
+    // capitalised the character *after* every accent. Match Unicode letters instead,
+    // and only uppercase one that actually follows a separator or starts the string.
     return upper
         .replace(/[_-]+/g, ' ')
         .toLowerCase()
-        .replace(/\b\w/g, (c) => c.toUpperCase());
+        .replace(/(^|[\s/(-])(\p{L})/gu, (_m, sep, ch) => sep + ch.toUpperCase());
 }
 
 /**
  * Re-translates already-stored amenity display strings that were prettified
  * from non-English codes (e.g. "Aire Acondicionado" → "Air Conditioning").
- * Reverses the fallback prettifier: strips accents, uppercases, replaces spaces
- * with underscores, then looks up in the map.
+ * Reverses the fallback prettifier through `toAmenityKey`, the one key shape both
+ * directions share, then looks up in the map. A label the map does not know still
+ * gets its mangled capitalisation repaired.
  */
 // ─── ETG room-level amenity slugs ─────────────────────────────────────────────
 
@@ -455,6 +609,21 @@ export function etgRoomAmenityToLabel(slug: string): string {
  * Mirrors what v1 does in `fetchPropertyData` before returning a property.
  */
 export function normalizeAmenityList(raw: unknown): string[] {
+    // `hotel_content.amenities` is jsonb in two shapes: a real array, and — for rows
+    // written double-encoded — a JSON *string* containing the array. `Array.isArray`
+    // is false for exactly the rows that have data, so this returned nothing and the
+    // caller silently fell back to un-normalised live supplier text. That fallback is
+    // how untranslated German and Italian reached the property page while the amenity
+    // map had known those words all along. Migration `20260901000001` repaired the
+    // stored rows; this accepts both shapes so a survivor cannot reopen the hole.
+    if (typeof raw === 'string') {
+        try {
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? normalizeAmenityList(parsed) : [];
+        } catch {
+            return [];
+        }
+    }
     if (!Array.isArray(raw)) return [];
     return raw
         .flatMap((a: any) =>
@@ -469,11 +638,10 @@ export function normalizeAmenityList(raw: unknown): string[] {
 
 export function normalizeStoredAmenity(label: string): string {
     if (!label) return label;
-    const asCode = label
-        .normalize('NFD').replace(/[̀-ͯ]/g, '') // strip combining marks (accents, Cyrillic й/ё decompose: й→И, ё→Е)
-        .toUpperCase()
-        .replace(/[«»""‹›]/g, '')  // strip typographic quotes (e.g. «звонок будильник»)
-        .replace(/[\s/]+/g, '_')   // spaces and slashes → underscore
-        .replace(/_+/g, '_');      // collapse consecutive underscores
-    return OTV_AMENITY_MAP[asCode] || label;
+    const mapped = OTV_AMENITY_MAP[toAmenityKey(label)];
+    if (mapped) return mapped;
+    // Unmapped: repair the mangled capitalisation the old prettifier left behind
+    // ("GepäCklagerung", "RecepcióN") so an untranslated label is at least not broken.
+    return label.replace(/(\p{L})(\p{Lu})/gu, (m, prev, up) =>
+        /[\p{Lu}]/u.test(prev) ? m : prev + up.toLowerCase());
 }

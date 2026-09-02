@@ -85,4 +85,78 @@ describe('normalizeAmenityList', () => {
         expect(normalizeAmenityList(undefined)).toEqual([]);
         expect(normalizeAmenityList('Free WiFi')).toEqual([]);
     });
+
+    it('reads a double-encoded column, which is what the rows with data looked like', () => {
+        // jsonb holding a JSON *string* of the array rather than the array. `Array.isArray`
+        // was false for exactly the rows that had amenities, so the list came back empty
+        // and the caller fell through to raw supplier text — the real reason untranslated
+        // German and Italian reached the page.
+        expect(normalizeAmenityList('["Aire Acondicionado","Gepäcklagerung"]'))
+            .toEqual(['Air Conditioning', 'Luggage Storage']);
+    });
+
+    it('handles a double-encoded column of TGX code objects too', () => {
+        expect(normalizeAmenityList('[{"code":"FREE_WIFI"}]')).toEqual(['Free WiFi']);
+    });
+
+    it('returns empty for a string that parses to something other than a list', () => {
+        expect(normalizeAmenityList('{"not":"a list"}')).toEqual([]);
+        expect(normalizeAmenityList('42')).toEqual([]);
+    });
+});
+
+/**
+ * Non-English supplier codes. OTV sends amenity codes in the property's own language
+ * for 22% of stored labels, and both lookup directions used to disagree on the key
+ * shape — so a supplier sending spaced text missed entries the map already held, and
+ * the fallback prettifier mangled accented words into "GepäCklagerung".
+ */
+describe('non-English supplier codes', () => {
+    it('maps German, Spanish, Italian and Dutch codes', () => {
+        expect(otvCodeToLabel('GEPACKLAGERUNG')).toBe('Luggage Storage');
+        expect(otvCodeToLabel('RECEPCION_LAS_24_HORAS')).toBe('24-Hour Reception');
+        expect(otvCodeToLabel('CAMERE_NON_FUMATORI')).toBe('Non-Smoking Rooms');
+        expect(otvCodeToLabel('TELEVISIE_IN_DE_LOBBY')).toBe('TV in Lobby');
+    });
+
+    it('matches the same amenity sent as spaced text, not just as a code', () => {
+        // OTV sends both forms. Only the underscored one used to match.
+        expect(otvCodeToLabel('CONSIGNA_DE_EQUIPAJES')).toBe('Luggage Storage');
+        expect(otvCodeToLabel('Consigna de equipajes')).toBe('Luggage Storage');
+    });
+
+    it('matches through accents, so the accented spelling resolves too', () => {
+        expect(otvCodeToLabel('Gepäcklagerung')).toBe('Luggage Storage');
+        expect(otvCodeToLabel('Recepción las 24 horas')).toBe('24-Hour Reception');
+    });
+
+    it('treats a hyphen as a separator, like a space or a slash', () => {
+        expect(otvCodeToLabel('NON-SMOKING ROOMS')).toBe('Non-Smoking Rooms');
+    });
+
+    it('no longer capitalises the letter after an accent when prettifying', () => {
+        // The GepäCklagerung defect: `\b\w` sees an accented letter as a word
+        // boundary, so the *next* character got uppercased. This code is unmapped
+        // on purpose — it exercises the fallback, not the dictionary.
+        expect(otvCodeToLabel('FRUHSTUCKSRAUM_TEST')).toBe('Fruhstucksraum Test');
+        expect(otvCodeToLabel('FRÜHSTÜCKSRAUM_TEST')).toBe('Frühstücksraum Test');
+    });
+});
+
+describe('normalizeStoredAmenity, on the labels already in hotel_content', () => {
+    it('re-translates a stored non-English label without a backfill', () => {
+        // The prettifier is reversible, so ~178k stored rows are fixed on read.
+        expect(normalizeStoredAmenity('Gepäcklagerung')).toBe('Luggage Storage');
+        expect(normalizeStoredAmenity('Recepción Las 24 Horas')).toBe('24-Hour Reception');
+    });
+
+    it('repairs mangled capitalisation on a label it cannot translate', () => {
+        // Stored by the old prettifier. Unmapped, so the best it can do is stop it
+        // looking broken.
+        expect(normalizeStoredAmenity('FrüHstüCksraum')).toBe('Frühstücksraum');
+    });
+
+    it('leaves a deliberate inner capital in an English label alone', () => {
+        expect(normalizeStoredAmenity('Free WiFi')).toBe('Free WiFi');
+    });
 });

@@ -128,7 +128,9 @@ export interface BookingPolicySnapshot {
     earlyDepartureFee: number;
     freeCancelDeadline: string | null;
     tiers: PolicyTier[];
-    rawLiteapiResponse: Record<string, unknown>;
+    // The row also has `raw_liteapi_response`, a second audit blob left behind by the
+    // retired LiteAPI supplier. We write `raw_provider_response` and read neither — a
+    // cancellation is computed from the tiers, never from the blob. See CONTEXT.md.
     capturedAt: string;
 }
 

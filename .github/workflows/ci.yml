@@ -1,0 +1,53 @@
+name: CI
+
+# Mirrors v1's CI (cheapest-go-app/.github/workflows/ci.yml) so all three repos gate on
+# the same idea, with two deliberate differences: the Prisma step below, and a wider set
+# of checks. v1 runs type check and test only; this runs lint and build as well, so a
+# deploy workflow added later cannot fail on something CI never looked at.
+
+on:
+  push:
+    branches: [main, staging, updates-api]
+  pull_request:
+    branches: [main, staging, updates-api]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # npm, not pnpm: this repo has package-lock.json. app-v2 is the opposite.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # --ignore-scripts skips postinstall, and this repo defines none anyway, so nothing
+      # generates the Prisma client. Without it `@prisma/client` resolves to nothing and
+      # the type check fails on every file that imports it — src/lib/prisma.ts and both
+      # repositories. It must run before any step that compiles.
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      # Each check runs even when an earlier one failed, so one red run lists everything
+      # that needs fixing instead of revealing the next problem only after the last is
+      # fixed. `!cancelled()` rather than `always()`: a cancelled run should stop.
+      - name: Type check
+        if: '!cancelled()'
+        run: npm run type-check
+
+      - name: Lint
+        if: '!cancelled()'
+        run: npm run lint
+
+      - name: Test
+        if: '!cancelled()'
+        run: npm test
+
+      - name: Build
+        if: '!cancelled()'
+        run: npm run build

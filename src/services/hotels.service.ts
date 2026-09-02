@@ -4,6 +4,8 @@ import { quoteTgx, bookTgx, cancelTgx, fetchAmenitiesByDestination } from '@/lib
 import { otvCodeToLabel, normalizeAmenityList } from '@/lib/hotels/amenityCodes';
 import { RoomCatalogService } from '@/services/roomCatalog.service';
 import { orderRoomPhotosByDistinctiveness } from '@/lib/hotels/roomMatch';
+import { normalizeRoomName, extractRoomVariantLabel } from '@/lib/hotels/roomNames';
+import { toClientCancelPolicy } from '@/lib/hotels/travelgatex';
 import { stripe } from '@/lib/stripe';
 import { AppError } from '@/middleware/error.middleware';
 import { prisma } from '@/lib/prisma';
@@ -392,13 +394,26 @@ export class HotelsService {
 
                 rooms = deduped.map((r: any) => {
                     const extra = r.roomCode ? catalog.get(r.roomCode) : undefined;
+                    // TGX appends the rate to the name and files variants in parentheses, so
+                    // the raw string titles a card "Standard Double room - Non-refundable".
+                    // The variant is kept beside the title rather than dropped: two offers
+                    // differing only inside the parentheses would otherwise render as the same
+                    // card twice. Dedup still keys on the raw name, so nothing bookable is lost.
+                    const variantLabel = extractRoomVariantLabel(r.roomName);
+                    const cancelPolicy = toClientCancelPolicy(r.cancelPolicy);
                     return {
                         id:            r.offerId,
                         offerId:       r.offerId,
-                        name:          r.roomName,
+                        name:          normalizeRoomName(r.roomName),
+                        ...(variantLabel ? { variantLabel } : {}),
                         price:         r.price,
                         currency:      r.currency,
                         refundableTag: r.refundable ? 'RFN' : 'NRFN',
+                        // The terms themselves, not just whether they exist. This mapping
+                        // dropped `cancelPolicy` while app-v2's `RoomOption` declared it,
+                        // so the client was typed for data the API never sent and could
+                        // say only "refundable" or "not".
+                        ...(cancelPolicy ? { cancelPolicy } : {}),
                         boardType:     r.boardCode,
                         roomCode:      r.roomCode,
                         roomPhotos:    extra?.photos ?? [],

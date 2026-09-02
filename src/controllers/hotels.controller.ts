@@ -375,8 +375,11 @@ export class HotelsController {
             ]);
 
             if (!closed && catalogHotels.length > 0) {
-                const mappable = catalogHotels.filter((h: any) => h.lat && h.lng);
-                emit({ type: 'hotels', data: catalogHotels, allMappable: mappable, totalCount: catalogHotels.length, source: 'catalog' });
+                // `allMappable` used to ride along here as a filtered copy of `data` —
+                // the whole hotel array a second time in the same message. app-v2's
+                // stream reader takes `chunk.data` alone and maps it through
+                // `toMappable`, so nothing ever read the copy.
+                emit({ type: 'hotels', data: catalogHotels, totalCount: catalogHotels.length, source: 'catalog' });
 
                 // Infer countryCode from catalog when unknown
                 if (!body.countryCode) {
@@ -396,6 +399,10 @@ export class HotelsController {
             const catalogIdSet = new Set(catalogHotels.map((h: any) => h.id as string));
 
             let tgxFailed = false;
+            // An Unanswered Search is a failure the user should be told about honestly —
+            // the catalog stays and prices could not be loaded — rather than one that
+            // reads as the destination having no hotels.
+            let tgxUnanswered = false;
             console.log('[stream] Starting TGX search for', body.cityName ?? body.destination);
             const tgxResult = await runTgxSearch({
                 cityName:    body.cityName ?? body.destination,
@@ -411,12 +418,12 @@ export class HotelsController {
                 bbox:        body.bbox,
             }).catch((err: any) => {
                 tgxFailed = true;
+                tgxUnanswered = err?.name === 'UnansweredSearchError';
                 console.warn(`[stream] TGX failed for "${city}": ${err.message}`, err.stack?.split('\n').slice(0,3).join(' | '));
                 return { data: [] as any[], allMappable: [] as any[], totalCount: 0 };
             });
 
             const tgxHotels: any[]   = Array.isArray(tgxResult.data) ? tgxResult.data : [];
-            const tgxMappable: any[] = tgxResult.allMappable ?? [];
             const tgxHotelIdSet      = new Set(tgxHotels.map((h: any) => h.hotelId || h.id));
             const newTgxHotels       = tgxHotels.filter((h: any) => !catalogIdSet.has(h.hotelId || h.id));
 
@@ -437,14 +444,14 @@ export class HotelsController {
                 if (prices.length > 0) emit({ type: 'prices', data: prices });
                 if (!tgxFailed && unavailableIds.length > 0) emit({ type: 'remove', ids: unavailableIds });
                 if (!closed && newTgxHotels.length > 0) {
-                    emit({ type: 'hotels', data: newTgxHotels, allMappable: newTgxHotels.filter((h: any) => h.lat && h.lng), totalCount: newTgxHotels.length });
+                    emit({ type: 'hotels', data: newTgxHotels, totalCount: newTgxHotels.length });
                 }
             } else if (!closed && tgxHotels.length > 0) {
-                emit({ type: 'hotels', data: tgxHotels, allMappable: tgxMappable, totalCount: tgxHotels.length });
+                emit({ type: 'hotels', data: tgxHotels, totalCount: tgxHotels.length });
             }
 
             const finalCount = tgxHotels.length > 0 ? tgxHotels.length : catalogHotels.length;
-            if (!closed) emit({ type: 'done', totalCount: finalCount, tgxCount: tgxHotels.length, tgxFailed });
+            if (!closed) emit({ type: 'done', totalCount: finalCount, tgxCount: tgxHotels.length, tgxFailed, tgxUnanswered });
 
         } catch (err: any) {
             if (!closed) emit({ type: 'error', message: err.message ?? 'Search failed' });
