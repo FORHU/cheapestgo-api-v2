@@ -1,7 +1,9 @@
 import { HotelsRepository } from '@/repositories/hotels.repository';
+import { hotelCountry } from '@/lib/geo/territories';
 import { runTgxSearch as searchHotels } from '@/lib/hotels/search';
 import { quoteTgx, bookTgx, cancelTgx, fetchAmenitiesByDestination } from '@/lib/hotels/travelgatex';
 import { otvCodeToLabel, normalizeAmenityList } from '@/lib/hotels/amenityCodes';
+import { normalizeMetapolicy } from '@/lib/hotels/metapolicy';
 import { RoomCatalogService } from '@/services/roomCatalog.service';
 import { orderRoomPhotosByDistinctiveness } from '@/lib/hotels/roomMatch';
 import { normalizeRoomName, extractRoomVariantLabel } from '@/lib/hotels/roomNames';
@@ -432,12 +434,29 @@ export class HotelsService {
             }
         }
 
+        // The hotel house policies ETG files under `metapolicy_struct` — deposits,
+        // pets, parking, cots. Raw, they are fourteen keys of loosely-typed enums
+        // that no page can draw, and the RateHawk Addendum §10(b) requires them
+        // disclosed, so they are normalised here rather than left to the client.
+        // The two names below are the props app-v2 has been passing into the
+        // room-detail modal all along with nothing on this side filling them.
+        const metapolicy = normalizeMetapolicy(
+            (content as any).metapolicy_struct,
+            (content as any).metapolicy_extra_info,
+        );
+
         // `hotel_content.amenities` is heterogeneous — plain strings prettified
         // from non-English supplier codes alongside `{ code }` objects from TGX.
         // Returned raw, a Spanish or Russian label reaches an English page.
+        const row = content as any;
         const normalized = {
-            ...(content as any),
-            amenities: normalizeAmenityList((content as any).amenities),
+            ...row,
+            // A territory's hotels arrive filed under its parent's code, so the address
+            // on a Hong Kong property page read "Hong Kong, CN" (QA BG-8).
+            country:   hotelCountry(row.country, row.city, row.lat, row.lng),
+            amenities: normalizeAmenityList(row.amenities),
+            roomPolicySections: metapolicy?.sections ?? [],
+            additionalInfo:     metapolicy?.additionalInfo,
         };
 
         return { content: normalized, reviews: effectiveReviews, reviewItems, rooms };

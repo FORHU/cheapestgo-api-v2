@@ -1,5 +1,6 @@
 import { config } from '@/config';
 import { CITY_ALIASES, matchAliasQuery, resolveHotelDbCities } from '@/lib/cityAliases';
+import { storedCountryCodes } from '@/lib/geo/territories';
 import { COUNTRY_SEARCH_LIST, extractCountryCode } from '@/lib/countries';
 import { DestinationsRepository } from '@/repositories/destinations.repository';
 import { logger } from '@/lib/logger';
@@ -180,7 +181,14 @@ export class DestinationsService {
                     ? String(rawCode).toUpperCase().slice(0, 2)
                     : extractCountryCode(placeName, cityName);
 
-                const placeType: string = (feature.place_type ?? [])[0] ?? 'place';
+                // Mapbox lists several place types per feature and the first is not always
+                // the one the feature actually is. The id's layer prefix is — `place.123` is
+                // a place whatever else the array claims — so it wins when the array agrees
+                // it is possible. Getting this wrong puts a city on the wrong rung of the
+                // granularity ladder and searches it as a district (ADR-0006).
+                const idLayer    = String(feature.id ?? '').split('.')[0];
+                const placeTypes: string[] = feature.place_type ?? [];
+                const placeType: string = placeTypes.includes(idLayer) ? idLayer : (placeTypes[0] ?? 'place');
                 const rung = mapboxTypeToRung(placeType);
 
                 const center: [number, number] | undefined =
@@ -354,8 +362,11 @@ export class DestinationsService {
 
             const result = new Set<string>();
             for (const p of pairs) {
-                // Any one spelling having hotels means we cover the city.
-                if (p.dbCities.some(n => matched.has(`${n}|${p.country}`))) result.add(p.canonical);
+                // Any one spelling having hotels means we cover the city — and a territory's
+                // hotels are filed under its parent's code, so Hong Kong's 1,287 are stored
+                // CN and matching on HK alone reported the city as uncovered (QA BG-8).
+                const codes = storedCountryCodes(p.country);
+                if (p.dbCities.some(n => codes.some(cc => matched.has(`${n}|${cc}`)))) result.add(p.canonical);
             }
 
             // Fall back to a city-only match when nothing matched on country too.

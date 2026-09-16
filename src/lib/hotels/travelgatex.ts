@@ -35,9 +35,16 @@ export function getTgxFilterSearch(cfg = getTgxConfig()) {
 
 // ─── GraphQL client ───────────────────────────────────────────────────────────
 
+/**
+ * @param abortMs  How long to wait for the whole HTTP response. This is not the supplier
+ *   timeout — that travels in `settings.timeout` and is what OTV itself budgets — it covers
+ *   TGX's own overhead and the transfer of the body, so it is always larger. Measured
+ *   round-trip against a 15s supplier budget was 17.3s, i.e. ~2.3s of TGX on top.
+ */
 export async function tgxGraphQL<T = any>(
     query: string,
     variables?: Record<string, any>,
+    abortMs = 30_000,
 ): Promise<T> {
     const cfg = getTgxConfig();
     if (!cfg.apiKey) throw new Error('TRAVELGATEX_API_KEY is not set');
@@ -57,7 +64,7 @@ export async function tgxGraphQL<T = any>(
             'Accept-Encoding': 'gzip',
         },
         body: payload,
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(abortMs),
     });
 
     if (!res.ok) {
@@ -472,22 +479,76 @@ export async function fetchAmenitiesByHotelCodes(
 
 const _destCodeCache = new Map<string, string>();
 
-export async function resolveTgxDestinationCode(cityName: string, prisma: any): Promise<string | undefined> {
-    const key = cityName.toLowerCase().trim();
+/** A NONE Sentinel older than this is re-asked. It records only that one destinationSearcher
+ *  call failed, and it is written on any TGX 5xx including a transient one: left permanent, a
+ *  single outage routes a city to the hotel-code fallback forever at roughly half the
+ *  inventory. Mirrors the window tgx_failed_dest_codes already uses. */
+const NONE_TTL_DAYS = 7;
 
-    if (_destCodeCache.has(key)) return _destCodeCache.get(key);
+/**
+ * The country a cached row belongs to, or null when the row cannot say.
+ *
+ * `parent_code` is either "Country Name#CC" or a numeric parent id. Only the named form
+ * identifies a country; `11218` and `-` say nothing, and a row we cannot judge is left
+ * alone rather than guessed at.
+ */
+const rowCountry = (parentCode: string | null | undefined): string | null =>
+    /#([A-Z]{2})$/.exec(parentCode ?? '')?.[1] ?? null;
+
+/**
+ * @param countryCode  which country the search is for. It is part of the cache key, and it
+ *   is what lets a cached row be refused: the unscoped key holds exactly one row per city
+ *   name worldwide, and city names collide. Unchecked, "Paris, France" was answered with
+ *   code 143485 — Paris, Texas — which TGX honestly reported as having no availability, and
+ *   the search then pruned all 300 catalog hotels and rendered "no hotels found". Bali
+ *   (Greece) and Rome (United States) failed identically on 2026-09-09.
+ */
+export async function resolveTgxDestinationCode(cityName: string, prisma: any, countryCode?: string): Promise<string | undefined> {
+    const cityOnlyKey = cityName.toLowerCase().trim();
+    const key = countryCode ? cityOnlyKey + ':' + countryCode.toLowerCase() : cityOnlyKey;
+
+    if (_destCodeCache.has(key)) {
+        const cached = _destCodeCache.get(key)!;
+        return cached === 'NONE' ? undefined : cached;
+    }
 
     try {
-        const row = await prisma.tgx_destination_cache.findUnique({ where: { city_key: key } });
-        // `NONE` is a sentinel, not a code. It records that destinationSearcher had no
-        // destination for this city, so the search must skip Search by Destination and
-        // fall through to Hotel-Code Fallback. Returning it sends the literal string to
-        // TGX as a destination. v1 writes these rows and v2 reads the same schema
-        // (ADR-0014), so they are present here whether or not v2 ever writes one.
-        if (row?.destination_code === 'NONE') return undefined;
-        if (row?.destination_code) {
+        /**
+         * @returns the code, `undefined` for a live NONE Sentinel, or `null` for "keep
+         *   looking" — no row, a stale sentinel, or a row belonging to another country.
+         * @param requireCountry  set only for the unscoped fallback, whose row may be any
+         *   country's.
+         */
+        const readKey = async (k: string, requireCountry?: string): Promise<string | undefined | null> => {
+            const row = await prisma.tgx_destination_cache.findUnique({ where: { city_key: k } });
+            if (!row) return null;
+            // `NONE` is a sentinel, not a code. Returning it sends the literal string to TGX
+            // as a destination. v1 writes these rows and v2 reads the same schema (ADR-0014).
+            if (row.destination_code === 'NONE') {
+                const age = Date.now() - new Date(row.created_at ?? 0).getTime();
+                if (age < NONE_TTL_DAYS * 86_400_000) { _destCodeCache.set(key, 'NONE'); return undefined; }
+                return null;
+            }
+            if (requireCountry) {
+                const belongsTo = rowCountry(row.parent_code);
+                if (belongsTo && belongsTo !== requireCountry.toUpperCase()) {
+                    console.warn(
+                        `[dest-resolve] ignoring cached "${k}" → ${row.destination_code} (${belongsTo}); asked for ${requireCountry.toUpperCase()}`,
+                    );
+                    return null;
+                }
+            }
             _destCodeCache.set(key, row.destination_code);
             return row.destination_code;
+        };
+
+        const hit = await readKey(key);
+        if (hit !== null) return hit;
+        // The destination-cache sync writes codes without the ":cc" suffix, so a scoped
+        // miss checks the city-only key rather than paying for a fresh TGX round-trip.
+        if (key !== cityOnlyKey) {
+            const cityHit = await readKey(cityOnlyKey, countryCode);
+            if (cityHit !== null) return cityHit;
         }
     } catch { /* non-fatal */ }
 
@@ -521,7 +582,7 @@ export async function resolveTgxDestinationCode(cityName: string, prisma: any): 
         const zoneItem =
             items.find((i: any) => i.type === 'ZONE' && matchesName(i)) ??
             items.find((i: any) => i.type === 'ZONE');
-        const code = cityItem?.code ?? zoneItem?.code ?? undefined;
+        const code = (countryCode ? (zoneItem ?? cityItem) : (cityItem ?? zoneItem))?.code ?? undefined;
 
         if (code) {
             _destCodeCache.set(key, code);

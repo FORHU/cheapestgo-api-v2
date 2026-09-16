@@ -1,4 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { clampName } from '@/lib/users/names';
+import { fromNoReply } from '@/lib/brand';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { AuthController } from '@/controllers/auth.controller';
@@ -64,7 +66,11 @@ router.post('/request-reset', authRateLimit, async (req: Request, res: Response,
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    from: 'CheapestGo <no-reply@mail.cheapestgo.com>',
+                    // Named for the brand the recipient actually used, not a literal (v1,
+                    // C4). A password reset arriving from a company they have never heard of
+                    // is the one email most likely to be read as phishing and ignored, and
+                    // the sending domain must match the brand or SPF/DKIM alignment fails.
+                    from: fromNoReply(),
                     to:   [user.email],
                     subject: 'Reset your password',
                     html: `<p>Click <a href="${resetUrl}">here</a> to reset your password. This link expires in 1 hour.</p>`,
@@ -274,8 +280,10 @@ router.get('/google/callback', async (req: Request, res: Response, next: NextFun
             create: {
                 email:      googleUser.email.toLowerCase(),
                 role:       'user',
-                first_name: googleUser.given_name  ?? null,
-                last_name:  googleUser.family_name ?? null,
+                // Clamped, not refused: turning someone away from their own account over the
+                // length of the name Google holds for them would be the wrong answer.
+                first_name: clampName(googleUser.given_name),
+                last_name:  clampName(googleUser.family_name),
                 avatar_url: googleUser.picture     ?? null,
             },
             update: {

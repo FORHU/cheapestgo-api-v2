@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { storedCountryCodes } from '@/lib/geo/territories';
 
 export interface CityCoverageRow {
     city:    string;
@@ -40,7 +41,10 @@ export class DestinationsRepository {
                 WHERE lat BETWEEN ${minLat} AND ${maxLat}
                   AND lng BETWEEN ${minLng} AND ${maxLng}
                   AND lat <> 0 AND lng <> 0
-                  ${countryCode ? Prisma.sql`AND LOWER(country) = LOWER(${countryCode})` : Prisma.empty}
+                  ${countryCode
+                      // A territory's hotels are filed under its parent's code.
+                      ? Prisma.sql`AND LOWER(country) = ANY(${storedCountryCodes(countryCode)}::text[])`
+                      : Prisma.empty}
             ) AS present
         `);
         return rows[0]?.present === true;

@@ -16,6 +16,8 @@ import { prisma } from '../lib/prisma';
 import { mystiflyRequest } from '../lib/flights/mystifly';
 import { stripe } from '../lib/stripe';
 import { lockFx } from '../lib/payments/fxLock';
+import { searchFlights, saveSearch } from '@/lib/flights/search';
+import type { FlightOffer } from '@/types/flights';
 
 const internalRouter = Router();
 
@@ -751,6 +753,81 @@ internalRouter.post('/retry-emails', requireCronOrInternal, async (_req: Request
     } catch (err: any) {
         console.error('[retry-emails] Fatal error:', err.message);
         return res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+/**
+ * GET /api/internal/cheapest-flight?origin=&destination=&departureDate=&returnDate=
+ *
+ * The live price for one route, for whatever is refreshing deal prices (C6, ported from v1).
+ * A deal card showing a price nobody can buy is worse than a deal card showing none, which is
+ * why this asks the suppliers rather than reading a cache.
+ *
+ * Answers 200 with `success: false` when a route has no offers: that is an ordinary outcome
+ * for an unserved pair on a given date, not a failure the caller should retry.
+ */
+internalRouter.get('/cheapest-flight', requireInternalAuth, async (req: Request, res: Response) => {
+    try {
+        const origin        = String(req.query.origin ?? '');
+        const destination   = String(req.query.destination ?? '');
+        const departureDate = String(req.query.departureDate ?? '');
+        const returnDate    = req.query.returnDate ? String(req.query.returnDate) : undefined;
+
+        if (!origin || !destination || !departureDate) {
+            return res.status(400).json({ error: 'origin, destination, departureDate required' });
+        }
+
+        const params = {
+            origin, destination, departureDate, returnDate,
+            adults: 1, children: 0, infants: 0, cabinClass: 'economy' as const,
+        };
+
+        const saved  = await saveSearch(params as any);
+        const offers = await searchFlights({ ...(params as any), searchId: saved.id });
+
+        if (!offers?.length) return res.json({ success: false, error: 'No offers found' });
+
+        const cheapest = offers.reduce((min: FlightOffer, offer: FlightOffer) => (offer.price.total < min.price.total ? offer : min), offers[0]);
+        return res.json({
+            success:  true,
+            price:    cheapest.price.total,
+            airline:  cheapest.validatingAirline ?? cheapest.segments?.[0]?.airline?.name ?? null,
+            currency: cheapest.price.currency,
+        });
+    } catch (err: any) {
+        console.error('[cheapest-flight]', err?.message);
+        return res.status(500).json({ error: err?.message ?? 'Search failed' });
+    }
+});
+
+/**
+ * POST /api/internal/refresh-flights
+ *
+ * Warms the cache for a popular route, so the first customer of the day does not wait for two
+ * suppliers (C6, ported from v1). The search itself is what populates the cache; nothing is
+ * returned but the id it ran under.
+ */
+internalRouter.post('/refresh-flights', requireInternalAuth, async (req: Request, res: Response) => {
+    try {
+        const { origin, destination, departureDate, cabinClass } = req.body ?? {};
+        if (!origin || !destination || !departureDate) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        const params = {
+            origin, destination, departureDate,
+            adults: 1, children: 0, infants: 0,
+            cabinClass: cabinClass || 'economy',
+        };
+
+        console.log(`[refresh-flights] ${origin} -> ${destination} ${departureDate}`);
+        const saved = await saveSearch(params as any);
+        await searchFlights({ ...(params as any), searchId: saved.id });
+
+        return res.json({ success: true, searchId: saved.id });
+    } catch (err: any) {
+        console.error('[refresh-flights]', err?.message);
+        return res.status(500).json({ error: err?.message ?? 'Refresh failed' });
     }
 });
 

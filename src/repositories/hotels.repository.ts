@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
-import { resolveHotelDbCities } from '@/lib/cityAliases';
+import { hotelLocationNames } from '@/lib/geo/hotelLocation';
 import type { EtgHotelContent } from '@/lib/hotels/etg';
 
 export class HotelsRepository {
@@ -12,14 +12,12 @@ export class HotelsRepository {
      * name reported roughly half the city.
      */
     async countHotelContentByCity(cityName: string, countryCode?: string) {
-        const cityOnly = cityName.split(',')[0].trim();
-        const isoCode  = countryCode && /^[A-Za-z]{2}$/.test(countryCode) ? countryCode : null;
-        const spellings = resolveHotelDbCities(cityOnly, isoCode ?? '');
+        const { cityNames, countryCodes } = hotelLocationNames(cityName, countryCode);
 
         const where: any = {
-            OR: spellings.map(n => ({ city: { equals: n, mode: 'insensitive' } })),
+            OR: cityNames.map(n => ({ city: { equals: n, mode: 'insensitive' } })),
         };
-        if (isoCode) where.country = { equals: isoCode, mode: 'insensitive' };
+        if (countryCodes) where.country = { in: countryCodes, mode: 'insensitive' };
 
         return prisma.hotel_content.count({ where });
     }
@@ -117,6 +115,39 @@ export class HotelsRepository {
         });
     }
 
+    /**
+     * Hotels whose room content is missing or old enough to re-ask for (C6).
+     *
+     * Never seeded first, then the stalest — so a run cut short by its batch size spends its
+     * calls on the hotels that have nothing rather than refreshing ones that already do. Only
+     * hotels with a RateHawk id are candidates: without one there is nothing to ask ETG about.
+     */
+    async findHotelsNeedingRoomGroups(limit: number, refreshDays: number, force: boolean): Promise<
+        { hotelId: string; ratehawkHid: string }[]
+    > {
+        const rows = await prisma.$queryRaw<{ hotel_id: string; ratehawk_hid: string }[]>(Prisma.sql`
+            SELECT hotel_id, ratehawk_hid
+              FROM hotel_content
+             WHERE ratehawk_hid IS NOT NULL AND ratehawk_hid <> ''
+               ${force ? Prisma.sql`` : Prisma.sql`AND (
+                     room_groups = '[]'::jsonb
+                     OR room_groups_seeded_at IS NULL
+                     OR room_groups_seeded_at < NOW() - (${refreshDays} || ' days')::interval
+                 )`}
+             ORDER BY (room_groups = '[]'::jsonb) DESC, room_groups_seeded_at ASC NULLS FIRST
+             LIMIT ${limit}
+        `);
+        return rows.map(row => ({ hotelId: row.hotel_id, ratehawkHid: row.ratehawk_hid }));
+    }
+
+    /** Records that a hotel was asked about, even when the answer was nothing. */
+    async markRoomGroupsSeeded(hotelId: string): Promise<void> {
+        await prisma.hotel_content.updateMany({
+            where: { hotel_id: hotelId },
+            data:  { room_groups_seeded_at: new Date() },
+        });
+    }
+
     // ─── Hotel content ────────────────────────────────────────────────────────
 
     async findHotelContent(hotelId: string) {
@@ -204,41 +235,22 @@ export class HotelsRepository {
         });
     }
 
+    /**
+     * The `id` is a Postgres `bigint`, which Prisma hands back as a JS BigInt —
+     * and `JSON.stringify` throws on one ("Do not know how to serialize a
+     * BigInt"), taking the whole property response down with it. Every hotel
+     * carrying a review row was answering 500; there are 3,827 of them.
+     *
+     * Stringified rather than dropped: the column is the row's only stable
+     * identity, and the client currently keys these by array index.
+     */
     async findHotelReviewItems(hotelId: string, limit = 20) {
-        return prisma.hotel_review_items.findMany({
+        const rows = await prisma.hotel_review_items.findMany({
             where:   { hotel_id: hotelId },
             orderBy: { score: 'desc' },
             take:    limit,
         });
-    }
-
-    // ─── Search cache ─────────────────────────────────────────────────────────
-
-    async getSearchCache(cacheKey: string, ttlMinutes: number): Promise<{ result: any; stale: boolean } | null> {
-        try {
-            const now        = new Date();
-            const graceLimit = new Date(now.getTime() - ttlMinutes * 60 * 1000);
-            const row        = await prisma.hotel_search_cache.findFirst({
-                where: { cache_key: cacheKey, expires_at: { gt: graceLimit } },
-            });
-            if (!row) return null;
-            return { result: row.result as any, stale: row.expires_at <= now };
-        } catch {
-            return null;
-        }
-    }
-
-    async setSearchCache(cacheKey: string, result: any, ttlMinutes: number): Promise<void> {
-        try {
-            const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
-            await prisma.hotel_search_cache.upsert({
-                where:  { cache_key: cacheKey },
-                create: { cache_key: cacheKey, result, expires_at: expiresAt, created_at: new Date() },
-                update: { result, expires_at: expiresAt, created_at: new Date() },
-            });
-        } catch (e: any) {
-            console.error('[hotel-cache] Write failed:', e.message);
-        }
+        return rows.map(r => ({ ...r, id: String(r.id) }));
     }
 
     // ─── Search demand stats ──────────────────────────────────────────────────

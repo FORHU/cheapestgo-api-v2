@@ -79,6 +79,52 @@ export class RoomCatalogService {
     }
 
     /**
+     * Seed room content for a batch of hotels, ahead of anyone searching for them (C6).
+     *
+     * The request path seeds one hotel at a time, which means the first customer to open a
+     * property pays for the ETG call. This is the cron that keeps that from happening, ported
+     * from v1's /api/cron/seed-room-groups.
+     *
+     * Paced deliberately: one hotel per second. ETG is a shared supplier account and a burst
+     * from a cron is indistinguishable, from their side, from an incident.
+     */
+    async seedRoomGroupsBatch(options: { batch: number; force?: boolean; refreshDays?: number } = { batch: 150 }) {
+        const batch = Math.min(Math.max(1, options.batch || 150), 500);
+        const refreshDays = options.refreshDays ?? 30;
+        const hotels = await this.repo.findHotelsNeedingRoomGroups(batch, refreshDays, options.force === true);
+
+        let seeded = 0, empty = 0, errors = 0;
+        for (const { hotelId, ratehawkHid } of hotels) {
+            try {
+                const data = await fetchEtgHotelInfo(ratehawkHid);
+                if (!data) { errors++; await this.pause(); continue; }
+
+                const groups = parseRoomGroups(data.room_groups ?? []);
+                if (groups.length === 0) {
+                    // Stored as a fact: this hotel has no room content, so nothing asks again
+                    // until the refresh window passes.
+                    await this.repo.markRoomGroupsSeeded(hotelId);
+                    empty++;
+                } else {
+                    await this.repo.saveRoomGroups(hotelId, groups);
+                    seeded++;
+                }
+            } catch (err: any) {
+                console.warn(`[seed-room-groups] ${hotelId}:`, err?.message?.slice(0, 80));
+                errors++;
+            }
+            await this.pause();
+        }
+
+        console.log(`[seed-room-groups] ${seeded} seeded, ${empty} empty, ${errors} errors of ${hotels.length}`);
+        return { considered: hotels.length, seeded, empty, errors };
+    }
+
+    private pause(ms = 1000) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    /**
      * Use whatever is already stored. Returns false when the stored value cannot
      * furnish anything, so the caller knows to seed.
      */

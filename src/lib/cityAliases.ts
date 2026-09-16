@@ -12236,6 +12236,14 @@ export const HOTEL_DB_CITY_SYNONYMS: Record<string, string[]> = {
     'Skiathos|GR':          ['Skiathos', 'Skiathos-stad'],
     'Ho Chi Minh City|VN':  ['Ho-Chi-Minh-Stadt', 'Ho Chi Minh City'],
     'Ha Long|VN':           ['Ha Long', 'Halong'],
+
+    // The catalog files this city under both names and both are large: 2,113 rows
+    // as "Lissabon" and 890 as "Lisbon". HOTEL_DB_CITY_MAP already redirects to
+    // the German spelling, and because "Lissabon" does not contain "Lisbon" as a
+    // substring the containment rule cannot pick the English rows up on its own — so
+    // the one-to-one mapping reached 2,113 of 3,003 hotels and silently dropped
+    // the rest. Rome does not need this treatment: "Rom" already matches "Rome".
+    'Lisbon|PT':            ['Lissabon', 'Lisbon'],
 };
 
 /**

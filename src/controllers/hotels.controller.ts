@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+import { AppError } from '@/middleware/error.middleware';
 import { HotelsService } from '@/services/hotels.service';
 import { getPlaceDetails, geocode as geoCodePlace } from '@/lib/google/places';
 import { config } from '@/config';
@@ -41,6 +42,18 @@ export class HotelsController {
         } catch (err) { next(err); }
     };
 
+    /**
+     * A stay whose check-out is on or before its check-in, which is not a stay at all.
+     *
+     * The calendar no longer offers such a range (QA BG-5), but a pasted or edited URL
+     * still can, and sent on it reaches the suppliers as a search for dates nobody asked
+     * about. Unreadable dates are left to the caller's own validation.
+     */
+    private static isReversedStay(checkIn?: string, checkOut?: string): boolean {
+        const inTime = Date.parse(checkIn ?? ''), outTime = Date.parse(checkOut ?? '');
+        return Number.isFinite(inTime) && Number.isFinite(outTime) && outTime <= inTime;
+    }
+
     search = async (req: Request, res: Response, next: NextFunction) => {
         try {
             const body = z.object({
@@ -57,6 +70,9 @@ export class HotelsController {
                 occupancies:  z.array(z.any()).optional(),
                 filters:      z.record(z.any()).optional(),
             }).parse(req.body);
+            if (HotelsController.isReversedStay(body.checkIn, body.checkOut)) {
+                throw new AppError(400, 'Check-out must be after check-in.', 'VALIDATION_ERROR');
+            }
             const result = await svc.search(body);
             res.json(result);
         } catch (err) { next(err); }
@@ -342,6 +358,13 @@ export class HotelsController {
             const checkout = new Date(checkin); checkout.setDate(checkin.getDate() + 2);
             const fmt = (d: Date) => d.toISOString().slice(0, 10);
             body.checkin = fmt(checkin); body.checkout = fmt(checkout);
+        }
+
+        // Refused before the stream opens: an error inside an event stream is one the
+        // client has to be listening for.
+        if (HotelsController.isReversedStay(body.checkin ?? body.checkIn, body.checkout ?? body.checkOut)) {
+            res.status(400).json({ error: 'VALIDATION_ERROR', message: 'Check-out must be after check-in.' });
+            return;
         }
 
         const city = rawCity || '(unknown)';

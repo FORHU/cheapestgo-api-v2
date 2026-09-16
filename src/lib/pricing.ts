@@ -25,6 +25,17 @@ export function applyMarkup(basePrice: number, markupRate: number): {
     };
 }
 
+/**
+ * The other direction: a Stripe amount back into the units a person reads.
+ *
+ * Needed wherever Stripe's own records are shown rather than written — the admin money screen
+ * reads balances, charges and refunds straight from Stripe, and 1049900 KRW-minor is not a
+ * number anyone can check against a bank statement.
+ */
+export function fromStripeAmount(amount: number, currency: string): number {
+    return ZERO_DECIMAL_CURRENCIES.has(currency.toLowerCase()) ? amount : amount / 100;
+}
+
 export function toStripeAmount(price: number, currency: string): number {
     return ZERO_DECIMAL_CURRENCIES.has(currency.toLowerCase())
         ? Math.round(price)

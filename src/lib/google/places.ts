@@ -171,3 +171,33 @@ export async function discoverNearbyPlaces(params: {
 
     return { features };
 }
+
+// ─── Place Autocomplete ───────────────────────────────────────────────────────
+
+/**
+ * Predictions for a partly-typed place (v1's /api/google/search, ported in C7).
+ *
+ * Distinct from `discoverNearbyPlaces`, which answers "what is around this point" — this
+ * answers "what might they be typing", and the map's own search box is its only caller.
+ *
+ * `proximity` biases the results towards where the map is looking: without it, typing
+ * "station" from a hotel page in Seoul offers stations in three continents. It is a bias and
+ * not a filter, so a customer searching for somewhere far away still finds it.
+ */
+export async function placeAutocomplete(input: string, proximity?: string | null): Promise<any> {
+    const key = getKey();
+    const params = new URLSearchParams({
+        input,
+        key,
+        language: 'en',
+        types: 'geocode|establishment',
+    });
+    // 50km, matching v1: wide enough to cover a metropolitan area, narrow enough to rank it first.
+    if (proximity) {
+        params.set('location', proximity);
+        params.set('radius', '50000');
+    }
+
+    const res = await fetch(`https://maps.googleapis.com/maps/api/place/autocomplete/json?${params}`);
+    return res.json();
+}

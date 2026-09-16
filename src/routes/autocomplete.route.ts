@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { config } from '@/config';
 import { tgxGraphQL, getTgxConfig } from '@/lib/hotels/travelgatex';
+import { searchRateLimit } from '@/middleware/rate-limit.middleware';
 
 const router = Router();
 
@@ -230,7 +231,7 @@ async function resolveTgxCode(cityName: string, countryCode?: string): Promise<s
  * Body: { query: string, locale?: 'en'|'ko'|'cn'|'ja' }
  * Returns city + country suggestions with optional TGX dest codes.
  */
-router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', searchRateLimit, async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { query = '', locale } = req.body as { query?: string; locale?: string };
         if (!query || query.length < 2) {
@@ -255,8 +256,11 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
  * POST /api/v2/autocomplete/resolve
  * Body: { cityName: string, countryCode?: string }
  * Returns the TGX destination code for a given city.
+ *
+ * A miss reaches TravelgateX, so this costs a supplier call per unseen city name and
+ * carries the search budget like the rest of the supplier-facing routes (QA BG-10).
  */
-router.post('/resolve', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/resolve', searchRateLimit, async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { cityName, countryCode } = req.body as { cityName?: string; countryCode?: string };
         if (!cityName || typeof cityName !== 'string' || cityName.trim().length === 0) {

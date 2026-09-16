@@ -7,33 +7,15 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '@/middleware/auth.middleware';
+import { adminContentService } from '@/services/adminContent.service';
+import { adminSettingsService } from '@/services/adminSettings.service';
+import { adminStripeService } from '@/services/adminStripe.service';
+import { adminMobileService } from '@/services/adminMobile.service';
 import { AppError } from '@/middleware/error.middleware';
 import { mergeAdminBookings } from '@/lib/admin/normaliseBooking';
 import { prisma } from '@/lib/prisma';
 
 const router = Router();
-
-// ── DELETE /api/admin/cache/hotels (dev-only, no auth required) ───────────────
-router.delete('/cache/hotels', async (req: Request, res: Response, next: NextFunction) => {
-    if (process.env.NODE_ENV === 'production') {
-        return next(); // fall through to the auth-protected version below
-    }
-    try {
-        const city = typeof req.query.city === 'string' ? req.query.city.trim() : null;
-        let deleted: number;
-        if (city) {
-            deleted = await prisma.$executeRaw`
-                DELETE FROM hotel_search_cache
-                WHERE cache_key ILIKE ${'%' + city.toLowerCase() + '%'}
-            `;
-        } else {
-            deleted = await prisma.$executeRaw`DELETE FROM hotel_search_cache`;
-        }
-        return res.json({ ok: true, deleted, scope: city ?? 'all' });
-    } catch (err) {
-        next(err);
-    }
-});
 
 // All admin routes below require a valid JWT AND the 'admin' role
 router.use(requireAuth, requireRole('admin'));
@@ -369,30 +351,6 @@ router.post('/deals', async (req: Request, res: Response, next: NextFunction) =>
     }
 });
 
-// ── DELETE /api/admin/cache/hotels ───────────────────────────────────────────
-
-router.delete('/cache/hotels', async (req: Request, res: Response, next: NextFunction) => {
-    try {
-        const city = typeof req.query.city === 'string' ? req.query.city.trim() : null;
-        let deleted: number;
-
-        if (city) {
-            const rows = await prisma.$executeRaw`
-                DELETE FROM hotel_search_cache
-                WHERE cache_key ILIKE ${'%' + city.toLowerCase() + '%'}
-            `;
-            deleted = rows;
-        } else {
-            const rows = await prisma.$executeRaw`DELETE FROM hotel_search_cache`;
-            deleted = rows;
-        }
-
-        return res.json({ ok: true, deleted, scope: city ?? 'all' });
-    } catch (err) {
-        next(err);
-    }
-});
-
 // ── POST /api/admin/communication/send ───────────────────────────────────────
 // Send an email blast to all users, or to a single user when userId is provided.
 
@@ -460,6 +418,254 @@ router.post('/communication/send', async (req: Request, res: Response, next: Nex
     } catch (err) {
         next(err);
     }
+});
+
+// ─── C5: the list-and-edit screens, ported from v1 ────────────────────────────
+//
+// Routing only. Every rule below lives in AdminContentService and every write in
+// AdminContentRepository (Layer Contract) — which is the shape the rest of this file is being
+// moved towards, slice by slice.
+
+router.get('/destinations', async (req: Request, res: Response, next: NextFunction) => {
+    try { res.json({ success: true, ...(await adminContentService.listDestinations(req.query)) }); }
+    catch (err) { next(err); }
+});
+
+router.post('/destinations', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const body = req.body ?? {};
+        switch (body.action) {
+            case 'create':
+                return res.status(201).json({ success: true, data: await adminContentService.createDestination(body) });
+            case 'update':
+                return res.json({ success: true, data: await adminContentService.updateDestination(body) });
+            case 'delete':
+                return res.json({ success: true, ...(await adminContentService.deleteDestinations(body)) });
+            default:
+                return res.status(400).json({ success: false, error: `Unknown action: ${body.action}` });
+        }
+    } catch (err) { next(err); }
+});
+
+router.get('/saved-trips', async (req: Request, res: Response, next: NextFunction) => {
+    try { res.json({ success: true, ...(await adminContentService.listSavedTrips(req.query)) }); }
+    catch (err) { next(err); }
+});
+
+router.post('/saved-trips', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const body = req.body ?? {};
+        if (body.action !== 'delete') {
+            return res.status(400).json({ success: false, error: `Unknown action: ${body.action}` });
+        }
+        res.json({ success: true, ...(await adminContentService.deleteSavedTrips(body)) });
+    } catch (err) { next(err); }
+});
+
+router.get('/price-alerts', async (req: Request, res: Response, next: NextFunction) => {
+    try { res.json({ success: true, ...(await adminContentService.listPriceAlerts(req.query)) }); }
+    catch (err) { next(err); }
+});
+
+router.post('/price-alerts', async (req: Request, res: Response, next: NextFunction) => {
+    try { res.json({ success: true, ...(await adminContentService.actOnPriceAlerts(req.body ?? {})) }); }
+    catch (err) { next(err); }
+});
+
+router.get('/notifications', async (_req: Request, res: Response, next: NextFunction) => {
+    try { res.json(await adminContentService.listNotifications()); }
+    catch (err) { next(err); }
+});
+
+router.post('/notifications', async (req: Request, res: Response, next: NextFunction) => {
+    try { res.json(await adminContentService.actOnNotifications(req.body ?? {})); }
+    catch (err) { next(err); }
+});
+
+// ─── C5: settings, search, brand view and supplier health ────────────────────
+
+router.get('/settings', async (_req: Request, res: Response, next: NextFunction) => {
+    try { res.json({ success: true, settings: await adminSettingsService.getSettings() }); }
+    catch (err) { next(err); }
+});
+
+router.post('/settings', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const result = await adminSettingsService.saveSettings(req.body?.settings);
+        await adminSettingsService.logAction({
+            action: 'update_settings',
+            adminId: req.user?.sub,
+            adminEmail: req.user?.email,
+            details: { keys: Object.keys(req.body?.settings ?? {}) },
+        });
+        res.json({ success: true, ...result });
+    } catch (err) { next(err); }
+});
+
+router.get('/search', async (req: Request, res: Response, next: NextFunction) => {
+    try { res.json(await adminSettingsService.search(String(req.query.q ?? ''))); }
+    catch (err) { next(err); }
+});
+
+router.get('/tgx-health', async (_req: Request, res: Response, next: NextFunction) => {
+    try { res.json(await adminSettingsService.travelgateHealth()); }
+    catch (err) { next(err); }
+});
+
+/**
+ * POST /api/v2/admin/brand  { brand }
+ *
+ * Which brand's data the back office is looking at. The queue and the booking lists are
+ * deliberately blind to brand (ADR-0030); everything else is filtered by this.
+ *
+ * "GeomeeGo" is accepted alongside "AirangGo", its name until the 2026-09 rebrand: an admin page
+ * loaded before the rename can still send the old value, and refusing it would fail the switch
+ * with no explanation.
+ */
+const ADMIN_BRANDS = ['CheapestGo', 'AirangGo', 'GeomeeGo', 'all'];
+
+router.post('/brand', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const brand = String(req.body?.brand ?? '');
+        if (!ADMIN_BRANDS.includes(brand)) {
+            return res.status(400).json({ success: false, error: 'Invalid brand' });
+        }
+        // Readable by the admin screens, which show which brand is active — it selects a view,
+        // it grants nothing, and every endpoint behind it still checks the caller's role.
+        res.cookie('admin_brand_view', brand, {
+            path:     '/',
+            httpOnly: false,
+            sameSite: 'lax',
+            maxAge:   30 * 24 * 60 * 60 * 1000,
+        });
+        res.json({ success: true, brand });
+    } catch (err) { next(err); }
+});
+
+/**
+ * POST /api/v2/admin/run-cron  { cron }
+ *
+ * Runs one scheduled job now, from the back office (C5, ported from v1). Useful when a nightly
+ * job failed and nobody wants to wait until tomorrow to find out whether the fix worked.
+ *
+ * An allowlist rather than a free-form name: this endpoint turns an admin session into the
+ * authority to call any cron, and a cron is a supplier account. The list is also the honest
+ * inventory of what an admin may trigger — jobs that cost money per call are absent from it.
+ *
+ * Called over HTTP against this same process rather than by importing the handler, so the job
+ * runs through its own auth, rate limit and error handling exactly as the scheduler runs it.
+ */
+const RUNNABLE_CRONS = new Set([
+    'cache-cleanup',
+    'check-price-alerts',
+    'cleanup-sessions',
+    'cleanup-orphaned-duffel-orders',
+    'etg-reviews-sync',
+    'fill-dest-cache',
+    'geocode-hotels',
+    'otv-credit-check',
+    'poll-pending-tickets',
+    'refresh-hotel-content',
+    'refresh-popular-flights',
+    'seed-room-groups',
+    'sync-dest-cache',
+    'sync-flight-deals',
+]);
+
+router.post('/run-cron', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const cron = String(req.body?.cron ?? '');
+        if (!RUNNABLE_CRONS.has(cron)) {
+            return res.status(400).json({ success: false, error: 'Unknown cron job' });
+        }
+
+        const secret = process.env.CRON_SECRET;
+        if (!secret) {
+            return res.status(500).json({ success: false, error: 'CRON_SECRET not configured on this environment' });
+        }
+
+        const base = `${req.protocol}://${req.get('host')}`;
+        const started = Date.now();
+        const result = await fetch(`${base}/api/v2/cron/${cron}`, {
+            headers: { Authorization: `Bearer ${secret}` },
+            // Long-running by design: a catalog job is minutes, not seconds.
+            signal: AbortSignal.timeout(290_000),
+        });
+        const body = await result.json().catch(() => ({}));
+
+        await adminSettingsService.logAction({
+            action: 'run_cron',
+            adminId: req.user?.sub,
+            adminEmail: req.user?.email,
+            targetId: cron,
+            details: { status: result.status, ms: Date.now() - started },
+        });
+
+        res.status(result.ok ? 200 : 502).json({
+            success: result.ok,
+            cron,
+            ms: Date.now() - started,
+            result: body,
+        });
+    } catch (err) { next(err); }
+});
+
+/**
+ * GET  /api/v2/admin/stripe          what the processor holds and has done lately
+ * POST /api/v2/admin/stripe          { bookingId, reason? } — refund that booking in full
+ *
+ * Ported from v1 (C5). The refund is the one action in the back office that moves money out, so
+ * it is logged with the admin who asked for it, and an already-refunded charge is reported
+ * rather than refunded again.
+ */
+router.get('/stripe', async (_req: Request, res: Response, next: NextFunction) => {
+    try { res.json({ success: true, ...(await adminStripeService.overview()) }); }
+    catch (err) { next(err); }
+});
+
+router.post('/stripe', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const bookingId = String(req.body?.bookingId ?? '');
+        const reason = req.body?.reason === 'duplicate' || req.body?.reason === 'fraudulent'
+            ? req.body.reason
+            : 'requested_by_customer';
+
+        const result = await adminStripeService.refundBooking(bookingId, reason);
+        await adminSettingsService.logAction({
+            action: result.alreadyRefunded ? 'refund_skipped_already_refunded' : 'refund_booking',
+            adminId: req.user?.sub,
+            adminEmail: req.user?.email,
+            targetId: bookingId,
+            details: result as Record<string, unknown>,
+        });
+
+        res.json({ success: true, ...result });
+    } catch (err) { next(err); }
+});
+
+/**
+ * The mobile app's operations screen (C5, ported from v1's /api/admin/mobile).
+ *
+ *   GET  /admin/mobile              bookings, devices, and whether a key is configured
+ *   POST /admin/mobile              { action: 'rotateKey' | 'deleteDevice', id? }
+ */
+router.get('/mobile', async (req, res, next) => {
+    try { res.json({ success: true, ...(await adminMobileService.overview(req.query.page)) }); }
+    catch (err) { next(err); }
+});
+
+router.post('/mobile', async (req, res, next) => {
+    try {
+        const body = req.body ?? {};
+        if (body.action === 'rotateKey') {
+            const result = await adminMobileService.rotateApiKey({ id: req.user?.sub, email: req.user?.email });
+            return res.json({ success: true, ...result });
+        }
+        if (body.action === 'deleteDevice') {
+            return res.json({ success: true, ...(await adminMobileService.deleteDevice(body.id)) });
+        }
+        return res.status(400).json({ success: false, error: `Unknown action: ${body.action}` });
+    } catch (err) { next(err); }
 });
 
 export default router;

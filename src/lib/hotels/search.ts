@@ -12,7 +12,9 @@ import {
 import { otvCodeToLabel } from './amenityCodes';
 import { fetchEtgHotelContent, parseEtgHotel, type EtgHotelContent } from './etg';
 import { HotelsRepository } from '@/repositories/hotels.repository';
-import { resolveHotelDbCities } from '@/lib/cityAliases';
+import { isConfirmedOutOfCountry } from '@/lib/geo/countryBoxes';
+import { hotelLocationNames } from '@/lib/geo/hotelLocation';
+import { hotelCountry, isTerritory } from '@/lib/geo/territories';
 import type { HotelSearchParams, HotelSearchResult } from '@/types/hotels';
 
 // ─── Country name → ISO lookup (shared by stream route and ETG fallback) ──────
@@ -79,17 +81,14 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
             };
         } else {
             // Fallback: city-string match when no coordinates available.
-            const cityOnly   = cityName.split(',')[0].trim();
-            const normalized = cityOnly.replace(/-(si|do|gu|gun|eup)$/i, '').trim();
+            const normalized = cityName.split(',')[0].trim().replace(/-(si|do|gu|gun|eup)$/i, '').trim();
             const isoCode    = resolveIsoCode(countryCode);
-            // A city can be filed under several spellings ("Seoul" and "Seúl"), so
-            // match any of them rather than picking one and losing the rest.
-            const dbCities   = resolveHotelDbCities(normalized, isoCode || countryCode);
+            const { cityNames, countryCodes } = hotelLocationNames(normalized, isoCode || countryCode);
             where = {
-                OR: dbCities.map(n => ({ city: { contains: n, mode: 'insensitive' } })),
+                OR: cityNames.map(n => ({ city: { contains: n, mode: 'insensitive' } })),
                 images: { isEmpty: false },
             };
-            if (isoCode) where.country = { equals: isoCode, mode: 'insensitive' };
+            if (countryCodes) where.country = { in: countryCodes, mode: 'insensitive' };
         }
 
         const rows = await prisma.hotel_content.findMany({
@@ -110,9 +109,22 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
         });
 
         // When using radius search, cull to true circle (bounding box is rectangular).
-        const filtered = body.lat && body.lng
+        let filtered = body.lat && body.lng
             ? rows.filter((r: any) => haversineKm(body.lat!, body.lng!, Number(r.lat), Number(r.lng)) <= 50)
             : rows;
+
+        // The circle ignores borders on purpose — Jeju has to reach Seogwipo — but a
+        // territory's border is a customs line. 50km from central Hong Kong is all of
+        // Shenzhen plus Dongguan and Zhuhai: in v1 a "Hong Kong" search returned 601
+        // Shenzhen hotels out of 1,287 (QA BG-8), and Jersey's circle reaches Guernsey.
+        // A territory keeps to its own side, judged by the territory-corrected country.
+        // Deliberately not every country: across an ordinary land border the circle is
+        // the point.
+        if (body.lat && body.lng && isTerritory(countryCode)) {
+            const own = countryCode.toUpperCase();
+            filtered = filtered.filter((r: any) =>
+                hotelCountry(r.country, r.city, r.lat, r.lng).toUpperCase() === own);
+        }
 
         return filtered.map((r: any) => ({
             hotelId:      r.hotel_id,
@@ -136,7 +148,9 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
             // `location` is what app-v2's card reads; `address` echoed it with no reader.
             location:     r.address ?? '',
             city:         r.city ?? cityName,
-            country:      r.country ?? '',
+            // A territory's hotels arrive filed under its parent's code, so a Hong Kong
+            // card read "Hong Kong, CN".
+            country:      hotelCountry(r.country, r.city, r.lat, r.lng),
             provider:     'travelgatex',
             priceLoading: true,
         }));
@@ -168,24 +182,23 @@ export async function recordHotelSearchDemand(cityName: string, countryCode: str
     }
 }
 
-// ─── Cache helpers ────────────────────────────────────────────────────────────
+// ─── Search identity ──────────────────────────────────────────────────────────
 
-export const POPULAR_CITIES = new Set([
-    'tokyo', 'bangkok', 'seoul', 'singapore', 'paris',
-    'london', 'new york', 'dubai', 'barcelona', 'bali',
-]);
-
-export function isPopularCity(cityName: string): boolean {
-    return POPULAR_CITIES.has(cityName.toLowerCase().trim());
-}
-
-export function getEffectiveTtl(cityName?: string): number {
-    const standardTtl = parseInt(process.env.HOTEL_SEARCH_CACHE_TTL_MINUTES          ?? '120', 10);
-    const popularTtl  = parseInt(process.env.HOTEL_SEARCH_CACHE_TTL_POPULAR_MINUTES   ?? '360', 10);
-    return cityName && isPopularCity(cityName) ? popularTtl : standardTtl;
-}
-
-function buildHotelCacheKey(p: HotelSearchParams): string {
+/**
+ * What makes two searches the same search — used only to let identical searches that are
+ * in flight at the same moment share one supplier call.
+ *
+ * There is deliberately no result cache behind this. Search results used to be kept in
+ * `hotel_search_cache` for two hours (six for popular cities) and then served *stale* for
+ * as long again while refreshing in the background — so the first search after expiry
+ * showed rates up to twelve hours old, and the next showed the refreshed ones. A hotel's
+ * Nightly Rate is its cheapest room, and cheap rooms are what sell, so a replayed rate is
+ * often a room already gone: customers searched, searched again, and watched every price
+ * rise. Measured on v1's live data 2026-09-11: Tokyo 7.7h old, Paris 7.1h, Manila 3.8h;
+ * against a live search of the same Manila stay, two hotels were 45% and 47% higher.
+ * See CONTEXT.md, "Nightly Rate": always live.
+ */
+function buildSearchKey(p: HotelSearchParams): string {
     const location = p.hotelCode
         ? `hotel:${p.hotelCode}`
         : p.destinationCode
@@ -199,36 +212,6 @@ function buildHotelCacheKey(p: HotelSearchParams): string {
         String(p.children ?? 0),
         p.guest_nationality ?? 'KR',
     ].join('|');
-}
-
-async function getHotelSearchCache(key: string, ttlMinutes: number): Promise<{ result: any; stale: boolean } | null> {
-    try {
-        const now        = new Date();
-        const graceLimit = new Date(now.getTime() - ttlMinutes * 60 * 1000);
-        const row = await prisma.hotel_search_cache.findFirst({
-            where: {
-                cache_key:  key,
-                expires_at: { gt: graceLimit },
-            },
-        });
-        if (!row) return null;
-        return { result: row.result as any, stale: row.expires_at <= now };
-    } catch {
-        return null;
-    }
-}
-
-async function setHotelSearchCache(key: string, result: any, ttlMinutes: number): Promise<void> {
-    try {
-        const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
-        await prisma.hotel_search_cache.upsert({
-            where:  { cache_key: key },
-            create: { cache_key: key, result, expires_at: expiresAt, created_at: new Date() },
-            update: { result, expires_at: expiresAt, created_at: new Date() },
-        });
-    } catch (e: any) {
-        console.error('[hotel-cache] Write failed:', e.message);
-    }
 }
 
 // ─── GraphQL search queries ───────────────────────────────────────────────────
@@ -270,11 +253,22 @@ query TgxHotelSearch($criteria: HotelCriteriaSearchInput!, $settings: HotelSetti
 
 // ─── DB enrichment ────────────────────────────────────────────────────────────
 
-async function fetchHotelContent(hotelCodes: string[]) {
+/**
+ * @param slim  Select only what a search card renders. `description` and `amenities` are
+ *   large TOASTed columns that a city search never shows — on a 300-hotel result they were
+ *   the bulk of both the payload and the query's cost — and a card shows one image. The
+ *   property page reads the same function and must keep the full row, so this defaults to
+ *   full: a new caller cannot silently lose fields.
+ */
+async function fetchHotelContent(hotelCodes: string[], slim = false) {
     if (!hotelCodes.length) return new Map<string, any>();
     const rows = await prisma.hotel_content.findMany({
         where: { hotel_id: { in: hotelCodes } },
-        select: {
+        select: slim ? {
+            hotel_id: true, name: true, images: true, star_rating: true,
+            lat: true, lng: true, address: true, city: true, country: true,
+            review_rating: true, review_count: true,
+        } : {
             hotel_id: true, name: true, images: true, star_rating: true,
             lat: true, lng: true, address: true, city: true, country: true,
             description: true, amenities: true, review_rating: true, review_count: true,
@@ -316,12 +310,11 @@ async function fetchHotelCodesByLocation(cityName: string, countryCode?: string,
     }
 
     // Fallback: city-string match when no coordinates available.
-    const cityOnly   = cityName.split(',')[0].trim();
-    const normalized = cityOnly.replace(/-(si|do|gu|gun|eup)$/i, '').trim();
-    const isoCode    = countryCode && /^[A-Za-z]{2}$/.test(countryCode) ? countryCode : null;
+    const normalized = cityName.split(',')[0].trim().replace(/-(si|do|gu|gun|eup)$/i, '').trim();
+    const { cityNames, countryCodes } = hotelLocationNames(normalized, countryCode);
 
-    const where: any = { city: { contains: normalized, mode: 'insensitive' } };
-    if (isoCode) where.country = { equals: isoCode, mode: 'insensitive' };
+    const where: any = { OR: cityNames.map(n => ({ city: { contains: n, mode: 'insensitive' } })) };
+    if (countryCodes) where.country = { in: countryCodes, mode: 'insensitive' };
 
     const rows = await prisma.hotel_content.findMany({
         where,
@@ -489,7 +482,7 @@ function parseOtvEdges(edges: any[], cityName: string): Map<string, any> {
     return map;
 }
 
-async function fetchOtvHotelCodesByCity(cityName: string, destinationCode?: string): Promise<{ codes: string[]; contentMap: Map<string, any> }> {
+async function fetchOtvHotelCodesByCity(cityName: string, destinationCode?: string, countryCode?: string): Promise<{ codes: string[]; contentMap: Map<string, any> }> {
     try {
         const cfg      = getTgxConfig();
         const criteria: Record<string, unknown> = { access: cfg.accessCode, maxSize: 200 };
@@ -522,7 +515,13 @@ async function fetchOtvHotelCodesByCity(cityName: string, destinationCode?: stri
         console.log(`[tgx-search] OTV portfolio: ${codes.length} hotel codes for "${cityName}"`);
 
         if (codes.length > 0) {
-            backfillHotelContent(contentMap).catch((err: any) =>
+            // Drop hotels confirmed to be in another country before persisting: a TGX
+            // destination code sometimes answers with a same-named city elsewhere, and a
+            // row written here is what every later search reads back.
+            const backfillMap = countryCode
+                ? new Map([...contentMap].filter(([, c]) => !isConfirmedOutOfCountry(c, countryCode)))
+                : contentMap;
+            backfillHotelContent(backfillMap).catch((err: any) =>
                 console.warn('[tgx-search] hotel_content backfill failed:', err.message)
             );
             const nullNameCodes = codes.filter(c => !contentMap.get(c)?.name);
@@ -806,10 +805,22 @@ function persistFailedDestCode(destCode: string, cityName = ''): void {
     `.catch((e: any) => console.warn('[tgx-search] Could not persist failed dest code:', e.message));
 }
 
+// ─── Supplier budgets ─────────────────────────────────────────────────────────
+
+/** OTV's stated Search timeout. Travels to the supplier in `settings.timeout`. */
+const SUPPLIER_SEARCH_TIMEOUT_MS = 12_000;
+
+/** HTTP aborts. Larger than the supplier budget because they also cover the response
+ *  transfer: a destination search returns hundreds of hotels, a single hotel one. */
+const ABORT_CITY_MS  = 22_000;
+const ABORT_HOTEL_MS = 13_000;
+
 // ─── In-flight dedup ──────────────────────────────────────────────────────────
 
-const _inflight           = new Map<string, Promise<any>>();
-const _backgroundRefreshing = new Set<string>();
+// When two identical searches arrive while the first is still running, the second waits
+// for that promise instead of firing a second TGX call that OTV will throttle. Both still
+// get a live answer — this shares a call, it stores nothing.
+const _inflight = new Map<string, Promise<any>>();
 
 // ─── Hotel name deduplication ─────────────────────────────────────────────────
 
@@ -835,8 +846,7 @@ function normalizeHotelName(name: string): string {
  * Unanswered Search has learned nothing about availability, so the catalog must stay on
  * screen and the user is told prices could not be loaded.
  *
- * Thrown rather than returned so `runTgxSearch`'s `.then(cache)` is skipped and an
- * unanswered search can never be written to `hotel_search_cache`.
+ * Thrown rather than returned so no caller can mistake it for a real empty result.
  */
 export class UnansweredSearchError extends Error {
     readonly cityName: string;
@@ -882,9 +892,9 @@ async function runCityFallback(
                     criteria: { ...baseCriteria, destinations: [resolvedCode] },
                     settings,
                     filterSearch,
-                }),
+                }, ABORT_CITY_MS),
                 cityName
-                    ? fetchOtvHotelCodesByCity(cityName, resolvedCode).catch(() => ({ codes: [] as string[], contentMap: new Map<string, any>() }))
+                    ? fetchOtvHotelCodesByCity(cityName, resolvedCode, countryCode).catch(() => ({ codes: [] as string[], contentMap: new Map<string, any>() }))
                     : Promise.resolve({ codes: [] as string[], contentMap: new Map<string, any>() }),
             ]);
             console.log(`[tgx-search][TIMING] dest+portfolio round-trip took ${Date.now() - __t0}ms`);
@@ -949,7 +959,7 @@ async function runCityFallback(
 
     if (otvCodes.length === 0) {
         console.log(`[tgx-search] DB empty for "${cityName}" — querying OTV portfolio`);
-        const otv   = await fetchOtvHotelCodesByCity(cityName, resolvedCode ?? undefined);
+        const otv   = await fetchOtvHotelCodesByCity(cityName, resolvedCode ?? undefined, countryCode);
         otvCodes    = otv.codes;
         otvContentMap = otv.contentMap;
     } else {
@@ -958,7 +968,7 @@ async function runCityFallback(
         const missingNames  = sample.filter(c => !sampleContent.get(c)?.name).length;
         if (missingNames > sample.length * 0.4) {
             console.log(`[tgx-search] ${missingNames}/${sample.length} hotels have no name — refreshing OTV portfolio`);
-            const otv = await fetchOtvHotelCodesByCity(cityName, resolvedCode ?? undefined);
+            const otv = await fetchOtvHotelCodesByCity(cityName, resolvedCode ?? undefined, countryCode);
             otvContentMap = otv.contentMap;
             if (otv.codes.length > 0) otvCodes = otv.codes;
         }
@@ -987,7 +997,7 @@ async function runCityFallback(
                         criteria: { ...baseCriteria, hotels: chunk },
                         settings,
                         filterSearch: getTgxFilterSearch(),
-                    });
+                    }, ABORT_CITY_MS);
                     return {
                         options: (r?.data?.hotelX?.search?.options || []) as TgxOption[],
                         errors:  (r?.data?.hotelX?.search?.errors  || []) as any[],
@@ -1055,47 +1065,33 @@ async function runCityFallback(
 
 // ─── Core runTgxSearch ────────────────────────────────────────────────────────
 
+/**
+ * Search hotels, live, every time.
+ *
+ * Every caller — the search stream, the property page, a booking re-quote — gets the
+ * supplier's answer as of now. Nothing is replayed from an earlier search; see
+ * `buildSearchKey` for why the result cache was removed.
+ *
+ * The one sharing left: an identical search already in flight is joined rather than
+ * duplicated, so a customer double-clicking, or two tabs opening together, cost one
+ * supplier call and both get the same live answer.
+ */
 export async function runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResult> {
-    const key = buildHotelCacheKey(params);
-    const ttl = getEffectiveTtl(params.cityName);
-
-    if (ttl > 0) {
-        const cached = await getHotelSearchCache(key, ttl);
-        if (cached !== null) {
-            if (!cached.stale) {
-                console.log(`[hotel-cache] HIT ${key}`);
-                return cached.result;
-            }
-            console.log(`[hotel-cache] STALE ${key} — serving stale, refreshing in background`);
-            if (!_inflight.has(key) && !_backgroundRefreshing.has(key)) {
-                _backgroundRefreshing.add(key);
-                _runTgxSearch(params)
-                    .then(result => {
-                        if (Array.isArray(result?.data) && result.data.length > 0) {
-                            setHotelSearchCache(key, result, ttl).catch(() => {});
-                        }
-                    })
-                    .catch((e: any) => console.error('[hotel-cache] Background refresh failed:', e.message))
-                    .finally(() => _backgroundRefreshing.delete(key));
-            }
-            return cached.result;
-        }
-    }
+    const key = buildSearchKey(params);
 
     const existing = _inflight.get(key);
     if (existing) {
-        console.log(`[hotel-cache] INFLIGHT ${key} — waiting for in-progress search`);
+        console.log(`[tgx-search] JOIN ${key} — sharing the live search already in flight`);
         return existing;
     }
 
-    const promise = _runTgxSearch(params)
-        .then(result => {
-            if (ttl > 0 && Array.isArray(result?.data) && result.data.length > 0) {
-                setHotelSearchCache(key, result, ttl).catch(() => {});
-            }
-            return result;
-        })
-        .finally(() => { _inflight.delete(key); });
+    // One line per supplier search, so volume is visible now that every search is one.
+    console.log(`[tgx-search] LIVE ${key}`);
+
+    const promise = _runTgxSearch(params).finally(() => {
+        // Only if it is still ours: a later search for the same key must not be dropped.
+        if (_inflight.get(key) === promise) _inflight.delete(key);
+    });
 
     _inflight.set(key, promise);
     return promise;
@@ -1111,7 +1107,10 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
     } = params;
 
     const currency    = 'USD';
-    const settings    = getTgxSettings();
+    // OTV's stated Search limit is 12,000ms. Sending more than the supplier will ever use
+    // just buys dead time on a call it was never going to answer — and runCityFallback can
+    // chain a destination search with a hotel-code one, so that time is paid twice.
+    const settings    = getTgxSettings(getTgxConfig(), SUPPLIER_SEARCH_TIMEOUT_MS);
     const occupancies = buildOccupancies(Number(adults), Number(children), childrenAges);
 
     // Province/country rungs: ETG region search handles these better than TGX city lookup.
@@ -1130,7 +1129,7 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
         const baseCriteria = { checkIn: checkin, checkOut: checkout, occupancies, nationality: guest_nationality, currency };
         return runCityFallback(
             cityName, countryCode, baseCriteria, settings,
-            resolveTgxDestinationCode(cityName, prisma).catch(() => undefined),
+            resolveTgxDestinationCode(cityName, prisma, countryCode).catch(() => undefined),
             fetchHotelCodesByLocation(cityName, countryCode, params.lat, params.lng).catch(() => []),
             params,
         );
@@ -1145,7 +1144,8 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
     };
 
     const gqlQuery  = hotelCode ? HOTEL_SEARCH_QUERY : CITY_SEARCH_QUERY;
-    const gqlResult = await tgxGraphQL(gqlQuery, { criteria, settings, filterSearch: getTgxFilterSearch() });
+    const gqlResult = await tgxGraphQL(gqlQuery, { criteria, settings, filterSearch: getTgxFilterSearch() },
+        hotelCode ? ABORT_HOTEL_MS : ABORT_CITY_MS);
 
     const options: TgxOption[] = gqlResult?.data?.hotelX?.search?.options || [];
     const gqlErrors            = gqlResult?.data?.hotelX?.search?.errors  || [];
@@ -1244,15 +1244,33 @@ async function buildCityResults(
         }
     }
 
-    const hotelCodes = Array.from(byHotel.entries())
+    const rankedCodes = Array.from(byHotel.entries())
         .sort(([, a], [, b]) => (a.price.gross || a.price.net) - (b.price.gross || b.price.net))
         .slice(0, 300)
         .map(([code]) => code);
 
-    const [contentMap, reviewMap] = await Promise.all([
-        fetchHotelContent(hotelCodes).catch(() => new Map<string, any>()),
-        fetchHotelReviews(hotelCodes).catch(() => new Map<string, any>()),
+    const [rankedContent, reviewMap] = await Promise.all([
+        fetchHotelContent(rankedCodes, true).catch(() => new Map<string, any>()),  // search cards — see fetchHotelContent
+        fetchHotelReviews(rankedCodes).catch(() => new Map<string, any>()),
     ]);
+
+    // A TGX destination code for one city sometimes answers with another's hotels — the
+    // code for Paris also returns Paris, Texas. A hotel is dropped only where its stored
+    // country and its coordinates agree that it is somewhere else; anything uncatalogued,
+    // or with no coordinates, is kept, because a hotel we have not catalogued yet may well
+    // be a real one in the right place. See isConfirmedOutOfCountry.
+    const hotelCodes = !countryCode ? rankedCodes : rankedCodes.filter(code => {
+        const c = rankedContent.get(code) ?? preloadedContent.get(code);
+        if (!c) return true;
+        return !isConfirmedOutOfCountry(
+            { country: c.country, city: c.city, lat: c.lat ?? c.latitude, lng: c.lng ?? c.longitude },
+            countryCode,
+        );
+    });
+    if (hotelCodes.length < rankedCodes.length) {
+        console.warn(`[tgx-search] buildCityResults: dropped ${rankedCodes.length - hotelCodes.length} confirmed out-of-country hotels for "${cityName}" (${countryCode})`);
+    }
+    const contentMap = rankedContent;
 
     if (hotelCodes.length > 0) {
         const noNameCodes = hotelCodes.filter(c => !contentMap.get(c)?.name && !preloadedContent.get(c)?.name);
@@ -1274,8 +1292,15 @@ async function buildCityResults(
 
         // Enrich amenities from ETG for hotels missing them.
         // Fire-and-forget — results are cached to DB so subsequent searches return them instantly.
+        const stocked = new Set((await prisma.$queryRaw<{ hotel_id: string }[]>`
+            SELECT hotel_id FROM hotel_content
+            WHERE hotel_id = ANY(${hotelCodes})
+              AND jsonb_typeof(amenities) = 'array'
+              AND jsonb_array_length(amenities) > 0
+        `.catch(() => [])).map(r => r.hotel_id));
         const noAmenityCodes = hotelCodes.filter(c => {
-            const a = contentMap.get(c)?.amenities ?? preloadedContent.get(c)?.amenities;
+            if (stocked.has(c)) return false;
+            const a = preloadedContent.get(c)?.amenities;
             return !Array.isArray(a) || a.length === 0;
         });
         console.log(`[amenity-enrich] ${noAmenityCodes.length}/${hotelCodes.length} hotels need amenities`);
@@ -1346,7 +1371,10 @@ async function buildCityResults(
         const reviews      = reviewMap.get(code);
         const tokenId      = opt.token || opt.id;
         const reviewRating = Number(reviews?.rating ?? content?.review_rating ?? 0);
-        const imageList: string[] = content?.images ?? [];
+        // One image, not the set. A card renders the first and there is no carousel on
+        // it, so the rest are URLs nothing displays — the same trim the instant catalog
+        // already makes. The property page fetches its own full row.
+        const imageList: string[] = (content?.images ?? []).slice(0, 1);
         return {
             hotelId:      code,
             id:           code,
@@ -1364,7 +1392,7 @@ async function buildCityResults(
             address:      content?.address ?? '',
             location:     content?.address ?? '',
             city:         content?.city ?? cityName ?? '',
-            country:      content?.country ?? countryCode ?? '',
+            country:      hotelCountry(content?.country, content?.city, content?.lat, content?.lng) || countryCode || '',
             description:  content?.description ?? '',
             amenities:    content?.amenities?.length ? content.amenities : (preloadedContent.get(code)?.amenities ?? []),
             reviewRating,

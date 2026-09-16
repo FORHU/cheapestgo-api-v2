@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { HotelsController } from '@/controllers/hotels.controller';
 import { requireAuth } from '@/middleware/auth.middleware';
+import { searchRateLimit } from '@/middleware/rate-limit.middleware';
 import { prisma } from '@/lib/prisma';
 import { tgxGraphQL, getTgxConfig } from '@/lib/hotels/travelgatex';
 import { CITY_ALIASES } from '@/lib/cityAliases';
@@ -151,11 +152,17 @@ router.get('/photo', async (req: Request, res: Response) => {
 });
 
 // Public
-router.post('/search',                  ctrl.search);
-router.post('/search/stream',           ctrl.searchStream);
+//
+// The four that reach a supplier carry the search budget rather than the default
+// 100-per-15-minutes: every one of them costs a TravelgateX or ETG call, and OTV
+// throttles us, not the caller. `searchRateLimit` was defined for this and then
+// applied to nothing, so hotel search was the one supplier-facing path with no real
+// limit at all — the same hole v1 closed on its own stream route (QA BG-10).
+router.post('/search',                  searchRateLimit, ctrl.search);
+router.post('/search/stream',           searchRateLimit, ctrl.searchStream);
 router.get( '/count',                   ctrl.count);
-router.get( '/destinations',            ctrl.destinations);
-router.get( '/property/:id',            ctrl.property);
+router.get( '/destinations',            searchRateLimit, ctrl.destinations);
+router.get( '/property/:id',            searchRateLimit, ctrl.property);
 router.get( '/deals',                   ctrl.deals);
 router.get( '/place-details',           ctrl.placeDetails);
 router.get( '/geocode',                 ctrl.geocode);

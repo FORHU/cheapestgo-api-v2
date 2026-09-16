@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { placeAutocomplete } from '@/lib/google/places';
 import { config } from '@/config';
 import { redis } from '@/lib/redis';
 
@@ -122,6 +123,24 @@ router.get('/discover', async (req: Request, res: Response, next: NextFunction) 
         await redis.setex(cacheKey, 3600, JSON.stringify(payload)).catch(() => {});
 
         return res.json(payload);
+    } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/v2/google/search
+ * ?input=&proximity=lat,lng
+ *
+ * Place predictions for a search box. v1 served this as /api/google/search; nothing in api-v2
+ * answered it, so the map's search box had no backend here (C7).
+ */
+router.get('/search', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const input = ((req.query.input as string) ?? '').trim();
+        // An empty box is not an error, and must not cost a Places call.
+        if (!input) return res.json({ predictions: [] });
+
+        const proximity = (req.query.proximity as string) || null;
+        return res.json(await placeAutocomplete(input, proximity));
     } catch (err) { next(err); }
 });
 

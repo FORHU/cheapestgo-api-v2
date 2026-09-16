@@ -15,6 +15,8 @@ import { searchFlights } from '@/lib/flights/search';
 import { FlightOffer } from '@/types/flights';
 import { tgxGraphQL, getTgxConfig, resolveTgxDestinationCode } from '@/lib/hotels/travelgatex';
 import { otvCodeToLabel } from '@/lib/hotels/amenityCodes';
+import { RoomCatalogService } from '@/services/roomCatalog.service';
+import { getDumpUrl, processDump } from '@/lib/hotels/etgDump';
 
 const router = Router();
 
@@ -77,8 +79,10 @@ router.get('/cleanup-sessions', async (_req: Request, res: Response, next: NextF
 router.get('/cache-cleanup', async (_req: Request, res: Response, next: NextFunction) => {
     try {
         const [cacheDeleted, reviewsDeleted] = await Promise.all([
-            // Delete expired hotel search cache rows
-            prisma.$executeRaw`DELETE FROM hotel_search_cache WHERE expires_at < NOW()`,
+            // Drain hotel_search_cache. Nothing writes it any more — searches are always
+            // live — so this clears what is left over and then finds nothing. The table
+            // itself goes at the next schema change.
+            prisma.$executeRaw`DELETE FROM hotel_search_cache`,
 
             // Delete hotel review items not refreshed in the last 7 days
             prisma.$executeRaw`
@@ -1238,6 +1242,48 @@ router.get('/geocode-hotels', async (req: Request, res: Response, next: NextFunc
     } catch (err) {
         next(err);
     }
+});
+
+/**
+ * GET /api/v2/cron/seed-room-groups?batch=150&force=true
+ *
+ * Fills in room-level photos and amenities from ETG ahead of anyone searching (C6, ported from
+ * v1). Without it the first customer to open a property pays for the supplier call, and a
+ * hotel nobody has opened yet shows rooms with no pictures.
+ *
+ * Never-seeded hotels come first, then the stalest, so a run cut short by its batch spends its
+ * calls where they are worth most.
+ */
+router.get('/seed-room-groups', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const batch = Number.parseInt(String(req.query.batch ?? '150'), 10) || 150;
+        const force = String(req.query.force ?? '') === 'true';
+        const result = await new RoomCatalogService().seedRoomGroupsBatch({ batch, force });
+        res.json({ ok: true, ...result });
+    } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/v2/cron/etg-dump-sync?type=incremental&force=true&dry_run=true
+ *
+ * The catalog's static content — rooms, photos, description, amenities, policies — from ETG's
+ * bulk dump (C6, ported from v1). `incremental` for the nightly run, `full` for a rebuild.
+ *
+ * Long-running by nature: the dump is hundreds of megabytes and the response is the summary of
+ * a pass over all of it.
+ */
+router.get('/etg-dump-sync', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const type   = String(req.query.type ?? '') === 'incremental' ? 'incremental' : 'full';
+        const force  = String(req.query.force ?? '') === 'true';
+        const dryRun = String(req.query.dry_run ?? '') === 'true';
+
+        console.log(`[etg-dump] start ${type} (force=${force} dry_run=${dryRun})`);
+        const stats = await processDump(await getDumpUrl(type), { force, dryRun });
+        console.log('[etg-dump] done', stats);
+
+        res.json({ ok: true, type, force, dry_run: dryRun, ...stats });
+    } catch (err) { next(err); }
 });
 
 export default router;
