@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { revalidateFlight } from '@/lib/flights/revalidate';
 import { z } from 'zod';
 import { FlightsService } from '@/services/flights.service';
 
@@ -26,6 +27,18 @@ export class FlightsController {
             const { filters, ...params } = body;
             const result = await svc.search(params as any, filters as any);
             res.json(result);
+        } catch (err) { next(err); }
+    };
+
+    /**
+     * Is this fare still buyable at the price shown? Answered before the card is entered —
+     * see revalidateFlight. Soft failures come back 200 with priceChanged false, because a
+     * provider hiccup must not block a booking the order path can still complete.
+     */
+    revalidate = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const result = await revalidateFlight(req.body ?? {});
+            res.status(result.badRequest ? 400 : 200).json(result);
         } catch (err) { next(err); }
     };
 

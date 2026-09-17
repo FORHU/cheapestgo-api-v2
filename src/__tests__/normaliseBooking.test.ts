@@ -69,11 +69,56 @@ describe('normaliseBooking', () => {
         expect(normaliseBooking({ ...hotelRow, user_id: null }, 'hotel').userId).toBe('');
     });
 
-    it('leaves reference and summary undefined rather than empty when absent', () => {
+    it('leaves reference undefined rather than empty when absent', () => {
         const b = normaliseBooking({ id: 'x', status: 'confirmed' }, 'flight');
         expect(b.reference).toBeUndefined();
-        expect(b.summary).toBeUndefined();
         expect(b.status).toBe('confirmed');
+    });
+
+    it('always names the booking, even with nothing to name it by', () => {
+        // A blank cell in the list reads as a loading fault rather than as missing data, so
+        // the summary falls back to a plain label instead of to nothing.
+        expect(normaliseBooking({ id: 'x', status: 'confirmed' }, 'flight').summary).toBe('Flight booking');
+        expect(normaliseBooking({ id: 'x', status: 'confirmed' }, 'hotel').summary).toBe('Hotel booking');
+    });
+
+    it('names a flight by the whole journey, not its first leg', () => {
+        // A connecting itinerary should read MNL→NRT; MNL→ICN hides where the traveller is
+        // actually going, which is the one thing the column exists to answer.
+        const b = normaliseBooking({
+            id: 'x', status: 'ticketed', pnr: 'JZRWME',
+            segments: [
+                { airline: 'PR', flight_number: '424', origin: 'MNL', destination: 'ICN', departure: '2026-11-02T08:15:00Z' },
+                { airline: 'PR', flight_number: '880', origin: 'ICN', destination: 'NRT', departure: '2026-11-02T14:00:00Z' },
+            ],
+        }, 'flight');
+
+        expect(b.summary).toContain('MNL→NRT');
+        expect(b.summary).not.toContain('MNL→ICN');
+        expect(b.summary).toContain('PR 424');
+    });
+
+    it('names a return trip by where it turns around, not by its origin twice', () => {
+        // first→last on a return reads "CRK→CRK", which names nowhere.
+        const b = normaliseBooking({
+            id: 'x', status: 'ticketed', pnr: 'FPGBZM',
+            segments: [
+                { airline: 'PR', flight_number: '424', origin: 'CRK', destination: 'ICN', departure: '2026-11-02T08:15:00Z' },
+                { airline: 'PR', flight_number: '425', origin: 'ICN', destination: 'CRK', departure: '2026-11-09T14:00:00Z' },
+            ],
+        }, 'flight');
+
+        expect(b.summary).toContain('CRK⇄ICN');
+        expect(b.summary).not.toContain('CRK→CRK');
+    });
+
+    it('names a hotel by the property and the stay', () => {
+        const b = normaliseBooking({
+            id: 'x', status: 'confirmed', property_name: 'Hotel Naru',
+            check_in: new Date('2026-09-09'), check_out: new Date('2026-09-11'),
+        }, 'hotel');
+
+        expect(b.summary).toBe('Hotel Naru · 9 Sept – 11 Sept');
     });
 });
 

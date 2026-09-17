@@ -214,6 +214,7 @@ export class HotelsController {
                 checkIn:        z.string().optional(),
                 checkOut:       z.string().optional(),
                 bundleFlightId: z.string().optional(),
+                displayedTotal: z.coerce.number().positive().optional(),
             }).parse(req.body);
             const result = await svc.createPayment({ ...body, userId: req.user!.sub });
             res.json(result);

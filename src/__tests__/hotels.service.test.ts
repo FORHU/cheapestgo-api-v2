@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
+// The service now reaches the confirmation email, which reads config. Stubbed so the suite
+// does not need a real environment to construct one.
+vi.mock('@/config', () => ({ config: { RESEND_API_KEY: '', SITE_URL: 'https://cheapestgo.com' } }));
+
 vi.mock('@/lib/hotels/search', () => ({
     runTgxSearch: vi.fn(),
 }));
@@ -39,6 +43,8 @@ vi.mock('@/repositories/hotels.repository', () => ({
         // Cancellation reads the terms recorded at booking time. Null is the
         // "no policy on record" path, which refuses to refund rather than guess.
         this.findPolicySnapshot   = vi.fn().mockResolvedValue(null);
+        this.openRefund           = vi.fn().mockResolvedValue('refund-log-1');
+        this.closeRefund          = vi.fn().mockResolvedValue(undefined);
         // Checkout charges from this row rather than the client's payload, so these
         // cases have to supply one; a null here is the QUOTE_NOT_FOUND path.
         this.findPrebookQuote     = vi.fn();
@@ -64,20 +70,6 @@ vi.mock('@/middleware/error.middleware', () => ({
     },
 }));
 
-vi.mock('@/lib/pricing', () => ({
-    HOTEL_MARKUP:  0.05,
-    BUNDLE_MARKUP: 0.04,
-    HOTEL_FX_DISPLAY_TOLERANCE: 0.005,
-    PREBOOK_QUOTE_TTL_MS: 30 * 60 * 1000,
-    applyMarkup: (base: number, rate: number) => ({
-        originalPrice: base,
-        chargedPrice:  Math.round(base * (1 + rate) * 100) / 100,
-        markupAmount:  Math.round(base * rate * 100) / 100,
-        markupRate:    rate,
-    }),
-    toStripeAmount: (price: number, currency: string) =>
-        ['jpy', 'krw'].includes(currency.toLowerCase()) ? Math.round(price) : Math.round(price * 100),
-}));
 
 vi.mock('crypto', async (importOriginal) => {
     const actual = await importOriginal<typeof import('crypto')>();
@@ -242,7 +234,7 @@ describe('HotelsService.createPayment()', () => {
             .rejects.toMatchObject({ code: 'DUPLICATE_BOOKING' });
     });
 
-    it('creates a PaymentIntent with manual capture and markup applied', async () => {
+    it('charges the hotel rate on the server-derived base', async () => {
         vi.mocked(stripe.paymentIntents.create).mockResolvedValue({
             id:            PI_ID,
             client_secret: 'cs_test_secret',
@@ -254,14 +246,22 @@ describe('HotelsService.createPayment()', () => {
             expect.objectContaining({
                 currency:       'usd',
                 capture_method: 'manual',
-                amount:         expect.any(Number), // 300 * 1.05 * 100 = 31500
+                // 300 + 5.9% + $0.40 = 318.10. Pinned rather than expect.any(Number): the
+                // amount is the only thing on this call the customer feels, and a
+                // rate that silently reverts to a flat 5% is exactly the change that
+                // would otherwise pass every test in this file.
+                amount:         31810,
                 metadata:       expect.objectContaining({ userId: USER_ID, type: 'hotel' }),
             }),
             expect.objectContaining({ idempotencyKey: expect.stringContaining(`hotel-pi-${USER_ID}`) })
         );
     });
 
-    it('applies bundle markup when bundleFlightId is provided', async () => {
+    it('charges a bundled hotel exactly the same as a standalone one', async () => {
+        // Bundling was never a discount line — only a swap to a lower rate, funded out
+        // of the hotel provision. It is still one Duffel order, one OTV booking and two
+        // Stripe charges, so there is no cost saving to pass on (ADR-0036). The bundle
+        // id survives in the metadata because it still links the two bookings.
         vi.mocked(stripe.paymentIntents.create).mockResolvedValue({
             id: PI_ID, client_secret: 'cs_test_secret',
         } as any);
@@ -270,6 +270,7 @@ describe('HotelsService.createPayment()', () => {
 
         expect(stripe.paymentIntents.create).toHaveBeenCalledWith(
             expect.objectContaining({
+                amount:   31810,
                 metadata: expect.objectContaining({ type: 'hotel_bundle', bundleFlightId: 'FLT-123' }),
             }),
             expect.anything()
@@ -355,15 +356,25 @@ describe('HotelsService.confirmBooking()', () => {
         );
     });
 
-    it('captures the Stripe payment after a successful booking', async () => {
+    it('captures the Stripe payment after a successful booking, and reads the fee it cost', async () => {
+        // The balance transaction only exists once the payment is captured, which is why
+        // the expansion rides on the capture rather than on the earlier retrieve.
         mockPI();
         vi.mocked(bookTgx).mockResolvedValue({ status: 'confirmed', clientRef: BOOKING_REF, price: { gross: 120, net: 110, currency: 'USD' } } as any);
-        vi.mocked(stripe.paymentIntents.capture).mockResolvedValue({} as any);
+        vi.mocked(stripe.paymentIntents.capture).mockResolvedValue({
+            latest_charge: {
+                balance_transaction: { fee: 528, amount: 12000, net: 11472, currency: 'usd' },
+                payment_method_details: { card: { country: 'PH' } },
+            },
+        } as any);
         vi.mocked(stripe.paymentIntents.update).mockResolvedValue({} as any);
 
         await service.confirmBooking(BASE_PARAMS);
 
-        expect(stripe.paymentIntents.capture).toHaveBeenCalledWith(PI_ID);
+        expect(stripe.paymentIntents.capture).toHaveBeenCalledWith(
+            PI_ID,
+            expect.objectContaining({ expand: ['latest_charge.balance_transaction'] }),
+        );
     });
 
     it('returns success with bookingId from bookTgx response', async () => {
@@ -479,6 +490,56 @@ describe('HotelsService.cancelBooking()', () => {
             expect.objectContaining({ idempotencyKey: `hotel-refund-${BOOKING_REF}-12000` })
         );
         expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+    });
+
+    it('opens the refund in the log before Stripe is asked for it', async () => {
+        // A crash between Stripe issuing the refund and the booking being updated must still
+        // leave a row saying a refund was on its way. So the order matters, not just the calls.
+        mockBookingRow();
+        givePolicy(freeCancellation);
+        const order: string[] = [];
+        (service as any).repo.openRefund.mockImplementation(async () => { order.push('log'); return 'refund-log-1'; });
+        vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 12000 } as any);
+        vi.mocked(stripe.refunds.create).mockImplementation(async () => { order.push('stripe'); return { id: 're_test', status: 'succeeded' } as any; });
+
+        await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID, paymentIntentId: PI_ID });
+
+        expect(order).toEqual(['log', 'stripe']);
+        expect((service as any).repo.openRefund).toHaveBeenCalledWith(expect.objectContaining({
+            bookingId: BOOKING_REF, userId: USER_ID, refundType: 'full_refund', requestedAmount: 1000, currency: 'PHP',
+        }));
+        expect((service as any).repo.closeRefund).toHaveBeenCalledWith('refund-log-1', {
+            issued: true, approvedAmount: 1000, externalRef: 're_test',
+        });
+    });
+
+    it('closes the log as failed, not processed, when Stripe refunds nothing', async () => {
+        // v1 marked the row processed with the full amount approved whether or not a refund
+        // was issued, so the log contradicted the booking on the one fact it exists to record.
+        mockBookingRow();
+        givePolicy(freeCancellation);
+        vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 12000 } as any);
+        vi.mocked(stripe.refunds.create).mockRejectedValue(new Error('card_declined'));
+
+        const result = await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID, paymentIntentId: PI_ID });
+
+        expect((service as any).repo.closeRefund).toHaveBeenCalledWith('refund-log-1', {
+            issued: false, reason: 'card_declined',
+        });
+        expect(result.data.status).toBe('cancelled_refund_failed');
+    });
+
+    it('opens no refund when the terms return nothing', async () => {
+        mockBookingRow();
+        givePolicy({ policyType: 'non_refundable', freeCancelDeadline: null, tiers: [] });
+        vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 12000 } as any);
+
+        await service.cancelBooking({ bookingRef: BOOKING_REF, userId: USER_ID, paymentIntentId: PI_ID });
+
+        expect((service as any).repo.openRefund).not.toHaveBeenCalled();
     });
 
     it('refunds nothing on a non-refundable rate', async () => {

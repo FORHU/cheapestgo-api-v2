@@ -29,8 +29,10 @@ import { stripe } from '@/lib/stripe';
 import { prisma } from '@/lib/prisma';
 import { config } from '@/config';
 import { logger } from '@/lib/logger';
+import { ticketNumbersFrom } from '@/lib/flights/duffelTickets';
 import crypto from 'crypto';
 import { duffelHeaders } from '@/lib/flights/duffel';
+import { sendFlightConfirmationEmail } from '@/lib/email/flightConfirmation';
 
 const router = Router();
 
@@ -108,11 +110,12 @@ router.post(
                     }
 
                     const { data: order } = await duffelRes.json() as any;
-                    const hasTickets = Array.isArray(order?.documents) && order.documents.length > 0;
-                    const newStatus = hasTickets ? 'ticketed' : 'confirmed';
-                    const ticketNumbers = hasTickets
-                        ? JSON.stringify(order.documents.map((d: any) => d.document_number))
-                        : null;
+                    // An e-ticket is a document whose number is `unique_identifier`; this read
+                    // `document_number`, which Duffel does not send, so an order with documents
+                    // was marked ticketed with `[null]` recorded against it.
+                    const tickets = ticketNumbersFrom(order);
+                    const newStatus = tickets.length > 0 ? 'ticketed' : 'confirmed';
+                    const ticketNumbers = tickets.length > 0 ? JSON.stringify(tickets) : null;
 
                     await prisma.$executeRaw`
                         UPDATE flight_bookings
@@ -125,6 +128,22 @@ router.post(
                     `;
 
                     logger.info('[webhooks/duffel] Order status synced', { orderId, newStatus });
+
+                    // The first email told the traveller the ticket was on its way. This is
+                    // where it arrives — without this, that promise was never kept, and a
+                    // traveller holding an 'awaiting ticket' message had no way to learn
+                    // their e-ticket numbers short of opening the site. Suppressed by
+                    // email_logs if this booking was already ticketed when it was made.
+                    if (newStatus === 'ticketed') {
+                        const ticketedBooking = await prisma.flight_bookings.findFirst({
+                            where:  { provider_order_id: orderId },
+                            select: { id: true },
+                        }).catch(() => null);
+                        if (ticketedBooking) {
+                            await sendFlightConfirmationEmail(ticketedBooking.id)
+                                .catch((err: any) => logger.error('[webhooks/duffel] Ticket email failed', { orderId, error: err?.message }));
+                        }
+                    }
                     break;
                 }
 
@@ -244,6 +263,47 @@ router.post(
 
         logger.info('[webhooks/stripe] Received event', { type: event.type, id: event.id });
 
+        // ── Claim the event before handling it ────────────────────────────────────
+        //
+        // Stripe retries a delivery it did not get a 2xx for, and retries the same event
+        // id. The claim is a row, so two deliveries racing each other cannot both win.
+        //
+        // A claim alone is not enough to skip on, though: an event claimed but never
+        // completed is a delivery that died part-way, and skipping it would lose the work
+        // entirely. Only a *completed* one is a duplicate.
+        try {
+            await prisma.stripe_processed_events.create({
+                data: { event_id: event.id, event_type: event.type },
+            });
+        } catch (err: any) {
+            if (err?.code === 'P2002') {
+                const prior = await prisma.stripe_processed_events.findUnique({
+                    where:  { event_id: event.id },
+                    select: { completed_at: true },
+                }).catch(() => null);
+
+                if (prior?.completed_at) {
+                    logger.info('[webhooks/stripe] Duplicate event, already completed — skipping', { id: event.id });
+                    return res.json({ received: true });
+                }
+                logger.warn('[webhooks/stripe] Event was claimed but never completed — reprocessing', { id: event.id });
+            } else {
+                // A dedup failure must not cost the event: handling it twice is recoverable,
+                // dropping it is not.
+                logger.warn('[webhooks/stripe] Could not claim event', { id: event.id, message: err?.message });
+            }
+        }
+
+        /** Mark the claim finished, so later deliveries of this event are skipped. */
+        const commitEvent = async () => {
+            await prisma.stripe_processed_events.updateMany({
+                where: { event_id: event.id },
+                data:  { completed_at: new Date() },
+            }).catch((err: any) =>
+                logger.warn('[webhooks/stripe] Could not mark event complete', { id: event.id, message: err?.message }),
+            );
+        };
+
         try {
             switch (event.type) {
                 case 'payment_intent.succeeded': {
@@ -301,6 +361,10 @@ router.post(
                     logger.info('[webhooks/stripe] Unhandled event type', { type: event.type });
             }
 
+            // Completed, so a retry of this delivery is a duplicate rather than a
+            // resumption. Not marked on the error path: Stripe will retry, and the claim
+            // left open is what lets that retry run.
+            await commitEvent();
             return res.json({ received: true });
         } catch (err: any) {
             logger.error('[webhooks/stripe] Handler error', { err });

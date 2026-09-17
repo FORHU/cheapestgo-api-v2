@@ -4,6 +4,7 @@
  */
 
 import { config } from '@/config';
+import { startSupplierAttempt, finishSupplierAttempt } from '@/lib/hotels/supplierAttempt';
 import type { TgxCancelPolicy } from '@/types/hotels';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -322,30 +323,54 @@ export async function bookTgx(params: {
         }, null, 2));
     }
 
-    const result  = await tgxGraphQL(BOOK_MUTATION, { input, settings });
-    const booking = result?.data?.hotelX?.book?.booking;
-    const errors  = result?.data?.hotelX?.book?.errors || [];
+    // Opened before the mutation and closed after, whatever happens. A mutation that times
+    // out has still very likely reached OTV, and this is the only record that survives it.
+    const attemptId = await startSupplierAttempt({
+        provider:        'travelgatex',
+        operation:       'book',
+        clientReference: params.clientReference,
+    });
 
-    if (errors.length) {
-        const msg = errors.map((e: any) => e.description || e.code).join('; ');
-        throw new Error(`TGX Book errors: ${msg}`);
+    try {
+        const result  = await tgxGraphQL(BOOK_MUTATION, { input, settings });
+        const booking = result?.data?.hotelX?.book?.booking;
+        const errors  = result?.data?.hotelX?.book?.errors || [];
+
+        if (errors.length) {
+            const msg = errors.map((e: any) => e.description || e.code).join('; ');
+            throw new Error(`TGX Book errors: ${msg}`);
+        }
+
+        if (!booking) throw new Error('No booking returned from TravelgateX');
+        if (booking.status !== 'OK') {
+            throw new Error(`Booking not confirmed — status: ${booking.status}`);
+        }
+
+        await finishSupplierAttempt(attemptId, {
+            status:            'confirmed',
+            supplierReference: booking.reference?.supplier,
+            hotelCode:         booking.hotel?.hotelCode,
+            hotelName:         booking.hotel?.hotelName,
+            priceGross:        booking.price?.gross ?? null,
+            currency:          booking.price?.currency ?? null,
+        });
+
+        return {
+            status:      booking.status,
+            supplierRef: booking.reference?.supplier as string | undefined,
+            clientRef:   booking.reference?.client   as string | undefined,
+            hotelRef:    booking.reference?.hotel    as string | undefined,
+            hotelCode:   booking.hotel?.hotelCode    as string | undefined,
+            hotelName:   booking.hotel?.hotelName    as string | undefined,
+            price:       booking.price,
+            cancelPolicy: booking.cancelPolicy as TgxCancelPolicy | undefined,
+        };
+    } catch (err: any) {
+        // Closed as failed rather than left open: an open row means "we asked and never
+        // found out", and here we did find out.
+        await finishSupplierAttempt(attemptId, { status: 'failed', error: err?.message });
+        throw err;
     }
-
-    if (!booking) throw new Error('No booking returned from TravelgateX');
-    if (booking.status !== 'OK') {
-        throw new Error(`Booking not confirmed — status: ${booking.status}`);
-    }
-
-    return {
-        status:      booking.status,
-        supplierRef: booking.reference?.supplier as string | undefined,
-        clientRef:   booking.reference?.client   as string | undefined,
-        hotelRef:    booking.reference?.hotel    as string | undefined,
-        hotelCode:   booking.hotel?.hotelCode    as string | undefined,
-        hotelName:   booking.hotel?.hotelName    as string | undefined,
-        price:       booking.price,
-        cancelPolicy: booking.cancelPolicy as TgxCancelPolicy | undefined,
-    };
 }
 
 // ─── Cancel ───────────────────────────────────────────────────────────────────
@@ -364,6 +389,22 @@ mutation TgxCancel($input: HotelCancelInput!, $settings: HotelSettingsInput!) {
   }
 }`;
 
+/**
+ * Cancel a TravelgateX reservation.
+ *
+ * **Addressed by client reference first.** That order is load-bearing, not stylistic: OTV
+ * rejects a cancel addressed by supplier reference with "Request not accepted by supplier"
+ * while accepting the identical booking by client reference — measured 2026-09-06 on
+ * reservation CG-770AZS / supplier 448577296.
+ *
+ * Every cancellation this platform has completed went by client reference, but only by
+ * accident: `bookings.provider_metadata` was double-encoded in v1, so the supplier reference
+ * read as undefined and the code fell through to the client branch. Fixing that encoding
+ * would have moved every future cancel onto the branch that does not work. api-v2 inherited
+ * the supplier-first order without inheriting the accident, so its cancellations would have
+ * failed outright. The preference is now explicit, and the supplier reference is a fallback
+ * tried only when the client reference is refused.
+ */
 export async function cancelTgx(params: {
     clientReference?: string;
     supplierReference?: string;
@@ -373,42 +414,84 @@ export async function cancelTgx(params: {
     const cfg      = getTgxConfig();
     const settings = getTgxSettings(cfg);
 
-    const input: Record<string, any> = {};
-    if (params.tgxBookingId) {
-        input.bookingID = params.tgxBookingId;
-    } else {
-        input.accessCode = cfg.accessCode;
-        if (params.hotelCode) input.hotelCode = params.hotelCode;
-        if (params.supplierReference) {
-            input.reference = { supplier: params.supplierReference };
-        } else {
-            input.reference = { client: params.clientReference };
+    const references: Array<{ label: string; reference: Record<string, string> }> = [];
+    if (params.clientReference)   references.push({ label: 'client',   reference: { client:   params.clientReference } });
+    if (params.supplierReference) references.push({ label: 'supplier', reference: { supplier: params.supplierReference } });
+
+    // A TGX booking id addresses the reservation directly and needs no reference at all.
+    const attempts: Array<{ label: string; input: Record<string, any> }> = params.tgxBookingId
+        ? [{ label: 'bookingID', input: { bookingID: params.tgxBookingId } }]
+        : references.map(({ label, reference }) => ({
+            label,
+            input: {
+                accessCode: cfg.accessCode,
+                ...(params.hotelCode ? { hotelCode: params.hotelCode } : {}),
+                reference,
+            },
+        }));
+
+    if (!attempts.length) throw new Error('No reference supplied to cancel by');
+
+    // One row per cancellation, not per reference attempt: the loop below is a single
+    // logical cancellation tried under two addresses. Recorded with more urgency than a
+    // book — OTV monitors cancellation rates and has raised them with us, so a
+    // cancellation this platform cannot see is one it cannot account for.
+    const attemptId = await startSupplierAttempt({
+        provider:          'travelgatex',
+        operation:         'cancel',
+        clientReference:   params.clientReference ?? null,
+        supplierReference: params.supplierReference ?? null,
+        hotelCode:         params.hotelCode ?? null,
+    });
+
+    let cancellation: any = null;
+    let lastErrorMsg = '';
+
+    try {
+        for (const attempt of attempts) {
+            console.log(`[tgx-cancel] attempt=${attempt.label} input:`, JSON.stringify(attempt.input));
+            const result = await tgxGraphQL(CANCEL_MUTATION, { input: attempt.input, settings });
+
+            const errors = result?.data?.hotelX?.cancel?.errors || [];
+            if (errors.length) {
+                lastErrorMsg = errors.map((e: any) => e.description || e.code).join('; ');
+                console.warn(`[tgx-cancel] attempt=${attempt.label} rejected: ${lastErrorMsg}`);
+                continue;
+            }
+
+            const candidate = result?.data?.hotelX?.cancel?.cancellation;
+            if (candidate) { cancellation = candidate; break; }
+            lastErrorMsg = 'No cancellation returned from TravelgateX';
         }
+
+        if (!cancellation && lastErrorMsg && lastErrorMsg !== 'No cancellation returned from TravelgateX') {
+            const alreadyCancelled = lastErrorMsg.toLowerCase().includes('cancel') || lastErrorMsg.toLowerCase().includes('not found');
+            throw Object.assign(new Error(lastErrorMsg), { alreadyCancelled });
+        }
+
+        if (!cancellation) throw new Error('No cancellation returned from TravelgateX');
+        if (cancellation.status !== 'CANCELLED') {
+            throw new Error(`Cancellation not confirmed — status: ${cancellation.status}`);
+        }
+
+            await finishSupplierAttempt(attemptId, {
+                status:            'confirmed',
+                supplierReference: cancellation.reference?.supplier,
+                priceGross:        cancellation.price?.gross ?? null,
+                currency:          cancellation.price?.currency ?? null,
+            });
+
+        return {
+            status:       cancellation.status as string,
+            supplierRef:  cancellation.reference?.supplier as string | undefined,
+            clientRef:    cancellation.reference?.client   as string | undefined,
+            refundAmount: cancellation.price?.net          ?? 0,
+            currency:     cancellation.price?.currency     ?? 'USD',
+        };
+    } catch (err: any) {
+        await finishSupplierAttempt(attemptId, { status: 'failed', error: err?.message });
+        throw err;
     }
-
-    console.log('[tgx-cancel] input:', JSON.stringify(input));
-    const result       = await tgxGraphQL(CANCEL_MUTATION, { input, settings });
-    const cancellation = result?.data?.hotelX?.cancel?.cancellation;
-    const errors       = result?.data?.hotelX?.cancel?.errors || [];
-
-    if (errors.length) {
-        const msg = errors.map((e: any) => e.description || e.code).join('; ');
-        const alreadyCancelled = msg.toLowerCase().includes('cancel') || msg.toLowerCase().includes('not found');
-        throw Object.assign(new Error(msg), { alreadyCancelled });
-    }
-
-    if (!cancellation) throw new Error('No cancellation returned from TravelgateX');
-    if (cancellation.status !== 'CANCELLED') {
-        throw new Error(`Cancellation not confirmed — status: ${cancellation.status}`);
-    }
-
-    return {
-        status:       cancellation.status as string,
-        supplierRef:  cancellation.reference?.supplier as string | undefined,
-        clientRef:    cancellation.reference?.client   as string | undefined,
-        refundAmount: cancellation.price?.net          ?? 0,
-        currency:     cancellation.price?.currency     ?? 'USD',
-    };
 }
 
 // ─── Amenities ────────────────────────────────────────────────────────────────

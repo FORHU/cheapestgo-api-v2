@@ -26,3 +26,21 @@
 
 # ── Weekly (Sunday 01:00 UTC) ─────────────────────────────────────────────────
 0 1 * * 0 curl -sf -X GET $APP_URL/api/v2/cron/sync-dest-cache        -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+
+# ── Reconciliation (C6) ───────────────────────────────────────────────────────
+# Neither of these repairs anything; both raise a notification and stop. A reconciler that
+# writes from payment evidence eventually acts on a stale read, and the action at the end of
+# that path is a refund (ADR-0023).
+#
+# In v1 both jobs exist and nothing calls them — the schedules below are written in their
+# route comments and were never wired to a scheduler.
+0 * * * *   curl -sf -X GET $APP_URL/api/v2/cron/hotel-reconciliation          -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+# Monthly, on the 4th: Duffel issues invoices by the 3rd, so the figure can be checked
+# against the real bill rather than standing alone.
+0 6 4 * *   curl -sf -X GET $APP_URL/api/v2/cron/platform-cost-reconciliation  -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+
+# ── Hotel content (daily 03:00 UTC) ───────────────────────────────────────────
+# Both routes existed and neither was scheduled. seed-room-groups runs after the dump so it
+# groups the content that sync just brought in.
+0 3 * * *   curl -sf -X GET "$APP_URL/api/v2/cron/etg-dump-sync?type=incremental" -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+30 3 * * *  curl -sf -X GET $APP_URL/api/v2/cron/seed-room-groups              -H "Authorization: Bearer $CRON_SECRET" -o /dev/null

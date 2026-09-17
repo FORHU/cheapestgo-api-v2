@@ -17,6 +17,14 @@ import { tgxGraphQL, getTgxConfig, resolveTgxDestinationCode } from '@/lib/hotel
 import { otvCodeToLabel } from '@/lib/hotels/amenityCodes';
 import { RoomCatalogService } from '@/services/roomCatalog.service';
 import { getDumpUrl, processDump } from '@/lib/hotels/etgDump';
+import { findUnrecordedReservations, filterAlreadyNotified, UNRECORDED_NOTIFICATION_TITLE } from '@/lib/admin/reconciliation';
+import { reconcilePlatformCost } from '@/lib/admin/platformCost';
+import { createNotification } from '@/lib/admin/notify';
+import { ticketNumbersFrom } from '@/lib/flights/duffelTickets';
+import { sendFlightConfirmationEmail } from '@/lib/email/flightConfirmation';
+import { makeStrictConverter } from '@/lib/payments/convertStrict';
+import { ExchangeRatesService } from '@/services/exchange-rates.service';
+import { fromStripeAmount } from '@/lib/pricing';
 
 const router = Router();
 
@@ -34,11 +42,6 @@ router.use(requireCronSecret);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function createNotification(title: string, description: string) {
-    await prisma.notifications.create({
-        data: { title, description, type: 'alert', user_id: null } as any,
-    }).catch(err => console.error('[cron] notification create failed:', err.message));
-}
 
 async function sendEmail(to: string, subject: string, html: string) {
     if (!config.RESEND_API_KEY) return { ok: false, error: 'RESEND_API_KEY not set' };
@@ -496,11 +499,26 @@ router.get('/poll-pending-tickets', async (_req: Request, res: Response, next: N
                     || (Array.isArray(data?.data?.documents) && data.data.documents.length > 0);
 
                 if (isTicketed) {
+                    // The numbers, not just the status. An e-ticket number is what an airline
+                    // desk asks for, and this used to mark a booking ticketed while leaving
+                    // the column empty — the same field the webhook path fills.
+                    const tickets = ticketNumbersFrom(data?.data);
                     await prisma.$executeRaw`
-                        UPDATE flight_bookings SET status = 'ticketed' WHERE id = ${fb.id}::uuid
+                        UPDATE flight_bookings
+                        SET status         = 'ticketed',
+                            ticket_numbers = COALESCE(${tickets.length ? JSON.stringify(tickets) : null}::jsonb, ticket_numbers),
+                            updated_at     = NOW()
+                        WHERE id = ${fb.id}::uuid
                     `;
                     ticketed++;
                     console.log(`[cron/poll-pending-tickets] Ticketed flight booking ${fb.id}`);
+
+                    // The traveller was told the ticket was on its way. This is the third
+                    // route by which it can arrive — after the webhook and the booking call —
+                    // and the only one that catches a webhook we never received. Suppressed
+                    // by email_logs when one of the others got there first.
+                    await sendFlightConfirmationEmail(fb.id)
+                        .catch((e: any) => console.error(`[cron/poll-pending-tickets] Ticket email failed for ${fb.id}:`, e?.message));
                 } else {
                     unchanged++;
                 }
@@ -693,27 +711,56 @@ router.get('/etg-reviews-sync', async (_req: Request, res: Response, next: NextF
 
 router.get('/otv-credit-check', async (_req: Request, res: Response, next: NextFunction) => {
     try {
-        const CREDIT_LIMIT          = parseFloat(process.env.OTV_CREDIT_LIMIT ?? '0');
+        // RateHawk denominates the credit line in PHP — 600,000 PHP as of 2026-09 — while
+        // `supplier_cost` is stored in whatever TGX returns, which TGX_TARGET_CURRENCY pins
+        // to USD. The two are not comparable as written, and were compared anyway: a
+        // 600,000 PHP line read as $600,000, roughly sixty times the real ceiling, so the
+        // utilisation alert could never fire. That alert is the only warning before OTV
+        // starts silently auto-cancelling refundable bookings at their free-cancellation
+        // deadline.
+        const CREDIT_LIMIT_NATIVE   = parseFloat(process.env.OTV_CREDIT_LIMIT ?? '0');
+        const CREDIT_LIMIT_CURRENCY = (process.env.OTV_CREDIT_LIMIT_CURRENCY ?? 'PHP').toUpperCase();
+        const SUPPLIER_COST_CURRENCY = (process.env.TGX_TARGET_CURRENCY ?? 'USD').toUpperCase();
         const UTILIZATION_ALERT_PCT = parseFloat(process.env.OTV_CREDIT_UTILIZATION_ALERT_PCT ?? '0.8');
         const DEADLINE_WINDOW_HOURS = parseInt(process.env.OTV_DEADLINE_ALERT_HOURS ?? '48', 10);
         const results: Record<string, any> = {};
 
-        // 1. Credit utilization — sum total_price for confirmed/pending TGX bookings not yet checked out
-        if (CREDIT_LIMIT > 0) {
-            const creditRows = await prisma.$queryRaw<{ total: string | null; booking_count: bigint }[]>`
-                SELECT SUM(total_price)::text AS total, COUNT(*)::int AS booking_count
+        // Refused rather than guessed: a credit check that silently compares the wrong units
+        // is worse than one that does not run, because it reports reassurance.
+        let creditLimit = 0;
+        let limitError: string | null = null;
+        if (CREDIT_LIMIT_NATIVE > 0) {
+            try {
+                const convert = makeStrictConverter(await new ExchangeRatesService().getLiveRates());
+                creditLimit = convert(CREDIT_LIMIT_NATIVE, CREDIT_LIMIT_CURRENCY, SUPPLIER_COST_CURRENCY);
+            } catch (e: any) {
+                limitError = `cannot convert ${CREDIT_LIMIT_NATIVE} ${CREDIT_LIMIT_CURRENCY} to ${SUPPLIER_COST_CURRENCY}: ${e?.message}`;
+                console.error('[cron/otv-credit-check]', limitError);
+            }
+        }
+
+        // 1. Credit utilisation. Summed over `supplier_cost` — what OTV is owed — not
+        //    `total_price`, which is what the guest paid us, markup and all, in the guest's
+        //    own currency. Summing that mixed several currencies into one number and then
+        //    compared it against a limit in a third.
+        if (creditLimit > 0) {
+            const creditRows = await prisma.$queryRaw<{ total: string | null; booking_count: number }[]>`
+                SELECT SUM(COALESCE(supplier_cost, 0))::text AS total, COUNT(*)::int AS booking_count
                 FROM bookings
                 WHERE provider = 'travelgatex'
                   AND status IN ('confirmed', 'pending')
                   AND check_out > NOW()
             `;
-            const outstanding   = Number(creditRows[0]?.total ?? 0);
-            const bookingCount  = Number(creditRows[0]?.booking_count ?? 0);
-            const utilization   = outstanding / CREDIT_LIMIT;
+            const outstanding  = Number(creditRows[0]?.total ?? 0);
+            const bookingCount = Number(creditRows[0]?.booking_count ?? 0);
+            const utilization  = outstanding / creditLimit;
 
+            // Currencies are named in the output on purpose. The previous version printed two
+            // bare numbers in different units, which read as a healthy utilisation and is why
+            // the mismatch went unnoticed.
             results.credit = {
-                outstanding:    outstanding.toFixed(2),
-                limit:          CREDIT_LIMIT,
+                outstanding:    `${outstanding.toFixed(2)} ${SUPPLIER_COST_CURRENCY}`,
+                limit:          `${creditLimit.toFixed(2)} ${SUPPLIER_COST_CURRENCY} (${CREDIT_LIMIT_NATIVE} ${CREDIT_LIMIT_CURRENCY})`,
                 utilizationPct: (utilization * 100).toFixed(1) + '%',
                 bookingCount,
             };
@@ -722,9 +769,21 @@ router.get('/otv-credit-check', async (_req: Request, res: Response, next: NextF
             if (utilization >= UTILIZATION_ALERT_PCT) {
                 await createNotification(
                     'OTV credit limit warning',
-                    `Outstanding OTV credit: ${outstanding.toFixed(2)} of ${CREDIT_LIMIT} limit (${results.credit.utilizationPct} used). New non-refundable bookings may be rejected.`
+                    `Outstanding OTV credit: ${outstanding.toFixed(2)} ${SUPPLIER_COST_CURRENCY} of a `
+                    + `${CREDIT_LIMIT_NATIVE} ${CREDIT_LIMIT_CURRENCY} limit (${creditLimit.toFixed(2)} ${SUPPLIER_COST_CURRENCY}) — `
+                    + `${results.credit.utilizationPct} used. New non-refundable bookings may be rejected by RateHawk, `
+                    + 'and refundable ones can be auto-cancelled at their free-cancellation deadline.',
                 );
             }
+        } else if (limitError) {
+            // Loud, not silent. A skipped credit check looks identical to a healthy one in
+            // the job's output unless it says so.
+            results.credit = { skipped: true, reason: limitError };
+            await createNotification(
+                'OTV credit check could not run',
+                `The credit limit could not be converted for comparison — ${limitError}. `
+                + 'Utilisation is unknown until this is fixed.',
+            );
         } else {
             results.credit = { skipped: true, reason: 'OTV_CREDIT_LIMIT not set' };
         }
@@ -1283,6 +1342,123 @@ router.get('/etg-dump-sync', async (req: Request, res: Response, next: NextFunct
         console.log('[etg-dump] done', stats);
 
         res.json({ ok: true, type, force, dry_run: dryRun, ...stats });
+    } catch (err) { next(err); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/cron/hotel-reconciliation
+// Schedule: hourly  (0 * * * *)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** How far back a run looks. A charge older than this is a support matter, not an alert. */
+const RECONCILIATION_WINDOW_DAYS = 30;
+
+/**
+ * Hotel charges that succeeded in Stripe with no booking row behind them — **Unrecorded
+ * Reservations** — raised as one notification per reference, ever.
+ *
+ * It deliberately repairs nothing. A reconciler that writes based on payment evidence
+ * eventually acts on a stale read, and the action at the end of that path is a refund;
+ * ADR-0023 already settled that refusing is the safe direction. Repair is an admin action.
+ */
+router.get('/hotel-reconciliation', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+        const result = await findUnrecordedReservations(RECONCILIATION_WINDOW_DAYS);
+
+        // A refusal is not a failure to report quietly — it means the job cannot tell whether
+        // anything is wrong, which is worse than finding nothing.
+        if (!result.ok) {
+            console.error('[hotel-reconciliation] REFUSED:', result.refusedReason);
+            return res.status(409).json({ success: false, refused: result.refusedReason });
+        }
+
+        const fresh = await filterAlreadyNotified(result.unrecorded);
+
+        for (const item of fresh) {
+            // fromStripeAmount, not `/ 100` — a KRW charge has no subunit, and an
+            // unrecorded-charge alert that understates the money by 100× reads as noise.
+            const amount = fromStripeAmount(item.amount, item.currency)
+                .toLocaleString('en-US', { maximumFractionDigits: 2 });
+            await createNotification(
+                UNRECORDED_NOTIFICATION_TITLE,
+                `${item.bookingReference} — ${item.currency.toUpperCase()} ${amount} charged ${item.created.slice(0, 10)} `
+                + `to ${item.holderEmail ?? 'unknown'} (${item.brand ?? 'brand unknown'}) has no booking row. `
+                + `PaymentIntent: ${item.paymentIntentId}. ${item.refunded ? 'Charge was refunded. ' : ''}`
+                + 'The guest may be holding a reservation the platform cannot see — check the supplier dashboard before acting.',
+            );
+            console.warn(`[hotel-reconciliation] unrecorded reservation: ${item.bookingReference} (${item.paymentIntentId})`);
+        }
+
+        res.json({
+            success:       true,
+            windowDays:    result.windowDays,
+            scanned:       result.scanned,
+            unrecorded:    result.unrecorded.length,
+            newlyNotified: fresh.length,
+            references:    result.unrecorded.map((u) => u.bookingReference),
+        });
+    } catch (err) { next(err); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/cron/platform-cost-reconciliation
+// Schedule: monthly on the 4th  (0 6 4 * *)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Half a point of drift in the Stripe rate is worth a decision; less is noise. */
+const STRIPE_RATE_DRIFT_TOLERANCE = 0.005;
+
+/**
+ * Monthly check that the markup actually covered Platform Cost.
+ *
+ * Runs after Duffel invoices (issued by the 3rd), so the number it reports can be checked
+ * against the real bill rather than standing alone. It notifies only when something needs a
+ * decision — an under-recovering month, or a Stripe rate that has drifted from what
+ * pricing.ts charges against — because a job that reports every month is a job nobody reads.
+ */
+router.get('/platform-cost-reconciliation', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        // `month=YYYY-MM` re-runs a past period; the default is last month, since Duffel bills
+        // in arrears and the current month is always partial.
+        const month  = typeof req.query.month === 'string' ? req.query.month : undefined;
+        const result = await reconcilePlatformCost(month);
+
+        console.log(
+            `[platform-cost] ${result.month}: orders=${result.orders} cancelled=${result.cancelled} `
+            + `c=${result.cancellationRate === null ? 'n/a' : (result.cancellationRate * 100).toFixed(1) + '%'} `
+            + `markup=${result.markupRetainedUsd} stripe=${result.stripeFeeRecordedUsd} (est ${result.stripeFeeEstimatedUsd}) `
+            + `duffel≈${result.duffelExpectedUsd} net=${result.netUsd}`,
+        );
+        for (const c of result.caveats) console.log(`[platform-cost] caveat: ${c}`);
+
+        // Under-recovery is the condition the whole pricing model exists to avoid, so it is
+        // worth waking someone for. A month with no orders is not under-recovery.
+        if (result.orders > 0 && result.netUsd < 0) {
+            await createNotification(
+                'Platform Cost not recovered',
+                `${result.month}: markup retained ${result.markupRetainedUsd} against `
+                + `${result.stripeFeeRecordedUsd || result.stripeFeeEstimatedUsd} Stripe and `
+                + `~${result.duffelExpectedUsd} Duffel — short by ${Math.abs(result.netUsd).toFixed(2)}. `
+                + `${result.orders} order(s), ${result.cancelled} cancelled. `
+                + 'Check against the Duffel invoice before retuning rates.',
+            );
+        }
+
+        // A drifted Stripe rate is the failure that hid the original problem: the model charges
+        // against a number that stopped being true and nothing says so.
+        if (
+            result.stripeRateObserved !== null
+            && Math.abs(result.stripeRateObserved - result.stripeRateConfigured) > STRIPE_RATE_DRIFT_TOLERANCE
+        ) {
+            await createNotification(
+                'Stripe rate has drifted from STRIPE_RATE',
+                `${result.month}: charges settled at ${(result.stripeRateObserved * 100).toFixed(2)}% `
+                + `while pricing.ts assumes ${(result.stripeRateConfigured * 100).toFixed(2)}%. `
+                + 'Every markup figure is derived from the configured rate, so this understates cost on every booking.',
+            );
+        }
+
+        res.json({ success: true, ...result });
     } catch (err) { next(err); }
 });
 

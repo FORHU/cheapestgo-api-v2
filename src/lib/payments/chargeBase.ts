@@ -121,3 +121,45 @@ export function resolveHotelChargeBase(
         absorbed: base - charged,
     };
 }
+
+export type DisplayedTotalResult =
+    | { ok: true; total: number; absorbed: number }
+    | { ok: false; code: 'PRICE_CHANGED'; message: string; serverPrice: number; currency: string };
+
+/**
+ * Never bill above the total the customer was shown — fee included.
+ *
+ * `resolveHotelChargeBase` already caps the *base* at what was displayed. This is the same
+ * rule applied one step later, to the figure a customer actually agrees to: the base plus the
+ * service fee. The fee is deterministic from the base except for its flat part, which is
+ * quoted in USD and converted at whatever rate is current, so a rate refresh between prebook
+ * and payment can move the total by a fraction of a cent to a few cents. Within the same
+ * tolerance the displayed total stands and the difference is absorbed; beyond it the
+ * customer is asked to confirm the new total rather than billed it.
+ *
+ * `displayedTotal` is optional because not every caller sends it. Without it there is
+ * nothing to hold the charge to, and the server's own figure is charged.
+ */
+export function capAtDisplayedTotal(
+    chargedTotal: number,
+    displayedTotal: number | null | undefined,
+    currency: string,
+): DisplayedTotalResult {
+    const shown = Number(displayedTotal);
+    if (!Number.isFinite(shown) || shown <= 0 || chargedTotal <= shown) {
+        return { ok: true, total: chargedTotal, absorbed: 0 };
+    }
+
+    const drift = (chargedTotal - shown) / chargedTotal;
+    if (drift > HOTEL_FX_DISPLAY_TOLERANCE) {
+        return {
+            ok: false,
+            code: 'PRICE_CHANGED',
+            message: 'The price has changed since you started checkout. Please review the updated total.',
+            serverPrice: Math.round(chargedTotal * 100) / 100,
+            currency: currency.toUpperCase(),
+        };
+    }
+
+    return { ok: true, total: shown, absorbed: Math.round((chargedTotal - shown) * 100) / 100 };
+}

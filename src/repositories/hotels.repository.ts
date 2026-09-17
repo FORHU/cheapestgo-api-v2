@@ -429,6 +429,74 @@ export class HotelsRepository {
         });
     }
 
+    /**
+     * Open a refund in the log, before any money moves (ported from v1's
+     * `createRefundRequest`).
+     *
+     * Written first so that a crash between Stripe issuing the refund and the booking being
+     * updated still leaves a row saying a refund of this amount was on its way for this
+     * booking — the difference between a trace and an afternoon in the Stripe dashboard.
+     * Returns null rather than throwing: the caller decides what a missing log costs.
+     */
+    async openRefund(input: {
+        bookingId:       string;
+        userId:          string;
+        refundType:      string;
+        requestedAmount: number;
+        penaltyAmount:   number;
+        currency:        string;
+        reason:          string;
+    }): Promise<string | null> {
+        try {
+            const snapshot = await prisma.booking_policy_snapshots.findUnique({
+                where:  { booking_id: input.bookingId },
+                select: { id: true },
+            });
+            const row = await prisma.refund_logs.create({
+                data: {
+                    booking_id:         input.bookingId,
+                    user_id:            input.userId,
+                    policy_snapshot_id: snapshot?.id ?? null,
+                    refund_type:        input.refundType,
+                    requested_amount:   input.requestedAmount,
+                    penalty_amount:     input.penaltyAmount,
+                    currency:           input.currency,
+                    status:             'pending',
+                    status_reason:      input.reason.slice(0, 500),
+                },
+                select: { id: true },
+            });
+            return row.id;
+        } catch (err: any) {
+            console.error('[refund_logs] could not open a refund:', err?.message);
+            return null;
+        }
+    }
+
+    /**
+     * Close a refund with what actually happened.
+     *
+     * **`failed` when no refund was issued.** v1's `processRefund` marked the row
+     * `processed`, with the full amount approved, whether or not Stripe had refunded
+     * anything — its caller then set the booking to `cancelled_refund_failed`, so the booking
+     * and the log disagreed about the one fact the log exists to record.
+     */
+    async closeRefund(refundLogId: string, outcome:
+        | { issued: true; approvedAmount: number; externalRef: string }
+        | { issued: false; reason: string },
+    ): Promise<void> {
+        await prisma.refund_logs.update({
+            where: { id: refundLogId },
+            data: outcome.issued
+                ? { status: 'processed', approved_amount: outcome.approvedAmount, external_ref: outcome.externalRef, processed_at: new Date() }
+                : { status: 'failed', status_reason: outcome.reason.slice(0, 500), processed_at: new Date() },
+        }).catch((err: any) => {
+            // Stripe has already done whatever it did; a log that failed to close does not
+            // undo it, and the pending row is still there to say so.
+            console.error(`[refund_logs] could not close ${refundLogId}:`, err?.message);
+        });
+    }
+
     /** The recorded terms a cancellation must be judged against, tiers included. */
     async findPolicySnapshot(bookingId: string) {
         const snapshot = await prisma.booking_policy_snapshots.findUnique({

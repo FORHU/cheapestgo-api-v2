@@ -12,6 +12,20 @@ import { redis } from '@/lib/redis';
 import { config } from '@/config';
 
 const router = Router();
+
+/**
+ * Where Google sends the browser back, quoted identically by both legs of the exchange.
+ *
+ * Google rejects the token exchange unless the authorize call and the token call name the
+ * same redirect_uri, so this is one function rather than the same string written twice — v1
+ * broke exactly this way when one of its two copies was edited.
+ *
+ * The router mounts at /api/v2, so the callback lives there too; building this without the
+ * version prefix points Google at a path that 404s.
+ */
+function googleRedirectUri(): string {
+    return `${config.API_URL}/api/v2/auth/google/callback`;
+}
 const controller = new AuthController();
 
 router.post('/register', authRateLimit, controller.register);
@@ -160,13 +174,10 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
         res.cookie('oauth_state', state, { ...COOKIE_OPTIONS, maxAge: 600_000 });
         res.cookie('oauth_provider', 'google', { ...COOKIE_OPTIONS, maxAge: 600_000 });
 
-        // The router mounts at /api/v2, so the callback lives there too. Building
-        // this without the version prefix points Google at a path that 404s.
-        const redirectUri = `${config.API_URL}/api/v2/auth/google/callback`;
 
         const params = new URLSearchParams({
             client_id:     config.GOOGLE_CLIENT_ID,
-            redirect_uri:  redirectUri,
+            redirect_uri:  googleRedirectUri(),
             response_type: 'code',
             scope:         'openid email profile',
             state,
@@ -228,9 +239,6 @@ router.get('/google/callback', async (req: Request, res: Response, next: NextFun
         res.clearCookie('oauth_provider', COOKIE_OPTIONS);
 
         // Exchange authorization code for tokens
-        // The router mounts at /api/v2, so the callback lives there too. Building
-        // this without the version prefix points Google at a path that 404s.
-        const redirectUri = `${config.API_URL}/api/v2/auth/google/callback`;
         const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -238,7 +246,7 @@ router.get('/google/callback', async (req: Request, res: Response, next: NextFun
                 code,
                 client_id:     config.GOOGLE_CLIENT_ID,
                 client_secret: config.GOOGLE_CLIENT_SECRET,
-                redirect_uri:  redirectUri,
+                redirect_uri:  googleRedirectUri(),
                 grant_type:    'authorization_code',
             }),
         });

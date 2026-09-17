@@ -6,11 +6,15 @@
  * register-device  POST X-Mobile-Api-Key — Expo push token registration
  * trips            GET  auth    — user's hotel + flight bookings
  * log              POST public  — client-side error/event logging
+ * flights/book     POST X-Mobile-Api-Key — the same booking service the website uses
+ * flights/confirm  POST X-Mobile-Api-Key — the same confirmation
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '@/middleware/auth.middleware';
+import { requireAuth, optionalAuth } from '@/middleware/auth.middleware';
+import { searchRateLimit as mobileSearchRateLimit } from '@/middleware/rate-limit.middleware';
+import { FlightsService } from '@/services/flights.service';
 import { prisma } from '@/lib/prisma';
 
 const router = Router();
@@ -171,6 +175,73 @@ router.post('/log', async (req: Request, res: Response) => {
         console.log(JSON.stringify({ _mobile_log: true, level, message, context, ts: new Date().toISOString() }));
     } catch { /* never fail on logging */ }
     res.json({ success: true });
+});
+
+// ── Mobile flight booking ────────────────────────────────────────────────────
+//
+// The app books through the same service the website does, so every rule that protects a
+// booking — the same-journey match on an expired offer, the pre-order reuse that stops a second
+// ticket being bought, the passport details, the guard that cancels an order nothing can pay
+// for — applies here too. v1 kept a second copy of the whole flow for mobile and had to fix
+// each of those twice; it had still not caught up on the order timeout.
+//
+// Authentication is the only real difference: the app sends a shared key rather than a session
+// cookie, and CSRF does not apply to it. A signed-in traveller is identified by their JWT when
+// the app has one; otherwise the booking is attributed to the guest account.
+
+/** The app's shared key, from admin settings or the environment. */
+async function mobileKeyValid(req: Request): Promise<boolean> {
+    const sent = req.headers['x-mobile-api-key'] as string | undefined;
+    if (!sent) return false;
+    const active = (await getAdminSetting('mobile_api_key')) ?? process.env.MOBILE_API_KEY ?? null;
+    return !!active && sent === active;
+}
+
+/**
+ * Who a mobile booking belongs to.
+ *
+ * The app may carry a real session; when it does not, the booking is attributed to the guest
+ * account so the row is never orphaned. Refused outright when neither exists, because a
+ * booking with no owner cannot be shown to anyone afterwards.
+ */
+function mobileUserId(req: Request): string | null {
+    return req.user?.sub ?? process.env.MOBILE_GUEST_USER_ID ?? null;
+}
+
+router.post('/flights/book', optionalAuth, mobileSearchRateLimit, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        if (!(await mobileKeyValid(req))) {
+            return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
+        const userId = mobileUserId(req);
+        if (!userId) {
+            return res.status(401).json({ success: false, error: 'Invalid session. Please log in again.' });
+        }
+
+        const result = await new FlightsService().book({ ...req.body, userId });
+        return res.json({ success: true, ...result });
+    } catch (err) { next(err); }
+});
+
+router.post('/flights/confirm', optionalAuth, mobileSearchRateLimit, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        if (!(await mobileKeyValid(req))) {
+            return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
+        const userId = mobileUserId(req);
+        if (!userId) {
+            return res.status(401).json({ success: false, error: 'Invalid session. Please log in again.' });
+        }
+
+        const { paymentIntentId, sessionId } = z.object({
+            paymentIntentId: z.string().min(1),
+            sessionId:       z.string().min(1),
+        }).parse(req.body);
+
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        const result  = await new FlightsService().confirm(paymentIntentId, sessionId, userId, baseUrl);
+        return res.json({ success: true, ...result });
+    } catch (err) { next(err); }
 });
 
 export default router;

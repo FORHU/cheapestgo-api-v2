@@ -1,4 +1,10 @@
 import React from 'react';
+import { canonicalBrandName } from '@/lib/brand';
+
+// A receipt is a financial record, so it must name the company the customer actually paid.
+// Both the visible brand and the PDF's own title and author metadata were literals, so a
+// Korean customer downloaded a receipt from a company they had never transacted with.
+const BRAND = canonicalBrandName(process.env.BRAND_NAME ?? process.env.NEXT_PUBLIC_BRAND_NAME);
 import { Document, Page, View, Text, StyleSheet } from '@react-pdf/renderer';
 
 interface InvoicePdfProps {
@@ -76,12 +82,12 @@ export function InvoicePdfDocument(props: InvoicePdfProps) {
     const showFlight = !!flightDetails;
 
     return (
-        <Document title={`CheapestGo Receipt ${invoiceNumber}`} author="CheapestGo">
+        <Document title={`${BRAND} Receipt ${invoiceNumber}`} author={BRAND}>
             <Page size="A4" style={s.page}>
 
                 <View style={s.headerRow}>
                     <View>
-                        <Text style={s.brand}>CheapestGo</Text>
+                        <Text style={s.brand}>{BRAND}</Text>
                         <Text style={s.tagline}>Your Travel Partner</Text>
                     </View>
                     <View>
@@ -162,11 +168,18 @@ export function InvoicePdfDocument(props: InvoicePdfProps) {
 
                 <View style={s.footer}>
                     <Text style={s.footerText}>
-                        Thank you for booking with CheapestGo. For support, contact{' '}
+                        Thank you for booking with {BRAND}. For support, contact{' '}
                         <Text style={s.footerEmail}>crm@myfarebox.com</Text>
                     </Text>
                     <Text style={[s.footerText, { marginTop: 4, opacity: 0.6 }]}>
-                        CheapestGo is a trading name of CheapestGo Travel Services.
+                        {/* FIXME (legal, not cosmetic): this read "CheapestGo is a trading
+                            name of CheapestGo Travel Services." Neither half is verified — the
+                            site footer and the TravelgateX contract both name FORHU Inc as the
+                            legal entity, and no company called "CheapestGo Travel Services"
+                            appears anywhere else in this codebase. The brand is now correct;
+                            the entity it claims to trade under still needs confirming by
+                            someone who knows what is registered. */}
+                        {BRAND} is a trading name of CheapestGo Travel Services.
                     </Text>
                 </View>
 

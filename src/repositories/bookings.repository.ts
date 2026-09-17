@@ -41,6 +41,38 @@ export class BookingsRepository {
         return results;
     }
 
+    /** The fields an amendment can change, as they stand before it — for the email's diff. */
+    async findAmendable(bookingId: string) {
+        return prisma.bookings.findFirst({
+            where:  { booking_id: bookingId },
+            select: {
+                id: true, user_id: true, property_name: true, property_image: true, room_name: true,
+                check_in: true, check_out: true, guests_adults: true, guests_children: true,
+                holder_first_name: true, holder_last_name: true, holder_email: true, special_requests: true,
+            },
+        });
+    }
+
+    async amendContact(bookingId: string, change: {
+        firstName: string; lastName: string; email: string; remarks: string | null;
+    }) {
+        await prisma.bookings.updateMany({
+            where: { booking_id: bookingId },
+            data: {
+                holder_first_name: change.firstName,
+                holder_last_name:  change.lastName,
+                holder_email:      change.email,
+                special_requests:  change.remarks,
+                updated_at:        new Date(),
+            },
+        });
+    }
+
+    /** A line in the admin notifications, so support can see a booking's contact changed. */
+    async notifyAdmins(title: string, description: string) {
+        await prisma.notifications.create({ data: { title, description, type: 'booking', user_id: null } }).catch(() => {});
+    }
+
     async findById(bookingId: string) {
         return prisma.bookings.findFirst({ where: { booking_id: bookingId } });
     }

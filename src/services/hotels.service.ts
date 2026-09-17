@@ -11,9 +11,17 @@ import { toClientCancelPolicy } from '@/lib/hotels/travelgatex';
 import { stripe } from '@/lib/stripe';
 import { AppError } from '@/middleware/error.middleware';
 import { prisma } from '@/lib/prisma';
-import { applyMarkup, toStripeAmount, HOTEL_MARKUP, BUNDLE_MARKUP, PREBOOK_QUOTE_TTL_MS } from '@/lib/pricing';
+import { toStripeAmount, fromStripeAmount, hotelServiceFee, PREBOOK_QUOTE_TTL_MS } from '@/lib/pricing';
 import { resolveHotelChargeBase } from '@/lib/payments/chargeBase';
 import { makeStrictConverter } from '@/lib/payments/convertStrict';
+import { capAtDisplayedTotal } from '@/lib/payments/chargeBase';
+import { snapshotFromPolicy } from '@/lib/policies/snapshotFromPolicy';
+import { sendTransactionalEmail } from '@/lib/email/send';
+import { buildHotelConfirmationHtml } from '@/lib/email/templates';
+import { policyEmailText } from '@/lib/email/policyText';
+import { bookingReferenceFromBytes, isBookingReference, mintBookingReference } from '@/lib/payments/bookingReference';
+import { extractStripeFee, STRIPE_FEE_EXPAND } from '@/lib/payments/stripeFee';
+import { canonicalBrandName } from '@/lib/brand';
 import { lockFx } from '@/lib/payments/fxLock';
 import { calculateCancellation } from '@/lib/policies/cancellationEngine';
 import { ExchangeRatesService } from '@/services/exchange-rates.service';
@@ -578,16 +586,53 @@ export class HotelsService {
             console.error('[prebook/tgx] Failed to persist quote — checkout will reject this prebookId:', persistErr);
         }
 
+        // ── What the customer is shown, produced here rather than in the browser ──
+        //
+        // The browser renders prices; it does not compute them. Converting and adding the
+        // service fee here means the figure on the checkout is made by the same code and the
+        // same rates createPayment charges from, so the two cannot drift. app-v2's checkout
+        // used to add a hardcoded 6% itself while the server charged 5.9%.
+        const quotedSubtotal = optionQuote.price?.net || 0;
+        const quotedTotal    = optionQuote.price?.gross || optionQuote.price?.net || 0;
+        const quotedTaxes    = (optionQuote.price?.gross || 0) - (optionQuote.price?.net || 0);
+        const quotedCurrency = String(optionQuote.price?.currency || currency).toUpperCase();
+        const displayCurrency = String(params.currency || quotedCurrency).toUpperCase();
+
+        let display: Record<string, unknown> | undefined;
+        try {
+            // Rates are needed to convert the room, and — because the fee's flat part is
+            // quoted in USD — whenever the display currency is not USD at all.
+            const needsRates = quotedCurrency !== displayCurrency || displayCurrency !== 'USD';
+            const convert = makeStrictConverter(needsRates ? await new ExchangeRatesService().getLiveRates() : null);
+            const to = (n: number) => Math.round(convert(n, quotedCurrency, displayCurrency) * 100) / 100;
+            const total = to(quotedTotal);
+            const fee   = hotelServiceFee(total, displayCurrency, convert);
+            display = {
+                currency:     displayCurrency,
+                subtotal:     to(quotedSubtotal),
+                taxes:        to(quotedTaxes),
+                total,
+                serviceFee:   fee.serviceFee,
+                chargedTotal: fee.chargedTotal,
+                converted:    quotedCurrency !== displayCurrency,
+            };
+        } catch (fxErr: any) {
+            // Left absent: the checkout says prices are still being confirmed rather than
+            // showing a total the charge might not match.
+            console.warn('[prebook/tgx] display conversion unavailable:', fxErr?.message);
+        }
+
         return {
             success: true,
             data: {
                 prebookId,
                 provider:   'travelgatex',
                 price: {
-                    subtotal: optionQuote.price?.net  || 0,
-                    taxes:    (optionQuote.price?.gross || 0) - (optionQuote.price?.net || 0),
-                    total:    optionQuote.price?.gross || optionQuote.price?.net || 0,
+                    subtotal: quotedSubtotal,
+                    taxes:    quotedTaxes,
+                    total:    quotedTotal,
                 },
+                ...(display ? { display } : {}),
                 surcharges:           optionQuote.surcharges || [],
                 currency:             optionQuote.price?.currency || currency,
                 cancellationPolicies: normalizeTgxCancelPolicy(optionQuote.cancelPolicy),
@@ -611,6 +656,8 @@ export class HotelsService {
         checkIn?:        string;
         checkOut?:       string;
         bundleFlightId?: string;
+        /** The total the checkout showed, service fee included. Nothing is billed above it. */
+        displayedTotal?: number;
     }) {
         const SUPPORTED_CURRENCIES = new Set([
             'usd', 'eur', 'gbp', 'aud', 'cad', 'sgd', 'hkd', 'jpy', 'krw',
@@ -654,9 +701,11 @@ export class HotelsService {
             }).catch(() => null);
 
             if (dup) {
-                throw Object.assign(
-                    new AppError(409, `You already have an active booking at ${params.propertyName} for overlapping dates.`, 'DUPLICATE_BOOKING'),
-                    { existingBookingId: dup.booking_id, existingCheckIn: dup.check_in, existingCheckOut: dup.check_out }
+                throw new AppError(
+                    409,
+                    `You already have an active booking at ${params.propertyName} for overlapping dates.`,
+                    'DUPLICATE_BOOKING',
+                    { existingBookingId: dup.booking_id, existingCheckIn: dup.check_in, existingCheckOut: dup.check_out },
                 );
             }
         }
@@ -686,24 +735,52 @@ export class HotelsService {
                 + `client=${params.amount} ${params.currency.toUpperCase()}`
                 + (resolved.serverPrice !== undefined ? ` server=${resolved.serverPrice}` : '')
             );
-            throw Object.assign(
-                new AppError(
-                    resolved.code === 'FX_UNAVAILABLE' ? 503 : 409,
-                    resolved.message,
-                    resolved.code,
-                ),
+            throw new AppError(
+                resolved.code === 'FX_UNAVAILABLE' ? 503 : 409,
+                resolved.message,
+                resolved.code,
                 resolved.serverPrice !== undefined
                     ? { serverPrice: resolved.serverPrice, currency: resolved.currency }
-                    : {},
+                    : undefined,
             );
         }
 
-        // Apply platform markup to the server's figure, never the client's.
-        const markupRate = params.bundleFlightId ? BUNDLE_MARKUP : HOTEL_MARKUP;
-        const pricing    = applyMarkup(resolved.base, markupRate);
+        // Platform markup on the server's figure, never the client's.
+        //
+        // One rate, bundled or not: bundling was never a discount line, only a swap to a
+        // lower rate, and the gap it spent is now an earmarked provision against
+        // TravelgateX's incoming connection fee (ADR-0036).
+        //
+        // Through hotelServiceFee, which is also what prebook's display block uses — the fee
+        // shown and the fee charged are one function of one base. The flat $0.40 of
+        // ADR-0036 is charged; this used to pass zero.
+        const fee = hotelServiceFee(
+            resolved.base,
+            params.currency,
+            // The flat part is quoted in USD, so it needs rates even when the room did not.
+            makeStrictConverter(params.currency.toUpperCase() === 'USD' ? null : (rates ?? await new ExchangeRatesService().getLiveRates())),
+        );
+
+        // The customer is never billed above the total they were shown, fee included.
+        const shown = capAtDisplayedTotal(fee.chargedTotal, params.displayedTotal, params.currency);
+        if (!shown.ok) {
+            console.warn(`[create-payment] Rejected (${shown.code}) prebookId=${params.prebookId.slice(0, 40)} shown=${params.displayedTotal} server=${shown.serverPrice} ${shown.currency}`);
+            throw new AppError(409, shown.message, shown.code, {
+                serverPrice: shown.serverPrice,
+                currency:    shown.currency,
+            });
+        }
+
+        const pricing = {
+            originalPrice: resolved.base,
+            chargedPrice:  shown.total,
+            markupAmount:  Math.round((shown.total - resolved.base) * 100) / 100,
+            markupRate:    fee.markupRate,
+            capped:        fee.capped,
+        };
         const stripeAmount = toStripeAmount(pricing.chargedPrice, params.currency);
 
-        console.log(`[create-payment] Hotel pricing: original=${pricing.originalPrice} ${params.currency}, charged=${pricing.chargedPrice}, markup=${(markupRate * 100).toFixed(0)}%${params.bundleFlightId ? ' (bundle)' : ' (standalone)'}`);
+        console.log(`[create-payment] Hotel pricing: original=${pricing.originalPrice} ${params.currency}, charged=${pricing.chargedPrice}, markup=${(pricing.markupRate * 100).toFixed(1)}%${pricing.capped ? ' (CAPPED)' : ''}${params.bundleFlightId ? ' (bundled with a flight — no longer discounted)' : ''}`);
 
         // Idempotency key â scoped to prebookId + amount + currency so a prebook
         // refresh (different amount) produces a new PI rather than a Stripe rejection.
@@ -713,18 +790,38 @@ export class HotelsService {
             .slice(0, 40);
         const idempotencyKey = `hotel-pi-${params.userId}-${prebookHash}`;
 
+        // Minted here rather than at confirmation, so it exists before the charge does. A
+        // charge whose booking later fails still took the customer's money and still has to
+        // be attributable — those are the hardest rows to trace, and giving them no reference
+        // leaves exactly the wrong gap.
+        //
+        // Derived from the idempotency key, never random: Stripe replays a key only when the
+        // parameters are identical, and this request is replayed whenever a customer steps
+        // back from payment and proceeds again. A random reference made every retry a
+        // "different request" under the same key — a 500, and no way to pay (QA BG-19).
+        const bookingReference = bookingReferenceFromBytes(
+            createHash('sha256').update(idempotencyKey).digest(),
+            canonicalBrandName(process.env.BRAND_NAME ?? process.env.NEXT_PUBLIC_BRAND_NAME),
+        );
+
         const paymentIntent = await stripe.paymentIntents.create({
             amount:         stripeAmount,
             currency:       currencyLower,
             capture_method: 'manual',
             metadata: {
                 prebookId:     params.prebookId.slice(0, 490),
+                // FORHU settles several products into one Stripe account and one pooled daily
+                // payout, so the bank line cannot be split per product. This is what makes a
+                // charge attributable to this platform from inside Stripe.
+                bookingReference,
                 userId:        params.userId,
                 holderEmail:   params.holderEmail || '',
                 type:          params.bundleFlightId ? 'hotel_bundle' : 'hotel',
                 bundleFlightId: params.bundleFlightId || '',
                 originalPrice: String(pricing.originalPrice),
-                markupRate:    String(markupRate),
+                // The effective rate, after the flat component and the cap — the only one
+                // consistent with the amounts stored beside it.
+                markupRate:    String(pricing.markupRate),
                 markupAmount:  String(pricing.markupAmount),
             },
             description: `CG: ${params.propertyName || 'Hotel'} â ${params.roomName || 'Room'}`,
@@ -736,6 +833,11 @@ export class HotelsService {
             data: {
                 clientSecret:    paymentIntent.client_secret!,
                 paymentIntentId: paymentIntent.id,
+                // What the intent is for, so the payment step renders the figure it is about
+                // to confirm rather than one the browser worked out.
+                chargedTotal:    pricing.chargedPrice,
+                serviceFee:      pricing.markupAmount,
+                currency:        params.currency.toUpperCase(),
             },
         };
     }
@@ -764,6 +866,13 @@ export class HotelsService {
     }) {
         const pi = await stripe.paymentIntents.retrieve(params.paymentIntentId);
         if (pi.metadata.userId !== params.userId) throw new AppError(403, 'Payment does not belong to this user', 'FORBIDDEN');
+
+        // Read off the PaymentIntent, never accepted from the request body: the client must
+        // not get to choose the identifier a payment is filed under. Absent only for charges
+        // taken before references existed.
+        const paidReference = isBookingReference(pi.metadata?.bookingReference)
+            ? pi.metadata.bookingReference
+            : undefined;
         if (pi.status !== 'requires_capture') throw new AppError(402, `Payment not authorized (status: ${pi.status})`, 'PAYMENT_REQUIRED');
 
         // Idempotency: if booking already exists for this PI, return it
@@ -781,7 +890,16 @@ export class HotelsService {
         const children       = params.children ?? 0;
         const currency       = params.currency || 'USD';
         const guests         = params.guests   || [];
-        const clientReference = `FORHU-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+        // The reference OTV files the reservation under, and the one a cancellation has to
+        // quote — the supplier reference is rejected by OTV.
+        //
+        // Was `FORHU-<millis>-<rand>`. FORHU Inc owns the Stripe account every FORHU product
+        // settles into, so that prefix named the one thing all of them share and could never
+        // answer "which project did this money come from". It now comes from the
+        // PaymentIntent, so the booking and the charge carry the same reference; a booking
+        // taken before references existed falls back to a fresh one.
+        const clientReference = paidReference
+            ?? mintBookingReference(canonicalBrandName(process.env.BRAND_NAME ?? process.env.NEXT_PUBLIC_BRAND_NAME));
 
         const adultPaxes = Array(adults).fill(null).map((_, i) => ({
             name: guests[i]?.firstName || params.holder.firstName,
@@ -860,7 +978,10 @@ export class HotelsService {
         let totalPrice: number;
         let storedCurrency = currency;
         try {
-            totalPrice = pi.amount / 100;
+            // Not `/ 100`: KRW has no minor unit, so dividing records a ₩1,200,000 booking
+            // as ₩12,000. AirangGo is Korea-locked, which makes this a primary market rather
+            // than an edge case.
+            totalPrice = fromStripeAmount(pi.amount, pi.currency || 'usd');
             storedCurrency = (pi.currency || 'usd').toUpperCase();
         } catch {
             totalPrice = params.quotedPrice ?? tgxPrice;
@@ -879,40 +1000,30 @@ export class HotelsService {
             })),
         } : null);
 
-        // The supplier's penalty steps, cheapest deadline first. A refundable rate is
-        // rarely refundable outright — it is usually free until some date and then
-        // charged, and those steps are what a cancellation is judged against.
-        const cancelTiers = ((storedCancelPolicy?.cancelPolicyInfos ?? []) as any[])
-            .map((p: any) => ({
-                cancelDeadline: p.cancelTime ? new Date(p.cancelTime) : null,
-                penaltyAmount:  Number(p.amount) || 0,
-                penaltyType:    String(p.type || 'fixed').toUpperCase() === 'PERCENT' ? 'percent' : 'fixed',
-                currency:       p.currency || storedCurrency,
-            }))
-            .filter((t): t is { cancelDeadline: Date; penaltyAmount: number; penaltyType: string; currency: string } =>
-                t.cancelDeadline instanceof Date && !isNaN(t.cancelDeadline.getTime()))
-            .sort((a, b) => a.cancelDeadline.getTime() - b.cancelDeadline.getTime());
+        // The terms this booking is held to. Derived by the same function the backfill uses
+        // for bookings taken before snapshots existed, so a backfilled booking and one
+        // confirmed today are judged by one rule.
+        const terms = snapshotFromPolicy(storedCancelPolicy, storedCurrency);
+        const { policyType } = terms;
 
-        // A refundable rate with penalty steps is 'tiered', not 'free_cancellation'.
-        // Collapsing it to the latter is what let a cancellation past the free window
-        // be refunded in full: the terms said "free", and nothing recorded the steps.
-        const policyType: 'free_cancellation' | 'non_refundable' | 'tiered' =
-            !isRefundable      ? 'non_refundable'
-            : cancelTiers.length ? 'tiered'
-            : 'free_cancellation';
-
-        // The moment the rate stops being free: the earliest penalty deadline.
-        const freeCancelDeadline = isRefundable && cancelTiers.length
-            ? cancelTiers[0].cancelDeadline
-            : null;
-
-        // Capture Stripe payment
-        await stripe.paymentIntents.capture(params.paymentIntentId);
+        // Capture Stripe payment.
+        //
+        // Expanded on the way back so the fee Stripe really took can be recorded beside the
+        // booking. `STRIPE_RATE` in pricing.ts has to be an estimate — the markup is computed
+        // before a charge exists — but nothing ever checked it against anything, and it
+        // carried Stripe's 2.9% headline while every live charge on this account settles at
+        // 4.4%. The balance transaction says the exact figure, for free, and only exists once
+        // the payment is captured. See ADR-0036.
+        const captured = await stripe.paymentIntents.capture(params.paymentIntentId, {
+            expand: STRIPE_FEE_EXPAND,
+        });
+        const stripeFee = extractStripeFee(captured);
 
         // Save booking to DB (non-fatal â provider already confirmed)
         const providerConfirmed = true;
+        let bookingRow: { id: string } | null = null;
         try {
-            await prisma.bookings.create({
+            bookingRow = await prisma.bookings.create({
                 data: {
                     booking_id:        bookingId,
                     user_id:           params.userId,
@@ -935,7 +1046,10 @@ export class HotelsService {
                     policy_type:       policyType,
                     cancellation_policy: storedCancelPolicy ? storedCancelPolicy : undefined,
                     provider:          'travelgatex',
-                    provider_metadata: { supplierRef, hotelCode, clientReference },
+                    // The recorded fee rides along rather than being threaded through a
+                    // second write: a booking that exists must never be jeopardised by a
+                    // reporting figure, and every field of it is optional for that reason.
+                    provider_metadata: { supplierRef, hotelCode, clientReference, ...stripeFee },
                     payment_intent_id: params.paymentIntentId,
                     supplier_cost:     tgxPrice,
                     charged_price:     totalPrice,
@@ -975,17 +1089,42 @@ export class HotelsService {
         // which is the safe direction (ADR-0023).
         try {
             await this.repo.savePolicySnapshot({
-                bookingId:          bookingId,
-                policyType,
-                summary:            isRefundable ? 'Refundable rate' : 'Non-refundable rate',
-                refundableTag:      isRefundable ? 'RFN' : 'NRFN',
-                freeCancelDeadline,
-                rawResponse:        storedCancelPolicy ?? {},
-                tiers:              cancelTiers,
+                bookingId,
+                ...terms,
+                rawResponse: storedCancelPolicy ?? {},
             });
         } catch (policyErr) {
             console.error('[confirm] Policy snapshot failed — cancellation will need support:', policyErr);
         }
+
+        // The confirmation the guest is actually owed. Fire-and-forget on purpose: the
+        // booking exists and the money has moved, so a mail outage must not turn a
+        // successful booking into a failed response. A send that fails leaves a row in
+        // email_logs for the retry job rather than disappearing.
+        void sendTransactionalEmail({
+            bookingId,
+            to:        params.holder.email,
+            subject:   `Booking Confirmed — ${params.propertyName || 'your stay'}`,
+            emailType: 'confirmation',
+            html: buildHotelConfirmationHtml({
+                bookingRef:      bookingId,
+                bookingDbId:     bookingRow?.id ?? null,
+                guestName:       `${params.holder.firstName} ${params.holder.lastName}`.trim(),
+                propertyName:    params.propertyName || '',
+                propertyImage:   params.propertyImage ?? null,
+                roomName:        params.roomName || '',
+                checkIn:         params.checkIn,
+                checkOut:        params.checkOut,
+                nights:          Math.max(1, Math.round((new Date(params.checkOut).getTime() - new Date(params.checkIn).getTime()) / 86_400_000)),
+                adults,
+                children,
+                totalPrice,
+                currency:        storedCurrency,
+                discountAmount:  params.discountAmount ?? 0,
+                policyText:      policyEmailText(terms),
+                specialRequests: params.specialRequests ?? null,
+            }),
+        }).catch((err) => console.error('[confirm] Confirmation email failed:', err?.message));
 
         console.log(JSON.stringify({ _event: 'tgx_confirmed', bookingId, supplierRef, userId: params.userId, email: params.holder.email, checkIn: params.checkIn, checkOut: params.checkOut, timestamp: new Date().toISOString() }));
 
@@ -1064,6 +1203,20 @@ export class HotelsService {
         let stripeRefundId: string | undefined;
         let stripeError: string | undefined;
 
+        // Logged before any money moves, so a crash between Stripe and the update below
+        // still leaves a trace of the refund that was on its way.
+        const refundLogId = paymentIntentId && cancellation.refundable && cancellation.refundAmount > 0
+            ? await this.repo.openRefund({
+                bookingId:       bookingRef,
+                userId,
+                refundType:      cancellation.refundType,
+                requestedAmount: cancellation.refundAmount,
+                penaltyAmount:   cancellation.penaltyAmount,
+                currency:        cancellation.currency,
+                reason:          cancellation.message,
+            })
+            : null;
+
         if (paymentIntentId) {
             try {
                 const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
@@ -1109,6 +1262,13 @@ export class HotelsService {
                 stripeError = stripeErr.message;
                 console.error('[hotels.cancelBooking] Stripe refund failed:', stripeError);
             }
+        }
+
+        // 4b. Close the log with what actually happened.
+        if (refundLogId) {
+            await this.repo.closeRefund(refundLogId, stripeRefundId
+                ? { issued: true, approvedAmount: cancellation.refundAmount, externalRef: stripeRefundId }
+                : { issued: false, reason: stripeError ?? 'No refund was issued' });
         }
 
         // 5. Update booking status in DB

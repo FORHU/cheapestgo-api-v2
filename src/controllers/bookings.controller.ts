@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { AppError } from '@/middleware/error.middleware';
 import { z } from 'zod';
 import { BookingsService } from '@/services/bookings.service';
 
@@ -25,6 +26,14 @@ export class BookingsController {
     };
 
     // ── Saved trips ───────────────────────────────────────────────────────────
+
+    amend = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const body = req.body ?? {};
+            if (!body.bookingId) throw new AppError(400, 'bookingId is required', 'VALIDATION_ERROR');
+            res.json(await svc.amend(req.user!.sub, body));
+        } catch (err) { next(err); }
+    };
 
     getSavedTrips = async (req: Request, res: Response, next: NextFunction) => {
         try {

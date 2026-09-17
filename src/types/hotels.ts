@@ -219,38 +219,10 @@ export interface AutocompleteResult {
     code?: string;
 }
 
-// ─── Pricing ─────────────────────────────────────────────────────────────────
-
-export const HOTEL_MARKUP  = 0; // disabled — restore to 0.15 when client is ready to charge
-export const BUNDLE_MARKUP = 0; // disabled — restore to 0.12 when client is ready to charge
-
-export interface MarkupResult {
-    originalPrice: number;
-    chargedPrice: number;
-    markupAmount: number;
-}
-
-export function applyMarkup(amount: number, rate: number): MarkupResult {
-    const chargedPrice = Math.round(amount * (1 + rate) * 100) / 100;
-    return {
-        originalPrice: amount,
-        chargedPrice,
-        markupAmount: chargedPrice - amount,
-    };
-}
-
-/**
- * Convert a decimal price to Stripe's integer unit for a given currency.
- * Zero-decimal currencies (JPY, KRW, etc.) pass through as-is.
- */
-const ZERO_DECIMAL_CURRENCIES = new Set([
-    'jpy', 'krw', 'vnd', 'idr', 'clp', 'gnf', 'mga', 'pyg', 'rwf', 'ugx',
-    'xaf', 'xof', 'bif', 'djf', 'kmf',
-]);
-
-export function toStripeAmount(amount: number, currency: string): number {
-    if (ZERO_DECIMAL_CURRENCIES.has(currency.toLowerCase())) {
-        return Math.round(amount);
-    }
-    return Math.round(amount * 100);
-}
+// Pricing lives in @/lib/pricing, not here.
+//
+// This file used to carry a second HOTEL_MARKUP, BUNDLE_MARKUP, applyMarkup and
+// toStripeAmount — all unimported, both rates hardcoded to 0 as "disabled", and a
+// zero-decimal currency list that disagreed with the real one. Nothing read them, so
+// nothing was broken; what they were was a trap for whoever reached for a markup helper
+// and found this one first.

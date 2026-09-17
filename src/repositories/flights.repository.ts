@@ -114,6 +114,35 @@ export class FlightsRepository {
 
     // ─── Duplicate booking guard ───────────────────────────────────────────────
 
+    /**
+     * A user's recent booking sessions that bought a Duffel order — the candidates for reusing
+     * one instead of buying the same trip twice. See preorderReuse.
+     */
+    async findRecentPreOrderSessions(userId: string, since: Date) {
+        return prisma.booking_sessions.findMany({
+            where: {
+                user_id: userId,
+                duffel_pre_order_id: { not: null },
+                created_at: { gte: since },
+            },
+            orderBy: { created_at: 'desc' },
+            take: 20,
+            select: {
+                id: true, status: true, duffel_pre_order_id: true, duffel_pre_order_pnr: true,
+                duffel_pre_order_tickets: true, duffel_pre_order_ticketed: true,
+                payment_intent_id: true, flight: true, created_at: true,
+            },
+        });
+    }
+
+    /** Retire a session whose order was superseded, so it stops presenting itself for reuse. */
+    async expireSessionsForPreOrder(orderId: string) {
+        await prisma.booking_sessions.updateMany({
+            where: { duffel_pre_order_id: orderId },
+            data:  { status: 'expired' },
+        });
+    }
+
     async getActiveBookingsForUser(userId: string): Promise<{ id: string }[]> {
         return prisma.flight_bookings.findMany({
             where: {

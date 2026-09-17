@@ -12,11 +12,17 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
+import { getDuffelOrder } from '@/lib/flights/duffel';
+import { withBookedItinerary } from '@/lib/flights/duffelOrderSegments';
+import { ticketNumbersFrom, buildSeatMap } from '@/lib/flights/duffelTickets';
+import { awaitBookingRow } from '@/lib/flights/awaitBookingRow';
+import { fromStripeAmount } from '@/lib/pricing';
 import { prisma } from '../lib/prisma';
 import { mystiflyRequest } from '../lib/flights/mystifly';
 import { stripe } from '../lib/stripe';
 import { lockFx } from '../lib/payments/fxLock';
 import { searchFlights, saveSearch } from '@/lib/flights/search';
+import { sendFlightConfirmationEmail } from '@/lib/email/flightConfirmation';
 import type { FlightOffer } from '@/types/flights';
 
 const internalRouter = Router();
@@ -61,11 +67,17 @@ internalRouter.post('/create-booking', requireInternalAuth, async (req: Request,
         `;
 
         if (locked.length === 0) {
-            // Check if already booked (idempotent)
-            const existing = await prisma.flight_bookings.findFirst({
-                where: { session_id: sessionId },
-                select: { id: true, pnr: true, status: true },
-            });
+            // Someone else holds this session. That is not a failure — it is the other path
+            // (the Stripe webhook, or the confirm fallback) part-way through writing the
+            // booking. Answering "not found" before their insert lands is what told a
+            // traveller their card had not been charged while the ticket was being issued.
+            const existing = await awaitBookingRow(
+                (id) => prisma.flight_bookings.findFirst({
+                    where:  { session_id: id },
+                    select: { id: true, pnr: true, status: true },
+                }),
+                sessionId,
+            );
 
             if (existing) {
                 return res.status(200).json({
@@ -140,7 +152,9 @@ async function handleDuffel(
     if (paymentIntentId) {
         try {
             const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
-            confirmedPrice = pi.amount / 100;
+            // The currency decides the scale: KRW has no minor unit, so dividing would
+            // record a ₩1,200,000 booking as ₩12,000.
+            confirmedPrice = fromStripeAmount(pi.amount, pi.currency ?? 'usd');
             confirmedCurrency = (pi.currency ?? 'usd').toUpperCase();
         } catch { /* non-critical */ }
     }
@@ -184,8 +198,18 @@ async function handleDuffel(
 
     const bookingId = booking.id;
 
-    // Insert flight_segments
-    await insertFlightSegments(bookingId, flight);
+    // Insert flight_segments — from the order Duffel is actually holding.
+    //
+    // This used to write `booking_sessions.flight`: the itinerary the traveller *selected*,
+    // which is client-supplied and not necessarily the one that got ticketed — the
+    // expired-offer path books from a freshly fetched offer. Any drift showed up as a
+    // confirmation email and a trips page describing a flight the PNR is not for. The stored
+    // payload is the fallback for an order with no readable slices.
+    const bookedOrder = await getDuffelOrder(preOrderId).catch((err: any) => {
+        console.warn(`[create-booking] Could not read order ${preOrderId} for its itinerary: ${err?.message}`);
+        return null;
+    });
+    await insertFlightSegments(bookingId, bookedOrder ? withBookedItinerary(flight, bookedOrder) : flight);
 
     // Insert passengers
     await insertPassengers(bookingId, passengers, preOrderTickets);
@@ -195,6 +219,12 @@ async function handleDuffel(
         UPDATE booking_sessions SET status = 'completed', completed_at = NOW()
         WHERE id = ${sessionId}::uuid
     `;
+
+    // The booking exists and the money has moved, so a mail outage must never turn a
+    // successful booking into a failed response — a failed send leaves a row in email_logs
+    // for the retry job instead.
+    await sendFlightConfirmationEmail(bookingId)
+        .catch((err) => console.error('[create-booking] Confirmation email failed:', err?.message));
 
     console.log(`[create-booking] Duffel done. bookingId=${bookingId} pnr=${preOrderPnr} status=${bookingStatus}`);
 
@@ -279,7 +309,9 @@ async function handleMystifly(
     if (paymentIntentId) {
         try {
             const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
-            confirmedPrice = pi.amount / 100;
+            // The currency decides the scale: KRW has no minor unit, so dividing would
+            // record a ₩1,200,000 booking as ₩12,000.
+            confirmedPrice = fromStripeAmount(pi.amount, pi.currency ?? 'usd');
             confirmedCurrency = (pi.currency ?? 'usd').toUpperCase();
         } catch { /* non-critical */ }
     }
@@ -321,6 +353,9 @@ async function handleMystifly(
         UPDATE booking_sessions SET status = 'completed', completed_at = NOW()
         WHERE id = ${sessionId}::uuid
     `;
+
+    await sendFlightConfirmationEmail(bookingId)
+        .catch((err) => console.error('[create-booking] Confirmation email failed:', err?.message));
 
     console.log(`[create-booking] Mystifly done. bookingId=${bookingId} pnr=${pnr}`);
 
@@ -402,12 +437,25 @@ async function insertFlightSegments(bookingId: string, flight: any) {
             const arrTime = seg.arrival?.time ?? seg.arriving_at ?? seg.arrivalTime ?? null;
             const origin = seg.origin?.iata_code ?? seg.origin?.airport ?? seg.origin ?? '';
             const destination = seg.destination?.iata_code ?? seg.destination?.airport ?? seg.destination ?? '';
+            // `airline` may be a normalised object ({ code, name }), a raw carrier object, or a
+            // plain IATA string — never insert the object itself, which coerces to the literal
+            // "[object Object]" in this text column.
             const airline =
                 (typeof seg.airline === 'object'
                     ? seg.airline?.code ?? seg.airline?.iata_code
                     : seg.airline)
                 ?? seg.airline_iata_code
+                ?? seg.operating_carrier?.iata_code
+                ?? seg.marketing_carrier?.iata_code
                 ?? '';
+
+            // A segment with no readable times is skipped, not dated to now. `new Date()` here
+            // wrote today's date onto a leg of a future trip, which reads as a real departure
+            // on every screen that shows it — a missing leg at least looks missing.
+            if (!depTime || !arrTime) {
+                console.error(`[create-booking] Segment for booking ${bookingId} has no departure/arrival time — skipped rather than dated to now`);
+                continue;
+            }
 
             await prisma.flight_segments.create({
                 data: {
@@ -416,8 +464,8 @@ async function insertFlightSegments(bookingId: string, flight: any) {
                     flight_number: seg.flightNumber ?? seg.flight_number ?? '',
                     origin,
                     destination,
-                    departure: depTime ? new Date(depTime) : new Date(),
-                    arrival: arrTime ? new Date(arrTime) : new Date(),
+                    departure: new Date(depTime),
+                    arrival: new Date(arrTime),
                     cabin_class: seg.cabinClass ?? seg.cabin_class ?? 'economy',
                     itinerary_index: seg.itineraryIndex ?? 0,
                     segment_index: seg.segmentIndex ?? seg.itineraryIndex ?? 0,
@@ -500,10 +548,7 @@ internalRouter.post('/issue-ticket', requireInternalAuth, async (req: Request, r
             }
 
             const { data: order } = await duffelRes.json() as any;
-            const documents: any[] = order?.documents ?? [];
-            const ticketNumbers = documents
-                .filter((d: any) => d.type === 'electronic_ticket')
-                .map((d: any) => d.document_number);
+            const ticketNumbers = ticketNumbersFrom(order);
 
             if (ticketNumbers.length === 0) {
                 throw { code: 'NO_TICKETS' };
@@ -516,6 +561,27 @@ internalRouter.post('/issue-ticket', requireInternalAuth, async (req: Request, r
                     ticket_numbers = ${JSON.stringify(ticketNumbers)}::jsonb
                 WHERE id = ${bookingId}::uuid
             `;
+
+            // The numbers and seats also go on the passengers, which is where the trips page,
+            // the confirmation email and the admin itinerary read them from. Written by
+            // position: Duffel returns its passengers in the order they were booked in.
+            const seatMap = buildSeatMap(order);
+            const duffelPaxIds: string[] = (order?.passengers ?? []).map((p: any) => p.id);
+            const paxRows = await tx.$queryRaw<{ id: string }[]>`
+                SELECT id FROM passengers WHERE booking_id = ${bookingId}::uuid ORDER BY created_at ASC
+            `;
+            for (let i = 0; i < paxRows.length; i++) {
+                const ticketNumber = ticketNumbers[i] ?? null;
+                const seatNumber   = duffelPaxIds[i] ? (seatMap.get(duffelPaxIds[i]) ?? null) : null;
+                if (ticketNumber === null && seatNumber === null) continue;
+                // COALESCE so a later run cannot blank what an earlier one already recorded.
+                await tx.$executeRaw`
+                    UPDATE passengers
+                    SET ticket_number = COALESCE(${ticketNumber}, ticket_number),
+                        seat_number   = COALESCE(${seatNumber}, seat_number)
+                    WHERE id = ${paxRows[i].id}::uuid
+                `;
+            }
 
             return { bookingId: booking.id, pnr: booking.pnr, ticketNumbers };
         });

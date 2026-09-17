@@ -10,6 +10,7 @@ router.post('/bags',                 ctrl.bags);
 router.post('/seat-map',             ctrl.seatMap);
 router.post('/fare-rules',           ctrl.fareRules);
 router.post('/offer-refresh',        ctrl.offerRefresh);
+router.post('/revalidate',           ctrl.revalidate);
 router.get( '/price-calendar',       ctrl.priceCalendar);
 router.post('/price-calendar-live',  ctrl.priceCalendarLive);
 

@@ -8,11 +8,15 @@
 
 import { config } from '@/config';
 import { FlightResult, FlightSearchParams } from '@/types/flights';
+import { PROVIDER_ATTEMPT_TIMEOUT_MS, PROVIDER_RETRY_BACKOFF_MS } from '@/lib/flights/searchBudget';
+import { sameItineraryOffers } from '@/lib/flights/offerItineraryMatch';
 
 const DUFFEL_BASE = 'https://api.duffel.com';
 const DUFFEL_VERSION = 'v2';
-const SEARCH_TIMEOUT_MS = 12_000;
-const MAX_RETRIES = 2;
+// The ladder is sized in searchBudget so the orchestrator ceiling and the browser abort are
+// derived from it rather than guessed alongside it. One retry, not two: a second only starts
+// after 26 seconds have already gone, and nothing it returns arrives while anyone is watching.
+const MAX_RETRIES = PROVIDER_RETRY_BACKOFF_MS.length;
 
 // ─── Header factory ───────────────────────────────────────────────────────────
 
@@ -36,6 +40,19 @@ export function getDuffelToken(): string {
 }
 
 // ─── Offer search ─────────────────────────────────────────────────────────────
+
+/**
+ * The provider tried and could not answer — a 429, a 5xx, a timeout, an unreachable host.
+ * Distinct from an empty offer list, which is a real answer about the route. The
+ * orchestrator turns this into a named `failedProviders` entry so the results page can
+ * offer a retry instead of telling the traveller "No flights found" over an outage.
+ */
+export class DuffelSearchError extends Error {
+    constructor(message: string, readonly status?: number) {
+        super(message);
+        this.name = 'DuffelSearchError';
+    }
+}
 
 export async function searchDuffel(params: FlightSearchParams): Promise<FlightResult[]> {
     const token = config.DUFFEL_ACCESS_TOKEN;
@@ -82,6 +99,7 @@ export async function searchDuffel(params: FlightSearchParams): Promise<FlightRe
 
     const startMs = Date.now();
     let lastStatus = 0;
+    let lastErrMsg = '';
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
@@ -89,7 +107,7 @@ export async function searchDuffel(params: FlightSearchParams): Promise<FlightRe
                 method: 'POST',
                 headers: duffelHeaders(),
                 body: JSON.stringify(body),
-                signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+                signal: AbortSignal.timeout(PROVIDER_ATTEMPT_TIMEOUT_MS),
             });
             lastStatus = res.status;
 
@@ -97,20 +115,21 @@ export async function searchDuffel(params: FlightSearchParams): Promise<FlightRe
                 const errData: any = await (res.json() as Promise<any>).catch(() => ({}));
                 const errMsg = `Duffel ${res.status}: ${JSON.stringify(errData)}`;
 
-                if (res.status === 429 && attempt < MAX_RETRIES) {
-                    const retryAfter = parseInt(res.headers.get('Retry-After') ?? '5', 10);
-                    const waitMs = Math.min(retryAfter * 1000, 10_000);
-                    console.warn(`[Duffel] Rate limited — waiting ${waitMs}ms`);
-                    await sleep(waitMs);
-                    continue;
-                }
-                if (res.status === 500 && attempt < MAX_RETRIES) {
-                    await sleep(2000 * (attempt + 1));
+                lastErrMsg = errMsg;
+
+                // 429 is an account-level rate limit; retrying immediately just generates
+                // more of them, so it never retries. Any other 5xx gets the ladder.
+                if (res.status >= 500 && attempt < MAX_RETRIES) {
+                    await sleep(PROVIDER_RETRY_BACKOFF_MS[attempt]);
                     continue;
                 }
 
-                console.error(`[Duffel] search error (${res.status}):`, errMsg);
-                return [];
+                if (res.status === 429) {
+                    console.warn(`[Duffel] Rate limited (429). Retry-After: ${res.headers.get('Retry-After') ?? 'unknown'}s — not attempted further.`);
+                } else {
+                    console.error(`[Duffel] search error (${res.status}):`, errMsg);
+                }
+                break;
             }
 
             const json: any = await res.json();
@@ -120,18 +139,25 @@ export async function searchDuffel(params: FlightSearchParams): Promise<FlightRe
             return offers.map(o => parseDuffelOffer(o, params.cabinClass));
 
         } catch (err: any) {
+            lastErrMsg = err.message;
             const isTimeout = err.name === 'TimeoutError' || err.name === 'AbortError';
             if (isTimeout && attempt < MAX_RETRIES) {
-                await sleep(1500 * (attempt + 1));
+                await sleep(PROVIDER_RETRY_BACKOFF_MS[attempt]);
                 continue;
             }
-            console.error('[Duffel] search failed after retries:', err.message);
-            return [];
+            console.error('[Duffel] search failed:', err.message);
+            break;
         }
     }
 
-    console.error(`[Duffel] Giving up after ${MAX_RETRIES} retries. Last status: ${lastStatus}`);
-    return [];
+    // Reached only when every attempt failed. Throwing — rather than returning [] — is what
+    // lets the orchestrator name Duffel in `failedProviders`, so the page offers a retry
+    // instead of telling the traveller there are no flights on the route.
+    console.error(`[Duffel] Giving up after ${MAX_RETRIES} retr${MAX_RETRIES === 1 ? 'y' : 'ies'}. Last status: ${lastStatus}`);
+    throw new DuffelSearchError(
+        `Duffel search failed${lastStatus ? ` (HTTP ${lastStatus})` : ''}: ${lastErrMsg || 'no response'}`,
+        lastStatus || undefined,
+    );
 }
 
 // ─── Balance check ────────────────────────────────────────────────────────────
@@ -230,6 +256,17 @@ export async function refreshDuffelOffer(rawOffer: any): Promise<any[]> {
 
 // ─── Order placement ──────────────────────────────────────────────────────────
 
+/**
+ * How long to wait on POST /air/orders before giving up.
+ *
+ * 130s is Duffel's documented client-timeout floor for order creation, not a generous
+ * margin. **Aborting does not cancel the order** — Duffel completes the airline booking
+ * regardless — so a shorter bound does not save the traveller from a slow airline, it just
+ * hides a real, paid PNR from this system: the traveller is told the booking failed, the
+ * balance is debited, and nothing links the two. This was 45s.
+ */
+export const ORDER_CREATE_TIMEOUT_MS = 130_000;
+
 export interface PlaceDuffelOrderParams {
     rawOffer: any;
     passengers: any[];
@@ -248,13 +285,13 @@ export type PlaceDuffelOrderResult =
     | { kind: 'success'; order: any; finalTotal: string; finalCurrency: string; usedOffer: any }
     | { kind: 'price_changed'; oldPrice: number; newPrice: number; currency: string }
     | { kind: 'offer_replaced'; newOfferId: string; newOffer: any }
-    | { kind: 'error'; status: number; data: any };
+    | { kind: 'error'; status: number; data: any; timedOut?: boolean };
 
 export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<PlaceDuffelOrderResult> {
     const {
         rawOffer, seatServiceIds, bagServiceIds, confirmedPrice,
         priceTolerance, idempotencyKey, refreshPoolSize = 3,
-        orderTimeoutMs = 45_000,
+        orderTimeoutMs = ORDER_CREATE_TIMEOUT_MS,
     } = params;
 
     const token = getDuffelToken();
@@ -279,6 +316,8 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
 
     interface TryResult {
         isPriceChangedError: boolean; isOfferUnavailable: boolean;
+        /** The request was aborted; the order may still exist at Duffel. */
+        timedOut?: boolean;
         oldPrice?: number; newPrice?: number; newCurrency?: string;
         res?: Response; data?: any; finalTotal?: string; finalCurrency?: string;
     }
@@ -306,8 +345,10 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
         } catch (fetchErr: any) {
             clearTimeout(tmo);
             if (fetchErr?.name === 'AbortError') {
+                // The request is gone; the order may well not be. Whoever handles this result
+                // has to look for it — see findOrderFromTimedOutAttempt.
                 const synRes = new Response(null, { status: 504 });
-                return { isPriceChangedError: false, isOfferUnavailable: false, res: synRes, data: { errors: [{ code: 'timeout', message: 'Airline booking system timed out. Please try again.' }] }, finalTotal: currentTotal, finalCurrency: currentCurrency };
+                return { isPriceChangedError: false, isOfferUnavailable: false, timedOut: true, res: synRes, data: { errors: [{ code: 'timeout', message: 'Airline booking system timed out. Please try again.' }] }, finalTotal: currentTotal, finalCurrency: currentCurrency };
             }
             throw fetchErr;
         }
@@ -402,7 +443,9 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
         return { kind: 'success', order: attempt1.data.data, finalTotal: attempt1.finalTotal!, finalCurrency: attempt1.finalCurrency!, usedOffer: rawOffer };
     }
     if (!attempt1.isOfferUnavailable && attempt1.res && attempt1.res.status !== 422) {
-        return { kind: 'error', status: attempt1.res.status, data: attempt1.data };
+        // `timedOut` travels with the failure because aborting the request does not cancel
+        // the order: the caller has to go looking for it before telling anyone it failed.
+        return { kind: 'error', status: attempt1.res.status, data: attempt1.data, timedOut: attempt1.timedOut };
     }
 
     // Auto-refresh: offer expired
@@ -438,23 +481,22 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
         }
         if (offers.length === 0) return { kind: 'error', status: 422, data: attempt1.data };
 
-        const targetCarrier = rawOffer.validating_carrier_iata_code
-            ?? rawOffer.slices?.[0]?.segments?.[0]?.operating_carrier?.iata_code
-            ?? rawOffer.slices?.[0]?.segments?.[0]?.marketing_carrier?.iata_code;
         const targetTotal = parseFloat(rawOffer.total_amount ?? '0');
 
-        const matchingOffers = targetCarrier
-            ? offers.filter((o: any) => {
-                const carrier = o.validating_carrier_iata_code
-                    ?? o.slices?.[0]?.segments?.[0]?.operating_carrier?.iata_code
-                    ?? o.slices?.[0]?.segments?.[0]?.marketing_carrier?.iata_code;
-                return carrier === targetCarrier;
-            })
-            : offers;
+        // Only offers for the SAME journey — marketing carrier, flight number and departure
+        // instant, segment by segment. This used to take the validating carrier's offers (or,
+        // failing that, every offer on the route) and sort them by how close the price was.
+        // Price proximity is not identity: a 06:00 and a 22:00 departure on one airline at one
+        // fare are interchangeable to that sort, so a traveller could be ticketed sixteen hours
+        // from the flight they chose without being asked — and flight_segments would still
+        // record the one they picked. Cheapest first within the true matches, which are by
+        // definition the same product.
+        const sortedPool = sameItineraryOffers(rawOffer, offers);
+        console.warn(`[Duffel] refresh pool: ${offers.length} offer(s), ${sortedPool.length} match the selected itinerary exactly`);
 
-        const sortedPool = (matchingOffers.length > 0 ? matchingOffers : offers).sort((a: any, b: any) =>
-            Math.abs(parseFloat(a.total_amount) - targetTotal) - Math.abs(parseFloat(b.total_amount) - targetTotal),
-        );
+        // Nothing that is actually this flight. Substituting a different one is not a
+        // recovery; report it unavailable and let the traveller choose.
+        if (sortedPool.length === 0) return { kind: 'error', status: 422, data: attempt1.data };
 
         const hadAncillaries = (seatServiceIds?.length ?? 0) > 0 || (bagServiceIds?.length ?? 0) > 0;
         const maxAttempts = Math.min(sortedPool.length, refreshPoolSize);

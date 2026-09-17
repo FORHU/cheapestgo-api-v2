@@ -15,7 +15,9 @@
     "db:pull": "prisma db pull",
     "db:studio": "prisma studio",
     "db:seed": "ts-node prisma/seed.ts",
-    "geocode-hotels": "ts-node -r tsconfig-paths/register src/scripts/geocode-hotels.ts"
+    "geocode-hotels": "ts-node -r tsconfig-paths/register src/scripts/geocode-hotels.ts",
+    "backfill-policy-snapshots": "ts-node -r tsconfig-paths/register src/scripts/backfill-policy-snapshots.ts",
+    "backfill-booking-fx": "ts-node -r tsconfig-paths/register src/scripts/backfill-booking-fx.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

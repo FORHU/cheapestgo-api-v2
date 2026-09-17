@@ -10,15 +10,29 @@ import { requireAuth, requireRole } from '@/middleware/auth.middleware';
 import { adminContentService } from '@/services/adminContent.service';
 import { adminSettingsService } from '@/services/adminSettings.service';
 import { adminStripeService } from '@/services/adminStripe.service';
+import { adminRevenueService } from '@/services/adminRevenue.service';
 import { adminMobileService } from '@/services/adminMobile.service';
 import { AppError } from '@/middleware/error.middleware';
 import { mergeAdminBookings } from '@/lib/admin/normaliseBooking';
 import { prisma } from '@/lib/prisma';
+import { validateRoleChange } from '@/lib/auth/roleChange';
+import { roleLabel } from '@/lib/auth/roles';
+import { logAdminAction } from '@/lib/admin/audit';
+import { createNotification } from '@/lib/admin/notify';
 
 const router = Router();
 
 // All admin routes below require a valid JWT AND the 'admin' role
 router.use(requireAuth, requireRole('admin'));
+
+/** The legs of a flight booking, oldest first, as JSON on the booking row. */
+const SEGMENTS_SUBQUERY = `(
+    SELECT COALESCE(json_agg(json_build_object(
+        'airline', s.airline, 'flight_number', s.flight_number,
+        'origin', s.origin, 'destination', s.destination, 'departure', s.departure
+    ) ORDER BY s.departure), '[]'::json)
+    FROM flight_segments s WHERE s.booking_id = f.id
+) AS segments`;
 
 const PAGE_SIZE = 20;
 
@@ -78,14 +92,14 @@ router.get('/bookings', async (req: Request, res: Response, next: NextFunction) 
             prisma.$queryRawUnsafe<any[]>(
                 search
                     ? `SELECT b.id, b.user_id, b.booking_id, b.status, b.total_price::float8 AS total_price, b.currency,
-                              b.created_at, b.property_name
+                              b.created_at, b.property_name, b.room_name, b.check_in, b.check_out
                          FROM bookings b
                         WHERE b.id::text ILIKE $1 OR b.user_id::text ILIKE $1
                            OR b.booking_id ILIKE $1 OR b.property_name ILIKE $1
                            OR b.holder_email ILIKE $1
                         ORDER BY b.created_at DESC LIMIT 500`
                     : `SELECT b.id, b.user_id, b.booking_id, b.status, b.total_price::float8 AS total_price, b.currency,
-                              b.created_at, b.property_name
+                              b.created_at, b.property_name, b.room_name, b.check_in, b.check_out
                          FROM bookings b
                         ORDER BY b.created_at DESC LIMIT 500`,
                 ...(search ? [like] : []),
@@ -93,13 +107,16 @@ router.get('/bookings', async (req: Request, res: Response, next: NextFunction) 
 
             prisma.$queryRawUnsafe<any[]>(
                 search
+                    // The segments ride along so the list can name the journey rather than
+                    // print a PNR. Aggregated in the same query: 500 bookings would otherwise
+                    // be 500 follow-up reads to fill one column.
                     ? `SELECT f.id, f.user_id, f.pnr, f.status, f.total_price::float8 AS total_price, f.charged_price::float8 AS charged_price,
-                              f.currency, f.created_at
+                              f.currency, f.created_at, ${SEGMENTS_SUBQUERY}
                          FROM flight_bookings f
                         WHERE f.id::text ILIKE $1 OR f.user_id::text ILIKE $1 OR f.pnr ILIKE $1
                         ORDER BY f.created_at DESC LIMIT 500`
                     : `SELECT f.id, f.user_id, f.pnr, f.status, f.total_price::float8 AS total_price, f.charged_price::float8 AS charged_price,
-                              f.currency, f.created_at
+                              f.currency, f.created_at, ${SEGMENTS_SUBQUERY}
                          FROM flight_bookings f
                         ORDER BY f.created_at DESC LIMIT 500`,
                 ...(search ? [like] : []),
@@ -176,16 +193,50 @@ router.post('/users/:id/unban', async (req: Request, res: Response, next: NextFu
 
 // ── POST /api/admin/users/:id/promote ────────────────────────────────────────
 
+/**
+ * Change an account's role.
+ *
+ * The rule lives in `validateRoleChange` so it can be read and tested without a session.
+ * This route used to coerce instead of validate — `role === 'admin' || role === 'user' ?
+ * role : 'admin'` — so any value it did not recognise granted administrator, a typo
+ * included. It also let an admin demote themselves, which locks them out of the console
+ * with nothing left that can let them back in.
+ *
+ * Recorded either way: who changed whose role, and to what.
+ */
 router.post('/users/:id/promote', async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const { id } = req.params;
-        const { role } = req.body as { role?: string };
-        const nextRole = role === 'admin' || role === 'user' ? role : 'admin';
-        await prisma.users.update({
-            where: { id },
-            data:  { role: nextRole },
+        const actor = req.user!;
+        const change = validateRoleChange({
+            actorId:  actor.sub,
+            targetId: req.params.id,
+            newRole:  (req.body as { role?: unknown })?.role,
         });
-        return res.json({ ok: true, role: nextRole });
+        if (!change.ok) {
+            throw new AppError(400, change.error, 'VALIDATION_ERROR');
+        }
+
+        await prisma.users.update({
+            where: { id: change.targetId },
+            data:  { role: change.newRole },
+        });
+
+        void logAdminAction({
+            action:     'promote_user',
+            adminId:    actor.sub,
+            adminEmail: actor.email,
+            targetId:   change.targetId,
+            details:    { newRole: change.newRole },
+        });
+
+        await createNotification(
+            'User role changed',
+            // Named rather than "promoted" or "demoted": which of the two it is depends
+            // on where the account started, and the log should not guess.
+            `User ${change.targetId} is now ${roleLabel(change.newRole)} (changed by ${actor.email}).`,
+        );
+
+        return res.json({ ok: true, role: change.newRole });
     } catch (err) {
         next(err);
     }
@@ -349,6 +400,14 @@ router.post('/deals', async (req: Request, res: Response, next: NextFunction) =>
     } catch (err) {
         next(err);
     }
+});
+
+// ── GET /api/admin/revenue ───────────────────────────────────────────────────
+// What each booking earned and what it cost to take. app-v2's revenue screen has been
+// calling this since it was written; it did not exist until now.
+router.get('/revenue', async (req: Request, res: Response, next: NextFunction) => {
+    try { res.json(await adminRevenueService.read({ page: req.query.page, pageSize: req.query.pageSize })); }
+    catch (err) { next(err); }
 });
 
 // ── POST /api/admin/communication/send ───────────────────────────────────────
@@ -563,7 +622,11 @@ const RUNNABLE_CRONS = new Set([
     'etg-reviews-sync',
     'fill-dest-cache',
     'geocode-hotels',
+    // Both read-only reporters — they notify and stop, never repair, so running one by hand
+    // is safe and is often exactly what is wanted after a suspected discrepancy.
+    'hotel-reconciliation',
     'otv-credit-check',
+    'platform-cost-reconciliation',
     'poll-pending-tickets',
     'refresh-hotel-content',
     'refresh-popular-flights',
