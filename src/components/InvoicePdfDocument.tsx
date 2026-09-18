@@ -172,14 +172,12 @@ export function InvoicePdfDocument(props: InvoicePdfProps) {
                         <Text style={s.footerEmail}>crm@myfarebox.com</Text>
                     </Text>
                     <Text style={[s.footerText, { marginTop: 4, opacity: 0.6 }]}>
-                        {/* FIXME (legal, not cosmetic): this read "CheapestGo is a trading
-                            name of CheapestGo Travel Services." Neither half is verified — the
-                            site footer and the TravelgateX contract both name FORHU Inc as the
-                            legal entity, and no company called "CheapestGo Travel Services"
-                            appears anywhere else in this codebase. The brand is now correct;
-                            the entity it claims to trade under still needs confirming by
-                            someone who knows what is registered. */}
-                        {BRAND} is a trading name of CheapestGo Travel Services.
+                        {/* The operating entity, confirmed 2026-09-18: FORHU Inc., which is
+                            what the storefront footer, all four legal pages and the
+                            TravelgateX contract name. This line previously read "a trading
+                            name of CheapestGo Travel Services" — a company that appears
+                            nowhere else in any of the three codebases. */}
+                        {BRAND} is a trading name of FORHU Inc.
                     </Text>
                 </View>
 

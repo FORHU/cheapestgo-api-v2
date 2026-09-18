@@ -20,13 +20,82 @@ export function getTgxConfig() {
     };
 }
 
-export function getTgxSettings(cfg = getTgxConfig(), timeout = 18000) {
-    return {
+/**
+ * The settings block every TGX call carries, and the plugins that make a search work.
+ *
+ * The plugins are not an optimisation. Without them a destination search does not merely
+ * run slowly, it fails:
+ *
+ * - **`search_by_destination`** translates a TGX destination code into OTV hotel codes.
+ *   Without it TGX answers any destination code with `WRONG_FIELD` / empty hotels, and the
+ *   caller falls back to asking for hotel codes in batches of 100 — four waves of up to 22s
+ *   each, then a retry of all of them. A Phuket search took 21 to 42 seconds that way, and
+ *   put far more load on OTV than one destination call does.
+ * - **`cheapest_price`** cuts the response from roughly 16MB to 20KB by returning one option
+ *   per hotel instead of every rate. Phuket alone is about 84,000 options; unpruned, the
+ *   transfer alone outruns the HTTP abort, which surfaces as `ALL_PROCESSES_FAILED`.
+ * - **`currency_exchange`** converts OTV prices, which arrive in the supplier's own currency,
+ *   into one the rest of the system can compare. `exclude: false` keeps an option whose
+ *   currency is missing from the mapping file rather than hiding it, so an incomplete file
+ *   degrades the price rather than the result.
+ *
+ * @param timeout          The supplier budget, in `settings.timeout`. OTV states 12s for
+ *                         Search; TGX caps it at 25s. Sending more than the supplier will
+ *                         use buys dead time, not answers.
+ * @param withDestPlugins  For a destination-code search. A hotel-code search addresses
+ *                         hotels directly and needs no translation.
+ * @param targetCurrency   Currency to convert supplier prices into.
+ */
+export function getTgxSettings(
+    cfg = getTgxConfig(),
+    timeout = 18000,
+    withDestPlugins = false,
+    targetCurrency?: string,
+) {
+    const base = {
         context:           cfg.context,
         client:            cfg.client,
         timeout,
+        // Turning the audit trail off is a documented response-time win.
         auditTransactions: false,
     };
+    if (!withDestPlugins && !targetCurrency) return base;
+
+    const plugins: object[] = [];
+
+    if (withDestPlugins) {
+        plugins.push(
+            {
+                pluginsType: [{
+                    name:       'search_by_destination',
+                    parameters: [{ key: 'accessID', value: cfg.accessCode }],
+                }],
+            },
+            {
+                pluginsType: [{
+                    name:       'cheapest_price',
+                    parameters: [
+                        { key: 'primaryKey',    value: 'hotel' },
+                        { key: 'optionsPerKey', value: '1' },
+                    ],
+                }],
+            },
+        );
+    }
+
+    if (targetCurrency) {
+        plugins.push({
+            pluginsType: [{
+                name:       'currency_exchange',
+                parameters: [
+                    { key: 'currency', value: targetCurrency },
+                    { key: 'exclude',  value: 'false' },
+                ],
+            }],
+        });
+    }
+
+    return { ...base, plugins };
 }
 
 // Routes the request to our specific OTV access code per TGX docs.
@@ -76,10 +145,23 @@ export async function tgxGraphQL<T = any>(
 
     const body: any = await res.json();
 
+    // Every query here asks hotelX for exactly one operation — search, quote, book or
+    // cancel — so whichever it was is the only value under it.
+    const opResult: any = Object.values(body?.data?.hotelX ?? {})[0] ?? {};
+
     if (process.env.NODE_ENV === 'development') {
-        const optionCount = body?.data?.hotelX?.search?.options?.length;
-        const errors      = body?.data?.hotelX?.search?.errors;
-        console.log('[tgx] ← options:', optionCount ?? 'n/a', '| errors:', JSON.stringify(errors ?? []));
+        const optionCount = opResult?.options?.length;
+        console.log('[tgx] ← options:', optionCount ?? 'n/a', '| errors:', JSON.stringify(opResult?.errors ?? []));
+    }
+
+    // Warnings carry the reason, and they are logged at every log level because the moment
+    // you need them is a failure in production. ALL_PROCESSES_FAILED and the rest describe
+    // themselves as "See warnings for more information" and say nothing else; without this
+    // line there is nothing to see, and the same error means a supplier timeout, a mapping
+    // gap or a credential problem with no way to tell which.
+    const warnings: any[] = opResult?.warnings ?? [];
+    if (warnings.length) {
+        console.warn('[tgx] ⚠ warnings:', JSON.stringify(warnings).slice(0, 800));
     }
 
     if (body.errors?.length) {
@@ -216,6 +298,7 @@ query TgxQuote($criteria: HotelCriteriaQuoteInput!, $settings: HotelSettingsInpu
         }
       }
       errors { code type description }
+      warnings { code type description }
     }
   }
 }`;
@@ -281,6 +364,7 @@ mutation TgxBook($input: HotelBookInput!, $settings: HotelSettingsInput!) {
         }
       }
       errors { code type description }
+      warnings { code type description }
     }
   }
 }`;
@@ -385,6 +469,7 @@ mutation TgxCancel($input: HotelCancelInput!, $settings: HotelSettingsInput!) {
         price { currency net gross }
       }
       errors { code type description }
+      warnings { code type description }
     }
   }
 }`;
@@ -586,6 +671,19 @@ const rowCountry = (parentCode: string | null | undefined): string | null =>
  *   the search then pruned all 300 catalog hotels and rendered "no hotels found". Bali
  *   (Greece) and Rome (United States) failed identically on 2026-09-09.
  */
+/**
+ * A city name reduced to the letters in it: no spaces, punctuation or accents.
+ *
+ * The cache is keyed on the exact lowercased name, so "Danang" missed a row stored as
+ * "da nang" and the search fell through to the hotel-code path — a portfolio fetch, a
+ * chunked supplier search, a three-second wait and the whole thing again. Fifty seconds,
+ * for a spelling difference of one space. The same gap swallows "Hochiminh", "Seogwipo si"
+ * and every accented name typed without its accents.
+ */
+function looseCityKey(name: string): string {
+    return name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 export async function resolveTgxDestinationCode(cityName: string, prisma: any, countryCode?: string): Promise<string | undefined> {
     const cityOnlyKey = cityName.toLowerCase().trim();
     const key = countryCode ? cityOnlyKey + ':' + countryCode.toLowerCase() : cityOnlyKey;
@@ -632,6 +730,36 @@ export async function resolveTgxDestinationCode(cityName: string, prisma: any, c
         if (key !== cityOnlyKey) {
             const cityHit = await readKey(cityOnlyKey, countryCode);
             if (cityHit !== null) return cityHit;
+        }
+
+        // Last resort before going to TGX: match on letters alone. Cheap, and it is the
+        // difference between a 4-second search and a 50-second one for anyone who types
+        // the name without its spaces or accents.
+        const loose = looseCityKey(cityOnlyKey);
+        // Runs whenever the exact lookups missed, not only when the input itself needed
+        // normalising: the stored key is the one that differs. "danang" is already bare, and
+        // the row it needs to find is "da nang".
+        if (loose) {
+            const rows = await prisma.$queryRaw<{ city_key: string; destination_code: string; parent_code: string | null }[]>`
+                SELECT city_key, destination_code, parent_code
+                FROM tgx_destination_cache
+                WHERE regexp_replace(lower(city_key), '[^a-z0-9]', '', 'g') = ${loose}
+                  AND destination_code <> 'NONE'
+                LIMIT 5
+            `.catch(() => []);
+
+            const match = countryCode
+                ? rows.find((r: { parent_code: string | null }) => {
+                      const belongsTo = rowCountry(r.parent_code);
+                      return !belongsTo || belongsTo === countryCode.toUpperCase();
+                  })
+                : rows[0];
+
+            if (match) {
+                console.log(`[dest-resolve] "${cityName}" matched "${match.city_key}" on letters alone → ${match.destination_code}`);
+                _destCodeCache.set(key, match.destination_code);
+                return match.destination_code;
+            }
         }
     } catch { /* non-fatal */ }
 

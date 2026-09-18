@@ -10,6 +10,15 @@ import { prisma } from '@/lib/prisma';
 import { CITY_ALIASES } from '@/lib/cityAliases';
 import { DestinationsService } from '@/services/destinations.service';
 
+/**
+ * How long a first pass must take before it is worth asking again.
+ *
+ * The supplier budget is 12s; a pass that reaches it was cut off mid-answer, and a pass that
+ * returns well inside it finished. 10s leaves room for the ones that come back just under
+ * the wire without re-asking on every fast search.
+ */
+const SECOND_PASS_THRESHOLD_MS = 10_000;
+
 const svc = new HotelsService();
 const destinations = new DestinationsService();
 
@@ -428,6 +437,20 @@ export class HotelsController {
             // reads as the destination having no hotels.
             let tgxUnanswered = false;
             console.log('[stream] Starting TGX search for', body.cityName ?? body.destination);
+            const searchArgs = {
+                cityName:    body.cityName ?? body.destination,
+                checkin:     body.checkin  ?? body.checkIn,
+                checkout:    body.checkout ?? body.checkOut,
+                adults:      Number(body.adults)   || 2,
+                children:    Number(body.children) || 0,
+                countryCode: body.countryCode,
+                currency:    body.currency,
+                rung:        body.rung,
+                lat:         body.lat,
+                lng:         body.lng,
+                bbox:        body.bbox,
+            };
+            const firstPassStarted = Date.now();
             const tgxResult = await runTgxSearch({
                 cityName:    body.cityName ?? body.destination,
                 checkin:     body.checkin  ?? body.checkIn,
@@ -447,6 +470,7 @@ export class HotelsController {
                 return { data: [] as any[], allMappable: [] as any[], totalCount: 0 };
             });
 
+            const firstPassMs = Date.now() - firstPassStarted;
             const tgxHotels: any[]   = Array.isArray(tgxResult.data) ? tgxResult.data : [];
             const tgxHotelIdSet      = new Set(tgxHotels.map((h: any) => h.hotelId || h.id));
             const newTgxHotels       = tgxHotels.filter((h: any) => !catalogIdSet.has(h.hotelId || h.id));
@@ -474,8 +498,65 @@ export class HotelsController {
                 emit({ type: 'hotels', data: tgxHotels, totalCount: tgxHotels.length });
             }
 
-            const finalCount = tgxHotels.length > 0 ? tgxHotels.length : catalogHotels.length;
-            if (!closed) emit({ type: 'done', totalCount: finalCount, tgxCount: tgxHotels.length, tgxFailed, tgxUnanswered });
+            // ── Phase 3: ask again, when the first answer was cut short ───────────
+            //
+            // OTV cannot finish a destination search inside the 12s it asks us to allow, so
+            // a first search of a city it has not computed lately comes back truncated. It
+            // keeps working after we stop listening, and the finished answer lands in its own
+            // cache — where a second, identical search collects it almost instantly.
+            //
+            // Measured on three cold cities, 2026-09-18:
+            //
+            //     Boracay   pass 1  29s ->   3 hotels    pass 2   1s ->  97
+            //     Sapporo   pass 1  32s ->  26 hotels    pass 2  14s ->  93
+            //     Taipei    pass 1  33s ->  45 hotels    pass 2   0s -> 161
+            //
+            // Conditional on the first pass having hit the budget, which is what being cut
+            // off looks like from here. A search that answered in 4-7s finished on its own
+            // and has nothing to collect — asking again would only double the number of
+            // requests OTV sees, and they watch that.
+            const wasTruncated = !tgxFailed && firstPassMs >= SECOND_PASS_THRESHOLD_MS;
+
+            let extraHotels: any[] = [];
+            if (!closed && wasTruncated) {
+                console.log(`[stream] First pass took ${firstPassMs}ms and looks truncated — collecting the rest`);
+                const t0 = Date.now();
+                // A plain repeat: the in-flight dedup entry for the first pass is gone by now,
+                // so this is a fresh call rather than a join onto the one that just finished.
+                const second = await runTgxSearch(searchArgs)
+                    .catch((err: any) => {
+                        // Nothing is owed here: the traveller already has the first answer.
+                        console.warn(`[stream] Second pass failed for "${city}": ${err?.message}`);
+                        return { data: [] as any[], allMappable: [] as any[], totalCount: 0 };
+                    });
+
+                const secondHotels: any[] = Array.isArray(second.data) ? second.data : [];
+                const known = new Set([...tgxHotelIdSet, ...catalogIdSet]);
+                extraHotels = secondHotels.filter((h: any) => !known.has(h.hotelId || h.id));
+                console.log(`[stream] Second pass: ${secondHotels.length} hotels in ${Date.now() - t0}ms, ${extraHotels.length} of them new`);
+
+                if (!closed && extraHotels.length > 0) {
+                    // The prices ride along, so a hotel arriving now is immediately bookable
+                    // rather than sitting as a pin with no rate.
+                    emit({
+                        type: 'prices',
+                        data: extraHotels.map((h: any) => ({
+                            hotelId:       h.hotelId || h.id,
+                            price:         h.price,
+                            currency:      h.currency,
+                            offerId:       h.offerId,
+                            refundableTag: h.refundableTag,
+                            boardCode:     h.boardCode,
+                            boardTypes:    h.boardCode ? [h.boardCode] : [],
+                        })),
+                    });
+                    emit({ type: 'hotels', data: extraHotels, totalCount: extraHotels.length });
+                }
+            }
+
+            const liveCount  = tgxHotels.length + extraHotels.length;
+            const finalCount = liveCount > 0 ? liveCount : catalogHotels.length;
+            if (!closed) emit({ type: 'done', totalCount: finalCount, tgxCount: liveCount, tgxFailed, tgxUnanswered });
 
         } catch (err: any) {
             if (!closed) emit({ type: 'error', message: err.message ?? 'Search failed' });
