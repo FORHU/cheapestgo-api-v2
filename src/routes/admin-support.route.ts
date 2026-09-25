@@ -4,6 +4,12 @@ import { requireAuth } from '@/middleware/auth.middleware';
 import { SupportService, type SupportActor } from '@/services/support.service';
 import { AppError } from '@/middleware/error.middleware';
 import { openEventStream } from '@/lib/support/stream';
+import multer from 'multer';
+import { MAX_ATTACHMENT_BYTES } from '@/lib/support/attachments';
+import { attachmentsConfigured } from '@/lib/support/attachmentStorage';
+
+/** Same rules as the customer's upload; see the note there. */
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 } });
 import { SupportRepository } from '@/repositories/support.repository';
 import { getSupportHours, saveSupportHours } from '@/lib/support/availability';
 
@@ -87,11 +93,41 @@ router.get('/conversations/:id', async (req: Request, res: Response, next: NextF
     } catch (err) { next(err); }
 });
 
+/** An Agent's own attachment — a receipt, a voucher, a form for the customer to sign. */
+router.post('/conversations/:id/attachments', upload.single('file'), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        if (!attachmentsConfigured()) {
+            throw new AppError(503, 'Attachments are not available right now.', 'SUPPORT_ATTACHMENTS_OFF');
+        }
+        const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+        const file = (req as Request & { file?: { buffer: Buffer; originalname: string } }).file;
+        if (!file) throw new AppError(400, 'No file was sent.', 'VALIDATION_ERROR');
+
+        const stored = await svc.uploadAttachment({
+            actor: actorOf(req), conversationId: id,
+            fileName: file.originalname, bytes: file.buffer, as: 'agent',
+        });
+        return res.status(201).json({ success: true, data: stored });
+    } catch (err) { next(err); }
+});
+
+/** The same per-request check as the customer's route, reaching the same service. */
+router.get('/attachments/:id', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+        const url = await svc.attachmentUrl(actorOf(req), id);
+        return res.redirect(302, url);
+    } catch (err) { next(err); }
+});
+
 router.post('/conversations/:id/messages', async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { id }   = z.object({ id: z.string().uuid() }).parse(req.params);
-        const { body } = z.object({ body: z.string().min(1).max(4000) }).parse(req.body ?? {});
-        const message  = await svc.agentReply(actorOf(req), id, body);
+        const { body, attachmentIds } = z.object({
+            body:          z.string().min(1).max(4000),
+            attachmentIds: z.array(z.string().uuid()).max(5).optional(),
+        }).parse(req.body ?? {});
+        const message = await svc.agentReply(actorOf(req), id, body, attachmentIds ?? []);
         return res.status(201).json({ success: true, data: message });
     } catch (err) { next(err); }
 });

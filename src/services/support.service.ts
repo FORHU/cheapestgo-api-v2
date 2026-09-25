@@ -1,4 +1,11 @@
 import { AppError } from '@/middleware/error.middleware';
+import { randomUUID } from 'node:crypto';
+import {
+    ATTACHMENT_RETENTION_DAYS, MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_BYTES,
+    attachmentStorageKey, sanitiseFileName, sniffContentType,
+} from '@/lib/support/attachments';
+import { deleteObject, putObject, signedUrlFor } from '@/lib/support/attachmentStorage';
+import type { SupportAttachmentView } from '@/lib/support/attachments';
 import {
     SupportRepository,
     type SupportConversationRow,
@@ -51,6 +58,23 @@ export interface PublicMessage {
     body:      string;
     notice:    string | null;
     createdAt: string;
+    /**
+     * The stored rendering beside the author's words, which are never replaced (ADR-0033).
+     *
+     * Both are sent because who the rendering is *for* is decided by the language it is in,
+     * not by who sent the message: a translation into English is for the inbox, one into
+     * anything else is for the customer. A Korean-speaking Agent answering in Korean has
+     * their reply rendered into English for colleagues, and the customer must still read the
+     * Korean as typed. The reader decides; the payload only has to carry enough to decide on.
+     *
+     * `translationStatus` is carried for the same reason: "not translated yet" and "could not
+     * be translated" look identical in the body and mean different things to the reader.
+     */
+    translatedBody:     string | null;
+    translatedLang:     string | null;
+    translationStatus:  string | null;
+    /** Named by id only: the storage key never leaves the server (ADR-0040). */
+    attachments:        SupportAttachmentView[];
 }
 
 /**
@@ -78,8 +102,20 @@ export function toPublicMessage(row: SupportMessageRow): PublicMessage {
         body:      row.body,
         notice:    row.notice_code,
         createdAt: row.created_at.toISOString(),
+        translatedBody:    row.translated_body ?? null,
+        translatedLang:    row.translated_lang ?? null,
+        translationStatus: row.translation_status ?? null,
+        // Filled by whoever read the transcript; a message read on its own has none to show.
+        attachments:       [],
     };
 }
+
+/**
+ * Longer than any translation takes. The worst honest case — a long message whose pieces each
+ * exhaust their attempts and are then halved — is a little over two minutes, so a row still
+ * pending past this was abandoned by a process that stopped, not one still working.
+ */
+export const STALLED_TRANSLATION_MS = 3 * 60 * 1000;
 
 export class SupportService {
     constructor(private readonly repo = new SupportRepository()) {}
@@ -116,7 +152,7 @@ export class SupportService {
         const row = await this.repo.findLatestByUser(userId);
         if (!row) return null;
         const messages = await this.repo.listMessages(row.id);
-        return { conversation: toPublicConversation(row), messages: messages.map(toPublicMessage) };
+        return { conversation: toPublicConversation(row), messages: await this.withAttachments(messages) };
     }
 
     /**
@@ -131,7 +167,7 @@ export class SupportService {
      * A resolved conversation does not accept messages. Reopening by replying would put a
      * message where nobody is looking: resolved chats are out of the Agent's queue.
      */
-    async sendMessage(userId: string, conversationId: string, body: string) {
+    async sendMessage(userId: string, conversationId: string, body: string, attachmentIds: string[] = []) {
         const text = body.trim();
         if (!text) throw new AppError(400, 'A message cannot be empty.', 'VALIDATION_ERROR');
 
@@ -149,6 +185,12 @@ export class SupportService {
             sender:         'guest',
             body:           text,
         });
+        // Bound before anyone is told, so a reader never sees the message without its files.
+        // Capped here as well as in the widget: five is a rule, not a nicety of the form.
+        if (attachmentIds.length > 0) {
+            await this.repo.attachToMessage(attachmentIds.slice(0, MAX_ATTACHMENTS_PER_MESSAGE), message.id, row.id);
+        }
+
         // After the write, never inside it: whoever is holding a stream open should not be
         // told about a row that is not there yet.
         await publish({ conversationId: row.id, messageId: message.id });
@@ -190,7 +232,7 @@ export class SupportService {
         const messages = await this.repo.listMessages(row.id);
         return {
             conversation: { ...toPublicConversation(row), assignedAdminId: row.assigned_admin_id },
-            messages:     messages.map(toPublicMessage),
+            messages:     await this.withAttachments(messages),
             canWrite:     canWriteIn(actor, row.assigned_admin_id),
         };
     }
@@ -201,7 +243,7 @@ export class SupportService {
      * Answering does not assign the chat — ADR-0041 gives ownership by an admin, never by
      * taking it — but it does move the chat out of Waiting, because somebody is now in it.
      */
-    async agentReply(actor: SupportActor, conversationId: string, body: string) {
+    async agentReply(actor: SupportActor, conversationId: string, body: string, attachmentIds: string[] = []) {
         await this.assertCanAnswer(actor);
         const text = body.trim();
         if (!text) throw new AppError(400, 'A reply cannot be empty.', 'VALIDATION_ERROR');
@@ -224,6 +266,9 @@ export class SupportService {
             senderAdminId:  actor.id,
             body:           text,
         });
+        if (attachmentIds.length > 0) {
+            await this.repo.attachToMessage(attachmentIds.slice(0, MAX_ATTACHMENTS_PER_MESSAGE), message.id, row.id);
+        }
         if (row.status === 'waiting_human') await this.repo.setStatus(row.id, 'human_active');
         await publish({ conversationId: row.id, messageId: message.id });
         void translateInBackground({
@@ -231,6 +276,165 @@ export class SupportService {
             body: text, customerLang: row.locale as SupportLang,
         });
         return toPublicMessage(message);
+    }
+
+    /**
+     * Finish translations a stopped process left pending.
+     *
+     * A restart during a call leaves the row `pending` with nothing coming to settle it, and a
+     * reply in that state is held back from the customer indefinitely — see
+     * `isHeldForTranslation` in the widget. This is the thing that unsticks them, and it is why
+     * `pending` is safe to write before the engine is called at all.
+     *
+     * Re-run rather than merely settled: asking again usually works, and a translation that
+     * arrives late is still worth more than one marked failed for a reason that was not the
+     * engine's fault. Each settles itself either way.
+     *
+     * @returns how many were picked up.
+     */
+    async resumeStalledTranslations(limit = 50): Promise<number> {
+        const rows = await this.repo.findStalledTranslations(STALLED_TRANSLATION_MS, limit);
+        await Promise.all(rows.map(row => translateInBackground({
+            messageId:      row.id,
+            conversationId: row.conversation_id,
+            senderType:     row.sender_type,
+            body:           row.body,
+            customerLang:   row.locale as SupportLang,
+            repo:           this.repo,
+        })));
+        return rows.length;
+    }
+
+    // ── Attachments (ADR-0040) ────────────────────────────────────────────────
+
+    /**
+     * Accept one file for a conversation the caller is part of.
+     *
+     * Uploaded before the message that carries it, because the bytes are the slow part and a
+     * customer should be able to attach while still typing. The row is written after the object
+     * exists, so a row never points at a missing file; the reverse — an object with no row — is
+     * cleaned up here rather than left for a lifecycle rule, because an unreferenced copy of
+     * somebody's passport page should not wait thirty days to go away.
+     */
+    async uploadAttachment(input: {
+        actor: { id: string; role?: string };
+        conversationId: string;
+        fileName: string;
+        bytes: Buffer;
+        as: 'guest' | 'agent';
+    }) {
+        const row = await this.repo.findById(input.conversationId);
+        if (!row) throw new AppError(404, 'Conversation not found.', 'NOT_FOUND');
+
+        if (input.as === 'guest') {
+            if (row.user_id !== input.actor.id) throw new AppError(404, 'Conversation not found.', 'NOT_FOUND');
+            if (row.status === 'resolved') {
+                throw new AppError(409, 'This conversation has been resolved. Start a new one.', 'SUPPORT_RESOLVED');
+            }
+        } else {
+            await this.assertCanAnswer(input.actor as SupportActor);
+        }
+
+        if (input.bytes.length === 0) throw new AppError(400, 'That file is empty.', 'VALIDATION_ERROR');
+        if (input.bytes.length > MAX_ATTACHMENT_BYTES) {
+            throw new AppError(400,
+                `Files must be ${Math.floor(MAX_ATTACHMENT_BYTES / (1024 * 1024))} MB or smaller.`,
+                'VALIDATION_ERROR');
+        }
+
+        // The declared type is discarded: it is settable by anything that is not a browser.
+        const contentType = sniffContentType(input.bytes);
+        if (!contentType) {
+            throw new AppError(400, 'That file type is not supported. Send an image or a PDF.', 'VALIDATION_ERROR');
+        }
+
+        const id         = randomUUID();
+        const fileName   = sanitiseFileName(input.fileName);
+        const storageKey = attachmentStorageKey(input.conversationId, id);
+
+        await putObject({ key: storageKey, body: input.bytes, contentType });
+
+        try {
+            await this.repo.insertAttachment({
+                id, conversationId: input.conversationId, storageKey, fileName, contentType,
+                sizeBytes: input.bytes.length,
+                uploadedByType: input.as,
+                uploadedByAdminId: input.as === 'agent' ? input.actor.id : null,
+            });
+        } catch (err) {
+            // Nothing references this object; leaving it would be an unreachable copy of a
+            // customer's document. A failure to clean up must not mask the original error.
+            await deleteObject(storageKey).catch(() => {});
+            throw err;
+        }
+
+        // The storage key is deliberately absent from what the caller is handed back.
+        return { id, fileName, contentType, sizeBytes: input.bytes.length, uploadedByType: input.as, bytesDeleted: false };
+    }
+
+    /**
+     * A short-lived URL for one attachment, if this caller may read it.
+     *
+     * Authorisation is re-evaluated here on every fetch rather than baked into a link at send
+     * time (ADR-0040): a conversation reassigned later, or an account that loses its staff role,
+     * changes what can be fetched immediately rather than whenever an old link expires.
+     */
+    async attachmentUrl(actor: { id: string; role?: string }, attachmentId: string): Promise<string> {
+        const attachment = await this.repo.findAttachment(attachmentId);
+        if (!attachment) throw new AppError(404, 'Attachment not found.', 'NOT_FOUND');
+
+        if (attachment.bytesDeleted) {
+            throw new AppError(410, 'That file has passed its retention window and is no longer stored.', 'GONE');
+        }
+
+        const conversation = await this.repo.findById(attachment.conversationId);
+        if (!conversation) throw new AppError(404, 'Attachment not found.', 'NOT_FOUND');
+
+        const isOwner = conversation.user_id === actor.id;
+        const isStaff = await this.repo.canAnswerSupport(actor.id);
+        // Not 403: telling a stranger that an attachment exists is itself a disclosure.
+        if (!isOwner && !isStaff) throw new AppError(404, 'Attachment not found.', 'NOT_FOUND');
+
+        return signedUrlFor(attachment.storageKey, attachment.fileName);
+    }
+
+    /**
+     * Remove the bytes of anything past its retention window.
+     *
+     * The row stays: a transcript still has to show that a file was sent, and say that it has
+     * expired. Deleting the row would make the conversation read as though nothing was ever
+     * attached — which is a different and untrue story.
+     *
+     * @returns how many had their bytes removed.
+     */
+    async purgeExpiredAttachments(limit = 200): Promise<number> {
+        const expired = await this.repo.findExpiredAttachments(ATTACHMENT_RETENTION_DAYS, limit);
+        let removed = 0;
+        for (const row of expired) {
+            try {
+                await deleteObject(row.storageKey);
+                await this.repo.markBytesDeleted(row.id);
+                removed++;
+            } catch {
+                // Left for the next run rather than marked gone: a row saying the bytes are
+                // deleted while the object is still in the bucket is the one state that cannot
+                // be recovered from, because nothing would ever look at that key again.
+            }
+        }
+        return removed;
+    }
+
+    /**
+     * A transcript with each message's files on it.
+     *
+     * One query for the whole transcript: a conversation is read on every widget open and every
+     * stream backfill, and asking per message would make that cost grow with its length.
+     */
+    private async withAttachments(rows: SupportMessageRow[]): Promise<PublicMessage[]> {
+        const messages = rows.map(toPublicMessage);
+        const grouped  = await this.repo.attachmentsByMessage(messages.map(m => m.id));
+        if (grouped.size === 0) return messages;
+        return messages.map(m => ({ ...m, attachments: grouped.get(m.id) ?? [] }));
     }
 
     /** Give a chat to someone. Admins only — ADR-0041. */

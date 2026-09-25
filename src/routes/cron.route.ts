@@ -8,6 +8,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import zlib from 'zlib';
 import { config } from '@/config';
+import { SupportService } from '@/services/support.service';
 import { prisma } from '@/lib/prisma';
 import { stripe } from '@/lib/stripe';
 import { getDuffelBalances, duffelHeaders } from '@/lib/flights/duffel';
@@ -60,6 +61,43 @@ async function sendEmail(to: string, subject: string, html: string) {
 // GET /api/cron/cleanup-sessions
 // Schedule: daily at 04:00 UTC  (0 4 * * *)
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/v2/cron/resume-support-translations
+// Schedule: every minute  (* * * * *)
+//
+// A translation is marked pending before the engine is called, so a deploy mid-call leaves a
+// row nothing will settle — and a reply waiting on one is held back from the customer for good.
+// Every minute because the cost of a run with nothing to do is one indexed query.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/v2/cron/purge-support-attachments
+// Schedule: daily at 04:00 UTC  (0 4 * * *)
+//
+// A passport page sent to settle one booking is not ours to keep indefinitely. The row stays —
+// the transcript still says a file was sent, and that it has expired — and only the bytes go.
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get('/purge-support-attachments', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+        const removed = await new SupportService().purgeExpiredAttachments();
+        if (removed > 0) console.log(`[cron/purge-support-attachments] removed ${removed}`);
+        return res.json({ ok: true, removed });
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.get('/resume-support-translations', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+        const resumed = await new SupportService().resumeStalledTranslations();
+        if (resumed > 0) console.log(`[cron/resume-support-translations] picked up ${resumed}`);
+        return res.json({ ok: true, resumed });
+    } catch (err) {
+        next(err);
+    }
+});
 
 router.get('/cleanup-sessions', async (_req: Request, res: Response, next: NextFunction) => {
     try {

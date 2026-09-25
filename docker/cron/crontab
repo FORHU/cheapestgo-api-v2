@@ -4,6 +4,7 @@
 # APP_URL must NOT have a trailing slash (e.g. http://api:4000)
 
 # ── High-frequency ────────────────────────────────────────────────────────────
+* * * * * curl -sf -X GET  $APP_URL/api/v2/cron/resume-support-translations     -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 */5  * * * * curl -sf -X GET  $APP_URL/api/v2/cron/poll-pending-tickets           -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 */10 * * * * curl -sf -X POST $APP_URL/api/v2/internal/auto-recover               -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 */10 * * * * curl -sf -X GET  $APP_URL/api/v2/cron/cleanup-orphaned-duffel-orders -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
@@ -17,6 +18,7 @@
 0 */12 * * * curl -sf -X GET $APP_URL/api/v2/cron/otv-credit-check     -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 
 # ── Daily (UTC) ───────────────────────────────────────────────────────────────
+0 4 * * * curl -sf -X GET $APP_URL/api/v2/cron/purge-support-attachments -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 0 2 * * * curl -sf -X GET $APP_URL/api/v2/cron/etg-reviews-sync       -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 0 3 * * * curl -sf -X GET $APP_URL/api/v2/cron/cache-cleanup           -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 0 4 * * * curl -sf -X GET $APP_URL/api/v2/cron/cleanup-sessions        -H "Authorization: Bearer $CRON_SECRET" -o /dev/null

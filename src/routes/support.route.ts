@@ -3,7 +3,22 @@ import { z } from 'zod';
 import { requireAuth } from '@/middleware/auth.middleware';
 import { canonicalBrandName } from '@/lib/brand';
 import { SupportService } from '@/services/support.service';
+import { SupportRepository } from '@/repositories/support.repository';
+import { AppError } from '@/middleware/error.middleware';
 import { openEventStream } from '@/lib/support/stream';
+import multer from 'multer';
+import { MAX_ATTACHMENT_BYTES } from '@/lib/support/attachments';
+import { attachmentsConfigured } from '@/lib/support/attachmentStorage';
+
+/**
+ * In memory, not on disk.
+ *
+ * The file is checked by its own bytes and handed straight to S3, so writing it to the
+ * container's filesystem first would only create a second copy of a customer's passport page
+ * for a temp-file cleaner to worry about. Capped at the same size the service enforces, so an
+ * oversized upload is refused before it is buffered rather than after.
+ */
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 } });
 import { searchRateLimit } from '@/middleware/rate-limit.middleware';
 import { getSupportAvailability } from '@/lib/support/availability';
 import { nextOpening } from '@/lib/support/hours';
@@ -29,7 +44,12 @@ const svc = new SupportService();
 router.get('/availability', searchRateLimit, async (_req: Request, res: Response, next: NextFunction) => {
     try {
         const { humanAvailable, hours } = await getSupportAvailability();
-        return res.json({ success: true, data: { humanAvailable, hours, nextOpening: nextOpening(hours, new Date()) } });
+        return res.json({ success: true, data: {
+            humanAvailable, hours, nextOpening: nextOpening(hours, new Date()),
+            // So the widget can hide the paperclip rather than offer an upload that would be
+            // refused: a bucket is deployment configuration, not something a customer can fix.
+            attachments: attachmentsConfigured(),
+        } });
     } catch (err) { next(err); }
 });
 
@@ -79,11 +99,80 @@ router.get('/stream', async (req: Request, res: Response, next: NextFunction) =>
     } catch (err) { next(err); }
 });
 
+/**
+ * What the widget offered, and what the customer did with it (ADR-0043).
+ *
+ * A counter, and answered like one: 204 whether or not it stored anything. A customer is asking
+ * a question, not filing a report, and a widget that surfaced "could not save" for bookkeeping
+ * would be telling them about our problems. The ids are checked so the table cannot be filled
+ * with arbitrary strings, but a rejected one is still not the customer's business.
+ */
+router.post('/suggestions', async (req: Request, res: Response) => {
+    try {
+        const { articleId, outcome, locale } = z.object({
+            articleId: z.enum(['confirmation', 'refunds', 'changes', 'priceGap', 'payment']),
+            outcome:   z.enum(['shown', 'opened', 'solved', 'sent_anyway']),
+            locale:    z.string().max(10),
+        }).parse(req.body ?? {});
+
+        const found = await svc.getConversation(req.user!.sub);
+        if (found) {
+            await new SupportRepository().recordSuggestionEvent({
+                conversationId: found.conversation.id, articleId, outcome, locale,
+            });
+        }
+    } catch {
+        // Deliberately swallowed; see above.
+    }
+    return res.status(204).end();
+});
+
+/**
+ * Attach a file to a conversation, before the message that carries it.
+ *
+ * Uploaded first because the bytes are the slow part: a customer should be able to attach while
+ * they are still typing, and the send that follows only names the ids.
+ */
+router.post('/conversation/:id/attachments', upload.single('file'), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        if (!attachmentsConfigured()) {
+            throw new AppError(503, 'Attachments are not available right now.', 'SUPPORT_ATTACHMENTS_OFF');
+        }
+        const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+        const file = (req as Request & { file?: { buffer: Buffer; originalname: string } }).file;
+        if (!file) throw new AppError(400, 'No file was sent.', 'VALIDATION_ERROR');
+
+        const stored = await svc.uploadAttachment({
+            actor: { id: req.user!.sub }, conversationId: id,
+            fileName: file.originalname, bytes: file.buffer, as: 'guest',
+        });
+        return res.status(201).json({ success: true, data: stored });
+    } catch (err) { next(err); }
+});
+
+/**
+ * The bytes, by way of a redirect to a five-minute signed URL (ADR-0040).
+ *
+ * Nothing is served from the bucket directly and no URL is ever stored: what is in the
+ * transcript is an id, and whether this caller may read it is decided here, now — so a
+ * conversation reassigned later changes what can be fetched immediately.
+ */
+router.get('/attachments/:id', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+        const url = await svc.attachmentUrl({ id: req.user!.sub }, id);
+        return res.redirect(302, url);
+    } catch (err) { next(err); }
+});
+
 router.post('/conversation/:id/messages', async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { id }   = z.object({ id: z.string().uuid() }).parse(req.params);
-        const { body } = z.object({ body: z.string().min(1).max(4000) }).parse(req.body ?? {});
-        const message  = await svc.sendMessage(req.user!.sub, id, body);
+        const { body, attachmentIds } = z.object({
+            body:          z.string().min(1).max(4000),
+            attachmentIds: z.array(z.string().uuid()).max(5).optional(),
+        }).parse(req.body ?? {});
+        const message = await svc.sendMessage(req.user!.sub, id, body, attachmentIds ?? []);
         return res.status(201).json({ success: true, data: message });
     } catch (err) { next(err); }
 });

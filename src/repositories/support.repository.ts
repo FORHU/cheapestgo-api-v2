@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { URGENCY_SQL } from '@/lib/support/urgency';
+import type { SupportAttachmentView } from '@/lib/support/attachments';
 
 /**
  * Where a Support Chat has got to.
@@ -35,6 +36,10 @@ export interface SupportMessageRow {
     body:            string;
     notice_code:     string | null;
     created_at:      Date;
+    /** The stored rendering, never recomputed on read — ADR-0033. */
+    translated_body:    string | null;
+    translated_lang:    string | null;
+    translation_status: string | null;
 }
 
 /** Every column a conversation is read through, so the shape cannot drift between queries. */
@@ -101,7 +106,8 @@ export class SupportRepository {
     /** Oldest first: a transcript is read in the order it was said. */
     async listMessages(conversationId: string, limit = 200): Promise<SupportMessageRow[]> {
         return prisma.$queryRaw<SupportMessageRow[]>(Prisma.sql`
-            SELECT id, conversation_id, sender_type, sender_admin_id, body, notice_code, created_at
+            SELECT id, conversation_id, sender_type, sender_admin_id, body, notice_code, created_at,
+                   translated_body, translated_lang, translation_status
               FROM support_messages
              WHERE conversation_id = ${conversationId}::uuid
              ORDER BY created_at ASC, id ASC
@@ -133,7 +139,8 @@ export class SupportRepository {
                     ${input.body},
                     ${input.noticeCode ?? null}
                 )
-                RETURNING id, conversation_id, sender_type, sender_admin_id, body, notice_code, created_at
+                RETURNING id, conversation_id, sender_type, sender_admin_id, body, notice_code, created_at,
+                          translated_body, translated_lang, translation_status
             `),
             prisma.$executeRaw(Prisma.sql`
                 UPDATE support_conversations
@@ -294,6 +301,185 @@ export class SupportRepository {
             UPDATE support_messages
                SET back_translated_body = ${back}
              WHERE id = ${messageId}::uuid AND translation_status = 'translated'
+        `);
+    }
+
+    /**
+     * Translations a stopped process left in flight.
+     *
+     * `pending` is written before the engine is called, so a deploy or a crash mid-call leaves
+     * a row that nothing is coming back to settle — and a reply held for its translation is
+     * held forever, which the reader experiences as a message that never arrived.
+     *
+     * Old enough to be abandoned rather than merely slow: the worst honest case is a long
+     * message whose pieces each exhaust their attempts and are then halved, a little over two
+     * minutes, so three is past anything still working.
+     */
+    async findStalledTranslations(olderThanMs: number, limit = 50): Promise<{
+        id: string; conversation_id: string; sender_type: string; body: string; locale: string;
+    }[]> {
+        return prisma.$queryRaw`
+            SELECT m.id, m.conversation_id, m.sender_type, m.body, c.locale
+              FROM support_messages m
+              JOIN support_conversations c ON c.id = m.conversation_id
+             WHERE m.translation_status = 'pending'
+               AND m.created_at < now() - (${olderThanMs} * interval '1 millisecond')
+             ORDER BY m.created_at
+             LIMIT ${limit}
+        `;
+    }
+
+    /**
+     * What the widget offered a customer, and what they did with it (ADR-0043).
+     *
+     * A counter. Nothing anyone sees depends on it, which is why the caller does not wait on it
+     * and a failure is answered like a success — a customer who cannot record that a card was
+     * shown must still be able to ask their question.
+     */
+    async recordSuggestionEvent(input: {
+        conversationId: string; articleId: string; locale: string; outcome: string;
+    }): Promise<void> {
+        await prisma.$executeRaw(Prisma.sql`
+            INSERT INTO support_suggestion_events (conversation_id, article_id, locale, outcome)
+            VALUES (${input.conversationId}::uuid, ${input.articleId}, ${input.locale}, ${input.outcome})
+        `);
+    }
+
+    /**
+     * The articles this customer was already shown, newest first.
+     *
+     * The Agent opening the chat reads this as "they have been given these answers and wrote
+     * anyway" — both a shortcut past repeating one, and the signal that an article is matching
+     * questions it cannot answer.
+     */
+    async suggestionsShownFor(conversationId: string): Promise<string[]> {
+        const rows = await prisma.$queryRaw<{ article_id: string }[]>(Prisma.sql`
+            SELECT DISTINCT article_id
+              FROM support_suggestion_events
+             WHERE conversation_id = ${conversationId}::uuid
+               AND outcome IN ('shown', 'opened')
+             LIMIT 10
+        `);
+        return rows.map(r => r.article_id);
+    }
+
+    // ── Attachments (ADR-0040) ────────────────────────────────────────────────
+
+    /**
+     * Record a file whose bytes are already in the bucket.
+     *
+     * The id is minted here rather than by the column default, because the storage key is built
+     * from it and the object has to exist before the row does — a row must never point at a
+     * missing file. The reverse, an object with no row, is the caller's to clean up.
+     */
+    async insertAttachment(input: {
+        id: string; conversationId: string; storageKey: string; fileName: string;
+        contentType: string; sizeBytes: number; uploadedByType: string; uploadedByAdminId?: string | null;
+    }): Promise<void> {
+        await prisma.$executeRaw(Prisma.sql`
+            INSERT INTO support_message_attachments
+                (id, conversation_id, storage_key, file_name, content_type, size_bytes,
+                 uploaded_by_type, uploaded_by_admin_id)
+            VALUES (${input.id}::uuid, ${input.conversationId}::uuid, ${input.storageKey},
+                    ${input.fileName}, ${input.contentType}, ${input.sizeBytes},
+                    ${input.uploadedByType}, ${input.uploadedByAdminId ?? null}::uuid)
+        `);
+    }
+
+    /** Bind uploaded files to the message that carries them, once that message exists. */
+    async attachToMessage(attachmentIds: string[], messageId: string, conversationId: string): Promise<number> {
+        if (attachmentIds.length === 0) return 0;
+        return prisma.$executeRaw(Prisma.sql`
+            UPDATE support_message_attachments
+               SET message_id = ${messageId}::uuid
+             WHERE id IN (${Prisma.join(attachmentIds.map(id => Prisma.sql`${id}::uuid`))})
+               -- Scoped to the conversation, so an id belonging to someone else's chat cannot
+               -- be bound into this one by guessing it.
+               AND conversation_id = ${conversationId}::uuid
+               AND message_id IS NULL
+        `);
+    }
+
+    /**
+     * The attachments on a set of messages, grouped by message.
+     *
+     * One query for a whole transcript rather than one per message: a conversation is read on
+     * every widget open and every stream backfill, and a per-message read would make that cost
+     * grow with the length of the conversation.
+     */
+    async attachmentsByMessage(messageIds: string[]): Promise<Map<string, SupportAttachmentView[]>> {
+        const grouped = new Map<string, SupportAttachmentView[]>();
+        if (messageIds.length === 0) return grouped;
+
+        const rows = await prisma.$queryRaw<(SupportAttachmentView & { messageId: string })[]>(Prisma.sql`
+            SELECT id,
+                   message_id       AS "messageId",
+                   file_name        AS "fileName",
+                   content_type     AS "contentType",
+                   size_bytes::int  AS "sizeBytes",
+                   uploaded_by_type AS "uploadedByType",
+                   (bytes_deleted_at IS NOT NULL) AS "bytesDeleted"
+              FROM support_message_attachments
+             WHERE message_id IN (${Prisma.join(messageIds.map(id => Prisma.sql`${id}::uuid`))})
+             ORDER BY created_at
+        `);
+
+        for (const row of rows) {
+            const list = grouped.get(row.messageId) ?? [];
+            list.push(row);
+            grouped.set(row.messageId, list);
+        }
+        return grouped;
+    }
+
+    /**
+     * One attachment, with the key — for the download route only.
+     *
+     * The key never reaches a response (ADR-0040): a message is serialised into HTTP, a stream
+     * frame and the Agent's inbox, and none of those need to name an object in a bucket.
+     */
+    async findAttachment(id: string): Promise<{
+        id: string; conversationId: string; storageKey: string; fileName: string;
+        contentType: string; bytesDeleted: boolean;
+    } | null> {
+        const rows = await prisma.$queryRaw<{
+            id: string; conversationId: string; storageKey: string; fileName: string;
+            contentType: string; bytesDeleted: boolean;
+        }[]>(Prisma.sql`
+            SELECT id,
+                   conversation_id AS "conversationId",
+                   storage_key     AS "storageKey",
+                   file_name       AS "fileName",
+                   content_type    AS "contentType",
+                   (bytes_deleted_at IS NOT NULL) AS "bytesDeleted"
+              FROM support_message_attachments
+             WHERE id = ${id}::uuid
+             LIMIT 1
+        `);
+        return rows[0] ?? null;
+    }
+
+    /** Files whose bytes are past the retention window and have not been removed yet. */
+    async findExpiredAttachments(days: number, limit = 200): Promise<{ id: string; storageKey: string }[]> {
+        return prisma.$queryRaw`
+            SELECT id, storage_key AS "storageKey"
+              FROM support_message_attachments
+             WHERE bytes_deleted_at IS NULL
+               AND created_at < now() - (${days} * interval '1 day')
+             ORDER BY created_at
+             LIMIT ${limit}
+        `;
+    }
+
+    /**
+     * Mark the bytes gone, keeping the row.
+     *
+     * The transcript still shows that a file was sent and says it has expired. Deleting the row
+     * would make a conversation read as though nothing was ever attached.
+     */
+    async markBytesDeleted(id: string): Promise<void> {
+        await prisma.$executeRaw(Prisma.sql`
+            UPDATE support_message_attachments SET bytes_deleted_at = now() WHERE id = ${id}::uuid
         `);
     }
 
