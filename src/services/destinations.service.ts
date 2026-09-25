@@ -218,7 +218,14 @@ export class DestinationsService {
 
                 return {
                     type: 'city' as const,
-                    rung: aliasedCity ? 'city' as const : rung,
+                    // The rung the place actually is, even when it resolves to a parent city.
+                    //
+                    // Flattening it to 'city' here threw the extent away: bounding applies only
+                    // below the city rung, so Alabang — a locality with its own bbox inside
+                    // Muntinlupa — fell back to a 50km radius and returned hotels in Batangas and
+                    // Tagaytay. `canonicalCity` already says which inventory to search; the rung
+                    // says how much of it to show, and those are different questions.
+                    rung,
                     // The district name is shown, not the canonical city - the user
                     // sees what they typed. canonicalCity carries the search target.
                     title:         cityName,

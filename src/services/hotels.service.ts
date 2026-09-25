@@ -13,6 +13,7 @@ import { AppError } from '@/middleware/error.middleware';
 import { prisma } from '@/lib/prisma';
 import { toStripeAmount, fromStripeAmount, hotelServiceFee, PREBOOK_QUOTE_TTL_MS } from '@/lib/pricing';
 import { resolveHotelChargeBase } from '@/lib/payments/chargeBase';
+import { nightsBetween } from '@/lib/hotels/nights';
 import { makeStrictConverter } from '@/lib/payments/convertStrict';
 import { capAtDisplayedTotal } from '@/lib/payments/chargeBase';
 import { snapshotFromPolicy } from '@/lib/policies/snapshotFromPolicy';
@@ -402,6 +403,11 @@ export class HotelsService {
                     console.warn('[property] room catalog failed:', err instanceof Error ? err.message : err);
                 }
 
+                // Per night, matching the search stream and v1. TGX quotes the whole stay and
+                // every room card prints "/ night" beside the figure, so the division belongs
+                // on this side of the wire — a client that forgets advertises a three-night
+                // stay at three times its rate.
+                const roomNights = nightsBetween(dates.checkIn, dates.checkOut);
                 rooms = deduped.map((r: any) => {
                     const extra = r.roomCode ? catalog.get(r.roomCode) : undefined;
                     // TGX appends the rate to the name and files variants in parentheses, so
@@ -416,7 +422,7 @@ export class HotelsService {
                         offerId:       r.offerId,
                         name:          normalizeRoomName(r.roomName),
                         ...(variantLabel ? { variantLabel } : {}),
-                        price:         r.price,
+                        price:         (r.price ?? 0) / roomNights,
                         currency:      r.currency,
                         refundableTag: r.refundable ? 'RFN' : 'NRFN',
                         // The terms themselves, not just whether they exist. This mapping

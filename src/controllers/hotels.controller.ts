@@ -4,6 +4,8 @@ import { AppError } from '@/middleware/error.middleware';
 import { HotelsService } from '@/services/hotels.service';
 import { getPlaceDetails, geocode as geoCodePlace } from '@/lib/google/places';
 import { config } from '@/config';
+import { nightsBetween } from '@/lib/hotels/nights';
+import { fetchHotelContentPatches } from '@/lib/hotels/contentPatches';
 import { resolveTgxDestinationCode } from '@/lib/hotels/travelgatex';
 import { getInstantHotelCatalog, runTgxSearch } from '@/lib/hotels/search';
 import { prisma } from '@/lib/prisma';
@@ -524,7 +526,22 @@ export class HotelsController {
             });
 
             const firstPassMs = Date.now() - firstPassStarted;
-            const tgxHotels: any[]   = Array.isArray(tgxResult.data) ? tgxResult.data : [];
+
+            /**
+             * Per night, because that is what a card says.
+             *
+             * TGX quotes the **whole stay**, and every price surface in the storefront prints
+             * "/ night" beside the number. Sending the stay total and trusting each of them to
+             * divide is what v1 stopped doing: the search card and the deals row never got the
+             * memo, so a three-night stay was advertised at three times its nightly rate.
+             *
+             * Done once, here, for the same reason v1 does it here — every list below is
+             * derived from this array, so dividing at the source is the only version that
+             * cannot be half-applied.
+             */
+            const stayNights = nightsBetween(body.checkin ?? body.checkIn, body.checkout ?? body.checkOut);
+            const tgxHotels: any[]   = (Array.isArray(tgxResult.data) ? tgxResult.data : [])
+                .map((h: any) => ({ ...h, price: (h.price ?? 0) / stayNights }));
             const tgxHotelIdSet      = new Set(tgxHotels.map((h: any) => h.hotelId || h.id));
             const newTgxHotels       = tgxHotels.filter((h: any) => !catalogIdSet.has(h.hotelId || h.id));
 
@@ -587,6 +604,30 @@ export class HotelsController {
             // The stream stays open afterwards, so the extra hotels and their prices arrive on
             // it as they are found. `collecting` tells the client to keep reading and to leave
             // the spinner off while it does; the stream closing is what ends the search.
+            /**
+             * Pictures for the hotels that have none, in two phases (as v1 does).
+             *
+             * A thin `hotel_content` row renders a card with no image at all, which reads as a
+             * broken listing rather than a missing photo. Phase A covers what is already on
+             * screen and goes out before `done`, so the images appear with the results; phase
+             * B covers the supplier's own hotels and goes out after, so nothing waits on it.
+             *
+             * Only hotels that actually lack an image are asked about — a search where the
+             * catalog is complete makes no content call at all.
+             */
+            const needsImages = (h: any) => !(h.images?.length) && !h.image;
+            const missingNow  = [...catalogHotels, ...tgxHotels]
+                .filter(needsImages)
+                .map((h: any) => String(h.hotelId || h.id))
+                .filter(Boolean);
+
+            if (!closed && missingNow.length > 0) {
+                const patches = await fetchHotelContentPatches([...new Set(missingNow)], 8_000);
+                if (!closed && patches.size > 0) {
+                    emit({ type: 'content', data: Object.fromEntries(patches) });
+                }
+            }
+
             const firstCount = tgxHotels.length > 0 ? tgxHotels.length : catalogHotels.length;
             if (!closed) emit({
                 type: 'done',
@@ -597,6 +638,7 @@ export class HotelsController {
                 collecting: wasTruncated,
             });
 
+            // Phase B is emitted after the collecting pass below, once its hotels are known.
             let extraHotels: any[] = [];
             if (!closed && wasTruncated) {
                 console.log(`[stream] First pass took ${firstPassMs}ms and looks truncated — collecting the rest`);
@@ -631,6 +673,20 @@ export class HotelsController {
                         })),
                     });
                     emit({ type: 'hotels', data: extraHotels, totalCount: extraHotels.length });
+
+                    // Phase B: pictures for the ones the collecting pass just added. After
+                    // their cards, never before — a card with no photo is worth more than no
+                    // card, and this call must not hold the hotels up.
+                    const missingLate = extraHotels
+                        .filter((h: any) => !(h.images?.length) && !h.image)
+                        .map((h: any) => String(h.hotelId || h.id))
+                        .filter(Boolean);
+                    if (!closed && missingLate.length > 0) {
+                        const late = await fetchHotelContentPatches([...new Set(missingLate)], 8_000);
+                        if (!closed && late.size > 0) {
+                            emit({ type: 'content', data: Object.fromEntries(late) });
+                        }
+                    }
                 }
             }
 
