@@ -313,6 +313,21 @@ export class HotelsController {
             return COUNTRY_NAME_TO_ISO[raw.toLowerCase()] ?? null;
         };
 
+        // ── Parse geographic params ───────────────────────────────────────────────
+        // Before anything reads them. The extent checks below ask whether bbox is an array, and
+        // a browser search sends it as the "minLng,minLat,maxLng,maxLat" string from the URL.
+        if (body.lat != null && body.lat !== '') body.lat = Number(body.lat);
+        if (body.lng != null && body.lng !== '') body.lng = Number(body.lng);
+        if (typeof body.bbox === 'string' && body.bbox.includes(',')) {
+            const parts = body.bbox.split(',').map(Number);
+            body.bbox = parts.length === 4 && parts.every((n: number) => Number.isFinite(n)) ? parts : undefined;
+        }
+
+        // What the traveller picked, before the normalisation below overwrites `destination`
+        // with `cityName`. The results page sends the parent city as `cityName`, so afterwards
+        // "Camden Town" and "London" both read "London" and the sub-area cannot be seen.
+        const pickedDestination: string = typeof body.destination === 'string' ? body.destination : '';
+
         const rawCity: string = body.cityName ?? body.destination ?? '';
         const normalizedCity  = rawCity.split(',')[0].trim();
         if (normalizedCity) {
@@ -327,6 +342,40 @@ export class HotelsController {
         if (body.countryCode && body.countryCode.length > 2) {
             const resolved = resolveIso(body.countryCode);
             if (resolved) body.countryCode = resolved;
+        }
+
+        // ── The extent the traveller picked ───────────────────────────────────────
+        //
+        // Every rung here is a place with real administrative boundaries, whatever the local
+        // word for it — a London borough, a Paris arrondissement, a German Landkreis, a Tokyo
+        // ku. None of those words appear in this code and none need to: what matters is that
+        // the picker typed the place as an area below a city and gave us its bounds.
+        //
+        // City is excluded on purpose (see `areaRung`), and so is a point rung, whose "bounds"
+        // are a building.
+        const BOUNDED_RUNGS = new Set(['province', 'district', 'neighborhood', 'locality', 'state', 'county']);
+        if (body.rung && BOUNDED_RUNGS.has(body.rung) && Array.isArray(body.bbox) && body.bbox.length === 4) {
+            body.areaRung = body.rung;
+        }
+
+        // ── A sub-area the picker already resolved ────────────────────────────────
+        //
+        // The picker sends both names: `destination` is what the traveller chose, and
+        // `canonicalCity` is the city whose inventory has to be searched, because OTV serves
+        // only the City rung (ADR-0006). Both facts are kept — the city to search, and the
+        // extent to search within — because acting on the first alone answers a borough with
+        // its whole city, and acting on neither answers it with nothing.
+        if (body.canonicalCity && pickedDestination &&
+            String(body.canonicalCity).toLowerCase() !== pickedDestination.toLowerCase()) {
+            const picked = body.rung;
+            console.log(`[stream] sub-area: "${pickedDestination}" (rung: ${picked ?? '?'}) ` +
+                        `-> searching "${body.canonicalCity}", bounded by its own extent`);
+            if (picked && picked !== 'city') body.areaRung = picked;
+            body.cityName    = body.canonicalCity;
+            body.destination = body.canonicalCity;
+            body.rung        = 'city';
+            // Resolved for the sub-area, wrong for the city.
+            delete body.destinationCode;
         }
 
         // ── City alias resolution (borough/neighbourhood → canonical city) ──────
@@ -350,14 +399,6 @@ export class HotelsController {
                     }
                 }
             }
-        }
-
-        // ── Parse geographic params ───────────────────────────────────────────────
-        if (body.lat != null && body.lat !== '') body.lat = Number(body.lat);
-        if (body.lng != null && body.lng !== '') body.lng = Number(body.lng);
-        if (typeof body.bbox === 'string' && body.bbox.includes(',')) {
-            const parts = body.bbox.split(',').map(Number);
-            body.bbox = parts.length === 4 && parts.every((n: number) => Number.isFinite(n)) ? parts : undefined;
         }
 
         // ── Default check-in dates (next Friday → Sunday) ────────────────────────
@@ -401,6 +442,16 @@ export class HotelsController {
                 checkout:    body.checkout ?? body.checkOut,
                 adults:      Number(body.adults)   || 2,
                 children:    Number(body.children) || 0,
+                // So the pins drawn are the pins inside the place that was asked for.
+                areaRung:    body.areaRung,
+                bbox:        body.bbox,
+                // And the coordinates, which this call never sent. Without them the catalog can
+                // only match the city by name, so a spelling the traveller did not use finds
+                // nothing: "Danang" drew no pins at all while 1,705 hotels sat under "Da Nang".
+                // A radius does not care how the name is spelled. A sub-area still wins over it,
+                // and a territory is still held to its own side of the border.
+                lat:         body.lat,
+                lng:         body.lng,
             };
             const catalogHotels = await Promise.race([
                 getInstantHotelCatalog(catalogParams),
@@ -446,6 +497,7 @@ export class HotelsController {
                 countryCode: body.countryCode,
                 currency:    body.currency,
                 rung:        body.rung,
+                areaRung:    body.areaRung,
                 lat:         body.lat,
                 lng:         body.lng,
                 bbox:        body.bbox,
@@ -460,6 +512,7 @@ export class HotelsController {
                 countryCode: body.countryCode,
                 currency:    body.currency,
                 rung:        body.rung,
+                areaRung:    body.areaRung,
                 lat:         body.lat,
                 lng:         body.lng,
                 bbox:        body.bbox,
@@ -467,7 +520,7 @@ export class HotelsController {
                 tgxFailed = true;
                 tgxUnanswered = err?.name === 'UnansweredSearchError';
                 console.warn(`[stream] TGX failed for "${city}": ${err.message}`, err.stack?.split('\n').slice(0,3).join(' | '));
-                return { data: [] as any[], allMappable: [] as any[], totalCount: 0 };
+                return { data: [] as any[], allMappable: [] as any[], totalCount: 0, truncated: false };
             });
 
             const firstPassMs = Date.now() - firstPassStarted;
@@ -498,7 +551,7 @@ export class HotelsController {
                 emit({ type: 'hotels', data: tgxHotels, totalCount: tgxHotels.length });
             }
 
-            // ── Phase 3: ask again, when the first answer was cut short ───────────
+            // ── Phase 3: answer now, then collect what the first pass missed ──────
             //
             // OTV cannot finish a destination search inside the 12s it asks us to allow, so
             // a first search of a city it has not computed lately comes back truncated. It
@@ -511,11 +564,38 @@ export class HotelsController {
             //     Sapporo   pass 1  32s ->  26 hotels    pass 2  14s ->  93
             //     Taipei    pass 1  33s ->  45 hotels    pass 2   0s -> 161
             //
-            // Conditional on the first pass having hit the budget, which is what being cut
-            // off looks like from here. A search that answered in 4-7s finished on its own
-            // and has nothing to collect — asking again would only double the number of
-            // requests OTV sees, and they watch that.
-            const wasTruncated = !tgxFailed && firstPassMs >= SECOND_PASS_THRESHOLD_MS;
+            // Conditional on the supplier having actually stopped mid-answer, which the search
+            // reports: a destination call that timed out, or hotel-code batches that never came
+            // back. Elapsed time was the first signal tried and it was the wrong one — a slow
+            // search is not a truncated one. Measured 2026-09-21: two cold cities whose first
+            // pass took 16.8s and 17.3s and returned 263 and 158 hotels were both judged
+            // truncated by the clock, and both second passes returned the same sets with
+            // nothing new, buying the traveller nothing and costing OTV a second full search.
+            //
+            // The threshold stays as a floor so a fast cut-off answer is not re-asked either.
+            const wasTruncated = !tgxFailed && tgxResult.truncated === true &&
+                firstPassMs >= SECOND_PASS_THRESHOLD_MS;
+
+            // `done` goes out before the collecting pass, not after it.
+            //
+            // It is what stops the spinner, and the traveller has a usable answer the moment
+            // the first pass lands. Holding it until the second pass finished meant a page
+            // that had already rendered its hotels still showed as searching for another ten
+            // to thirty seconds — the whole cost of the second pass was charged to a wait the
+            // traveller had no reason to sit through.
+            //
+            // The stream stays open afterwards, so the extra hotels and their prices arrive on
+            // it as they are found. `collecting` tells the client to keep reading and to leave
+            // the spinner off while it does; the stream closing is what ends the search.
+            const firstCount = tgxHotels.length > 0 ? tgxHotels.length : catalogHotels.length;
+            if (!closed) emit({
+                type: 'done',
+                totalCount: firstCount,
+                tgxCount:   tgxHotels.length,
+                tgxFailed,
+                tgxUnanswered,
+                collecting: wasTruncated,
+            });
 
             let extraHotels: any[] = [];
             if (!closed && wasTruncated) {
@@ -527,7 +607,7 @@ export class HotelsController {
                     .catch((err: any) => {
                         // Nothing is owed here: the traveller already has the first answer.
                         console.warn(`[stream] Second pass failed for "${city}": ${err?.message}`);
-                        return { data: [] as any[], allMappable: [] as any[], totalCount: 0 };
+                        return { data: [] as any[], allMappable: [] as any[], totalCount: 0, truncated: false };
                     });
 
                 const secondHotels: any[] = Array.isArray(second.data) ? second.data : [];
@@ -554,9 +634,9 @@ export class HotelsController {
                 }
             }
 
-            const liveCount  = tgxHotels.length + extraHotels.length;
-            const finalCount = liveCount > 0 ? liveCount : catalogHotels.length;
-            if (!closed) emit({ type: 'done', totalCount: finalCount, tgxCount: liveCount, tgxFailed, tgxUnanswered });
+            if (wasTruncated) {
+                console.log(`[stream] Collected ${extraHotels.length} extra hotels after done — closing`);
+            }
 
         } catch (err: any) {
             if (!closed) emit({ type: 'error', message: err.message ?? 'Search failed' });

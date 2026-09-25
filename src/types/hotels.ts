@@ -19,12 +19,33 @@ export interface HotelSearchParams {
     lat?: number;
     lng?: number;
     bbox?: [number, number, number, number];
+    /**
+     * The rung the traveller actually picked, kept after `rung` is downgraded to 'city'.
+     *
+     * A sub-area — a London borough, a Paris arrondissement, a Tokyo ku — has to be *searched*
+     * as its parent city, because OTV serves only the City rung (ADR-0006). Without a second
+     * field the downgrade erases the fact that the traveller asked for somewhere smaller, and
+     * the answer comes back as the whole city. 'city' is never a sub-area: a city's own box is
+     * tighter than its real hotel spread (Jeju's excludes Seogwipo, 27km out), which is what
+     * the radius is for.
+     */
+    areaRung?: DestinationRung;
 }
 
 export interface HotelSearchResult {
     data: any[];
     allMappable: any[];
     totalCount: number;
+    /**
+     * The supplier did not finish: it timed out mid-answer, or some of the hotel-code
+     * batches never came back. The results are real but incomplete, and asking again may
+     * collect the rest.
+     *
+     * Absent or false means the answer is whole. A slow answer is not a truncated one —
+     * a destination search that takes 17s and returns 264 hotels finished, and re-asking it
+     * returns the same 264 for a second round of supplier requests.
+     */
+    truncated?: boolean;
 }
 
 export interface HotelListing {

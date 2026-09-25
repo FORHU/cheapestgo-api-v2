@@ -3,6 +3,7 @@
  * Handles caching, OTV portfolio queries, ETG fallback, and result normalization.
  */
 
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import {
     tgxGraphQL, getTgxSettings, getTgxConfig, getTgxFilterSearch, buildOccupancies,
@@ -61,6 +62,56 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
 
 // ─── Instant hotel catalog from hotel_content ─────────────────────────────────
 
+/**
+ * Hotels OTV has stopped selling.
+ *
+ * The portfolio sync marks a row rather than deleting it, because the hotel may come back and
+ * because a booking already made against it still has to render. Every query that *chooses*
+ * hotels — the pins on the map, and the codes the supplier is asked to price — excludes them;
+ * a lookup by id does not, or a past booking would lose its name and pictures.
+ *
+ * 30,298 rows carry this on the current catalog. Shown, they are hotels a traveller can see,
+ * click and never book.
+ */
+const NOT_DELISTED = { delisted_at: null } as const;
+
+/**
+ * The catalog's spellings of a city, matched ignoring spaces, case and punctuation.
+ *
+ * A typed destination is not the catalog's spelling of it. "Danang" drew no pins at all while
+ * 1,705 hotels sat under "Da Nang", because the name branch asks for the string it was given;
+ * a picked destination escapes this only because it arrives with coordinates.
+ *
+ * Only asked when the plain match found nothing, and always inside a country, so the scan it
+ * costs is over one country's cities rather than the whole catalog.
+ */
+async function catalogSpellingsOf(cityName: string, countryCodes: string[] | null): Promise<string[]> {
+    const key = cityName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (key.length < 3) return [];
+
+    const rows = await prisma.$queryRaw<{ city: string }[]>`
+        SELECT DISTINCT city FROM hotel_content
+         WHERE regexp_replace(lower(city), '[^a-z0-9]', '', 'g') = ${key}
+           ${countryCodes
+               ? Prisma.sql`AND lower(country) IN (${Prisma.join(countryCodes.map(c => c.toLowerCase()))})`
+               : Prisma.empty}
+         LIMIT 5`;
+    return rows.map(r => r.city).filter(Boolean);
+}
+
+/**
+ * The extent to bound a search by, or null to leave it unbounded.
+ *
+ * Only a sub-area bounds. A plain city keeps the radius for the reason in `areaRung`, and a
+ * search with no picked extent has nothing to bound by.
+ */
+export function subAreaBbox(p: { areaRung?: string; bbox?: [number, number, number, number] }):
+    [number, number, number, number] | null {
+    return p.areaRung && p.areaRung !== 'city' && Array.isArray(p.bbox) && p.bbox.length === 4
+        ? p.bbox
+        : null;
+}
+
 export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<any[]> {
     const cityName: string = body.cityName ?? '';
     const countryCode: string = body.countryCode ?? '';
@@ -69,7 +120,20 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
     try {
         let where: any;
 
-        if (body.lat && body.lng) {
+        const areaBbox = subAreaBbox(body);
+
+        if (areaBbox) {
+            // The traveller picked an area with real boundaries, so those are the boundaries —
+            // a 50km circle around Camden Town is the whole of Greater London, and the borough
+            // they asked for is nowhere in it.
+            const [west, south, east, north] = areaBbox;
+            where = {
+                lat: { gte: south, lte: north },
+                lng: { gte: west,  lte: east  },
+                images: { isEmpty: false },
+                ...NOT_DELISTED,
+            };
+        } else if (body.lat && body.lng) {
             // Prefer radius search — works correctly across admin boundaries (e.g. Jeju/Seogwipo,
             // London/Greater London, etc.) without any hardcoding.
             const RADIUS_KM = 50;
@@ -78,6 +142,7 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
                 lat: { gte: body.lat - DEG, lte: body.lat + DEG },
                 lng: { gte: body.lng - DEG, lte: body.lng + DEG },
                 images: { isEmpty: false },
+                ...NOT_DELISTED,
             };
         } else {
             // Fallback: city-string match when no coordinates available.
@@ -87,11 +152,12 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
             where = {
                 OR: cityNames.map(n => ({ city: { contains: n, mode: 'insensitive' } })),
                 images: { isEmpty: false },
+                ...NOT_DELISTED,
             };
             if (countryCodes) where.country = { in: countryCodes, mode: 'insensitive' };
         }
 
-        const rows = await prisma.hotel_content.findMany({
+        let rows = await prisma.hotel_content.findMany({
             where,
             orderBy: { review_count: { sort: 'desc', nulls: 'last' } },
             take: body.lat && body.lng ? 1000 : 300,
@@ -108,19 +174,50 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
             },
         });
 
+        // A typed spelling the catalog does not use finds nothing by name. Ask again for the
+        // spellings it does use, which is a second query only on a search that already failed.
+        if (rows.length === 0 && !areaBbox && !(body.lat && body.lng) && cityName) {
+            const normalized = cityName.split(',')[0].trim().replace(/-(si|do|gu|gun|eup)$/i, '').trim();
+            const isoCode    = resolveIsoCode(countryCode);
+            const { countryCodes } = hotelLocationNames(normalized, isoCode || countryCode);
+            const spellings = await catalogSpellingsOf(normalized, countryCodes);
+            if (spellings.length > 0) {
+                console.log(`[catalog] "${normalized}" is filed as ${spellings.map(x => JSON.stringify(x)).join(', ')}`);
+                rows = await prisma.hotel_content.findMany({
+                    where: {
+                        OR: spellings.map(n => ({ city: { equals: n, mode: 'insensitive' as const } })),
+                        images: { isEmpty: false },
+                        ...NOT_DELISTED,
+                        ...(countryCodes ? { country: { in: countryCodes, mode: 'insensitive' as const } } : {}),
+                    },
+                    orderBy: { review_count: { sort: 'desc' as const, nulls: 'last' as const } },
+                    take: 300,
+                    select: {
+                        hotel_id: true, name: true, images: true, star_rating: true,
+                        lat: true, lng: true, address: true, city: true, country: true,
+                        review_rating: true, review_count: true,
+                    },
+                });
+            }
+        }
+
         // When using radius search, cull to true circle (bounding box is rectangular).
         let filtered = body.lat && body.lng
             ? rows.filter((r: any) => haversineKm(body.lat!, body.lng!, Number(r.lat), Number(r.lng)) <= 50)
             : rows;
 
-        // The circle ignores borders on purpose — Jeju has to reach Seogwipo — but a
-        // territory's border is a customs line. 50km from central Hong Kong is all of
-        // Shenzhen plus Dongguan and Zhuhai: in v1 a "Hong Kong" search returned 601
-        // Shenzhen hotels out of 1,287 (QA BG-8), and Jersey's circle reaches Guernsey.
-        // A territory keeps to its own side, judged by the territory-corrected country.
-        // Deliberately not every country: across an ordinary land border the circle is
-        // the point.
-        if (body.lat && body.lng && isTerritory(countryCode)) {
+        // A territory's border is a customs line, and it has to be enforced however the rows
+        // were found. 50km from central Hong Kong is all of Shenzhen plus Dongguan and Zhuhai:
+        // in v1 a "Hong Kong" search returned 601 Shenzhen hotels out of 1,287 (QA BG-8), and
+        // Jersey's circle reaches Guernsey. A territory keeps to its own side, judged by the
+        // territory-corrected country. Deliberately not every country: across an ordinary land
+        // border the circle is the point.
+        //
+        // This used to be gated on the search carrying coordinates, alongside the circle it was
+        // written for — but the caller never sends any, so the cull never ran and the name
+        // branch let Shenzhen through under "North District", which is a district of both
+        // cities. The border decides, not the name, and not whether a circle was drawn.
+        if (isTerritory(countryCode)) {
             const own = countryCode.toUpperCase();
             filtered = filtered.filter((r: any) =>
                 hotelCountry(r.country, r.city, r.lat, r.lng).toUpperCase() === own);
@@ -302,6 +399,7 @@ async function fetchHotelCodesByLocation(cityName: string, countryCode?: string,
             where: {
                 lat: { gte: lat - DEG, lte: lat + DEG },
                 lng: { gte: lng - DEG, lte: lng + DEG },
+                ...NOT_DELISTED,
             },
             take: 2000,
             select: { hotel_id: true, lat: true, lng: true },
@@ -315,7 +413,10 @@ async function fetchHotelCodesByLocation(cityName: string, countryCode?: string,
     const normalized = cityName.split(',')[0].trim().replace(/-(si|do|gu|gun|eup)$/i, '').trim();
     const { cityNames, countryCodes } = hotelLocationNames(normalized, countryCode);
 
-    const where: any = { OR: cityNames.map(n => ({ city: { contains: n, mode: 'insensitive' } })) };
+    const where: any = {
+        OR: cityNames.map(n => ({ city: { contains: n, mode: 'insensitive' } })),
+        ...NOT_DELISTED,
+    };
     if (countryCodes) where.country = { in: countryCodes, mode: 'insensitive' };
 
     const rows = await prisma.hotel_content.findMany({
@@ -799,6 +900,60 @@ export function isSupplierTimeout(warnings: any[]): boolean {
     );
 }
 
+// ─── Destination codes OTV cannot price in time ───────────────────────────────
+
+/**
+ * Cities whose destination search timed out, and how many times running.
+ *
+ * A destination search asks OTV to price a whole city at once, and for the largest cities
+ * it cannot do that inside the 12 seconds they ask us to allow. The request still costs us:
+ * measured 2026-09-21, a cold Osaka spent 17.3s on a destination call that came back with
+ * eight "104 Connection timeout" warnings and no hotels, before falling back to the
+ * hotel-code path that answered fine. Of a 26.9-second search, 17.3 seconds bought nothing,
+ * and it would have bought nothing again tomorrow.
+ *
+ * Two strikes before we reroute, because once is weather and twice is climate: a single
+ * timeout really is transient, and TGX documents it as worth retrying. An hour of memory,
+ * because a city that OTV could not price at breakfast may well be priceable by lunch, and
+ * nothing here should outlive the condition it describes.
+ *
+ * Only time clears an entry, and deliberately so. The obvious alternative — forget the moment
+ * the city answers again — was tried and was worse than useless: the collecting pass reruns
+ * the same search seconds later, by which point OTV has computed the city and answers happily,
+ * so every strike was wiped by our own follow-up and the count never reached two. That second
+ * answer is evidence the first request warmed the supplier, not evidence the next cold search
+ * will be fine.
+ *
+ * Deliberately not stored. A restart forgets, and the first search for a big city then pays
+ * the 17 seconds once more before the memory rebuilds. That is the whole cost, it is bounded
+ * by the TTL either way, and it buys us no migration, no write on the search path, and no
+ * state that can outlive its usefulness.
+ * ponytail: in-process Map, one container learns nothing from another. Move it to Redis if
+ * the repeated first-search cost after a deploy ever shows up in the numbers.
+ */
+const _destTimeouts = new Map<string, { consecutive: number; at: number }>();
+
+const DEST_TIMEOUT_TTL_MS  = 60 * 60 * 1000;
+const DEST_TIMEOUT_STRIKES = 2;
+
+/** Has this code timed out often enough, and recently enough, to stop asking? */
+export function destCodeTimesOut(code: string): boolean {
+    const seen = _destTimeouts.get(code);
+    if (!seen) return false;
+    if (Date.now() - seen.at > DEST_TIMEOUT_TTL_MS) { _destTimeouts.delete(code); return false; }
+    return seen.consecutive >= DEST_TIMEOUT_STRIKES;
+}
+
+export function recordDestTimeout(code: string): void {
+    const seen = _destTimeouts.get(code);
+    // A timeout an hour after the last one starts the count again rather than continuing it.
+    const fresh = seen && Date.now() - seen.at <= DEST_TIMEOUT_TTL_MS;
+    const consecutive = fresh ? seen!.consecutive + 1 : 1;
+    _destTimeouts.set(code, { consecutive, at: Date.now() });
+    console.warn(`[tgx-search] Dest code "${code}" timed out (${consecutive} in a row)`);
+}
+
+
 // ─── Failed dest code cache ───────────────────────────────────────────────────
 
 const _failedDestCodes     = new Set<string>();
@@ -915,6 +1070,12 @@ async function runCityFallback(
     // No-Availability result still returns normally and is still cached.
     const unansweredReasons: string[] = [];
 
+    // Set when the supplier demonstrably stopped mid-answer rather than finishing. Only a
+    // real cut-off justifies a second pass: measured 2026-09-21, two cold cities whose first
+    // pass merely ran long (16.8s -> 263 hotels, 17.3s -> 158) returned byte-identical sets
+    // on the second, so re-asking bought nothing and doubled what OTV saw.
+    let supplierCutShort = false;
+
     // Pre-declare so the dest-code block can populate it and fall through to hotel-code search.
     let otvCodes: string[]              = [];
     let otvContentMap = new Map<string, any>();
@@ -925,6 +1086,11 @@ async function runCityFallback(
         console.log(`[tgx-search] Got TGX dest code "${resolvedCode}" for "${cityName}"`);
         if (_failedDestCodes.has(resolvedCode)) {
             console.log(`[tgx-search] Dest code "${resolvedCode}" is a known OTV miss — skipping`);
+        } else if (destCodeTimesOut(resolvedCode)) {
+            // Straight to the hotel-code path, which is where this search was going to end up
+            // anyway, without the seventeen seconds of waiting to be told so. Falls through
+            // with otvCodes empty, exactly as a failed destination search would.
+            console.log(`[tgx-search] Dest code "${resolvedCode}" has been timing out — going straight to hotel codes`);
         } else {
             const __t0 = Date.now();
             const filterSearch = getTgxFilterSearch();
@@ -962,6 +1128,17 @@ async function runCityFallback(
             const destOptions: TgxOption[] = destResult?.data?.hotelX?.search?.options || [];
             const destErrors: any[]        = destResult?.data?.hotelX?.search?.errors  || [];
             const destWarnings: any[]      = destResult?.data?.hotelX?.search?.warnings || [];
+
+            // Measured 2026-09-21, Phuket cold: 54 options returned alongside
+            // "104 Connection timeout with supplier" after 14.9s. The hotels are real; the
+            // list is not the whole list.
+            if (isSupplierTimeout(destWarnings)) supplierCutShort = true;
+
+            // A timeout that returned nothing is the one worth remembering. A partial answer
+            // still answered, and rerouting away from it would cost us the hotels it did find.
+            if (isSupplierTimeout(destWarnings) && destOptions.length === 0) {
+                recordDestTimeout(resolvedCode);
+            }
             const destMerchant = destOptions.filter(
                 o => o.paymentType === 'MERCHANT' && (o.status === 'AVAILABLE' || o.status === 'OK')
             );
@@ -975,19 +1152,30 @@ async function runCityFallback(
                             .catch(() => {});
                     }
                 }
-                // If the DB has ≥2× more hotel codes than dest-code results, the dest-code
-                // search is under-counting (common for large cities where TGX's destination
-                // zone misses outer districts). Fall through to hotel-code search for broader
-                // coverage — matching v1's effective behaviour where the dest-code path is
-                // often skipped for well-seeded cities.
-                const dbCodes = await prefetchHotelCodes;
-                if (dbCodes.length >= destMerchant.length * 2) {
-                    console.log(`[tgx-search] DB has ${dbCodes.length} codes vs ${destMerchant.length} dest results — preferring hotel-code search for broader coverage`);
-                    otvCodes = dbCodes;
-                    // fall through to hotel-code search below
-                } else {
-                    return buildCityResults(destMerchant, cityName, countryCode, otv.contentMap);
-                }
+                // A destination answer is the answer. It is returned as it stands.
+                //
+                // This used to compare the answer against how many codes we hold for the city
+                // and, where the catalogue was twice the size, throw the answer away and search
+                // every code instead — on the grounds that a small result meant TGX's
+                // destination zone was missing outer districts, and that v1 did the same.
+                //
+                // v1 does not do the same. It returns the destination results and seeds the
+                // catalogue in the background for next time, which is a job nobody waits on.
+                // What was ported was a blocking second supplier search on the traveller's
+                // critical path, and it fired on every cold search, because OTV answers with
+                // *availability* while our catalogue holds *every hotel that exists*. The
+                // second is always larger, and a city where most rooms are taken makes it
+                // larger still, so the rule never stopped firing.
+                //
+                // Measured 2026-09-21, Fukuoka cold: the destination search answered in 8.3s
+                // with 54 hotels and no errors or warnings. The rule then spent 3.7s searching
+                // all 762 catalogue codes and arrived at the same 54. Twelve seconds for an
+                // answer that was complete at eight.
+                //
+                // Nothing is lost by trusting it. A destination search that came back short
+                // *and* cut off is a different case, and still reaches the hotel-code path
+                // through supplierCutShort and the collecting pass that follows it.
+                return buildCityResults(destMerchant, cityName, countryCode, otv.contentMap, supplierCutShort);
             }
             if (otvCodes.length === 0) {
                 // WRONG_FIELD/Empty hotels = TGX mapping gap (OTV was never called), and
@@ -1110,13 +1298,14 @@ async function runCityFallback(
 
             if (unansweredChunks > 0) {
                 unansweredReasons.push(`${unansweredChunks}/${chunks.length} hotel-code batches did not answer`);
+                supplierCutShort = true;
             }
 
             const fallbackMerchant = fallbackOptions.filter(
                 o => o.paymentType === 'MERCHANT' && (o.status === 'AVAILABLE' || o.status === 'OK')
             );
             if (fallbackMerchant.length > 0) {
-                return buildCityResults(fallbackMerchant, cityName, countryCode, otvContentMap);
+                return buildCityResults(fallbackMerchant, cityName, countryCode, otvContentMap, supplierCutShort);
             }
         } catch (tgxErr: any) {
             console.warn(`[tgx-search] Hotel-code search threw for "${cityName}" — falling through to ETG: ${tgxErr.message}`);
@@ -1159,13 +1348,50 @@ async function runCityFallback(
  * duplicated, so a customer double-clicking, or two tabs opening together, cost one
  * supplier call and both get the same live answer.
  */
+/**
+ * Cut a supplier answer back to the extent the traveller asked for.
+ *
+ * A sub-area is searched as its parent city, because OTV serves only the City rung (ADR-0006),
+ * so the answer is always the city's. Applied here, at the one exit every path leaves through:
+ * the city-name fallback returns from three places of its own, and a filter sitting on one of
+ * them bounded the pins while letting 305 hotels from the rest of London onto a Camden page.
+ *
+ * On a copy, never in place — the promise is shared between concurrent searches (below), and
+ * two callers may be asking about different extents of the same city.
+ */
+function boundToSubArea(result: HotelSearchResult, params: HotelSearchParams): HotelSearchResult {
+    const box = subAreaBbox(params);
+    if (!box) return result;
+
+    const [west, south, east, north] = box;
+    // A hotel with no coordinates cannot be placed, so it is kept rather than discarded: the
+    // catalog beside it knows where it is even when the supplier's record does not.
+    const inBox = (h: any) => {
+        const lat = Number(h.lat ?? h.coordinates?.lat);
+        const lng = Number(h.lng ?? h.coordinates?.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return true;
+        return lat >= south && lat <= north && lng >= west && lng <= east;
+    };
+
+    const data = (result.data ?? []).filter(inBox);
+    if (data.length === (result.data ?? []).length) return result;
+
+    console.log(`[tgx-search] sub-area bound: kept ${data.length} of ${(result.data ?? []).length} supplier hotels`);
+    return {
+        ...result,
+        data,
+        allMappable: (result.allMappable ?? []).filter(inBox),
+        totalCount:  data.length,
+    };
+}
+
 export async function runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResult> {
     const key = buildSearchKey(params);
 
     const existing = _inflight.get(key);
     if (existing) {
         console.log(`[tgx-search] JOIN ${key} — sharing the live search already in flight`);
-        return existing;
+        return boundToSubArea(await existing, params);
     }
 
     // One line per supplier search, so volume is visible now that every search is one.
@@ -1177,7 +1403,7 @@ export async function runTgxSearch(params: HotelSearchParams): Promise<HotelSear
     });
 
     _inflight.set(key, promise);
-    return promise;
+    return boundToSubArea(await promise, params);
 }
 
 async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResult> {
@@ -1186,7 +1412,7 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
         adults = 2, children = 0, childrenAges,
         destinationCode, cityName, countryCode, hotelCode,
         guest_nationality = 'KR',
-        rung, bbox,
+        rung, bbox, areaRung,
     } = params;
 
     const currency    = 'USD';
@@ -1312,15 +1538,8 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
 
     const cityResult = await buildCityResults(merchantOptions, cityName, countryCode);
 
-    // Apply bbox filter when caller provides a bounding box (e.g. province/island searches).
-    if (bbox && cityResult.data.length > 0) {
-        const [west, south, east, north] = bbox;
-        const inBox = (h: any) => !h.lat || !h.lng || (h.lng >= west && h.lng <= east && h.lat >= south && h.lat <= north);
-        cityResult.data        = cityResult.data.filter(inBox);
-        cityResult.allMappable = cityResult.allMappable.filter(inBox);
-        cityResult.totalCount  = cityResult.data.length;
-    }
-
+    // Bounding happens once, on the way out of runTgxSearch — this is only one of the four
+    // places a city search can return from.
     return cityResult;
 }
 
@@ -1329,6 +1548,7 @@ async function buildCityResults(
     cityName?: string,
     countryCode?: string,
     preloadedContent: Map<string, any> = new Map(),
+    truncated = false,
 ): Promise<HotelSearchResult> {
     const byHotel = new Map<string, TgxOption>();
     for (const opt of merchantOptions) {
@@ -1339,7 +1559,15 @@ async function buildCityResults(
         }
     }
 
+    // Cheapest first, and capped at 300 to protect the client's memory and render budget.
+    //
+    // The format filter comes before the cap, not after. OTV occasionally answers with codes
+    // in neither of its own shapes — LiteAPI slugs, mostly — and TGX has no availability under
+    // them, so each one becomes a card that can never be booked. Filtering after the slice
+    // would be worse than not filtering at all: the bad codes would still consume places in
+    // the 300, and real bookable hotels would be pushed out to make room for them.
     const rankedCodes = Array.from(byHotel.entries())
+        .filter(([code]) => /^\d+$/.test(code) || /^[A-Z]{2}\d+$/.test(code))
         .sort(([, a], [, b]) => (a.price.gross || a.price.net) - (b.price.gross || b.price.net))
         .slice(0, 300)
         .map(([code]) => code);
@@ -1512,5 +1740,5 @@ async function buildCityResults(
     });
 
     const allMappable = deduped.filter(h => h.lat && h.lng);
-    return { data: deduped, allMappable, totalCount: deduped.length };
+    return { data: deduped, allMappable, totalCount: deduped.length, truncated };
 }

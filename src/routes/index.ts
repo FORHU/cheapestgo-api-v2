@@ -17,6 +17,8 @@ import weatherRoutes       from './weather.route';
 import invoicesRoutes      from './invoices.route';
 import priceAlertsRoutes   from './price-alerts.route';
 import savedTripsRoutes    from './saved-trips.route';
+import supportRoutes       from './support.route';
+import adminSupportRoutes  from './admin-support.route';
 import autocompleteRoutes  from './autocomplete.route';
 import googleRoutes        from './google.route';
 
@@ -42,6 +44,8 @@ router.use('/weather',        weatherRoutes);
 router.use('/invoices',       invoicesRoutes);
 router.use('/price-alerts',   priceAlertsRoutes);
 router.use('/saved-trips',    savedTripsRoutes);
+router.use('/support',        supportRoutes);
+router.use('/admin/support',  adminSupportRoutes);
 router.use('/autocomplete',   autocompleteRoutes);
 router.use('/google',         googleRoutes);
 

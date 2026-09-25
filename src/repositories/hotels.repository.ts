@@ -170,6 +170,8 @@ export class HotelsRepository {
             city:   { contains: normalized, mode: 'insensitive' },
             images: { isEmpty: false },
         };
+        // Hotels OTV has stopped selling are not offered; see NOT_DELISTED in lib/hotels/search.
+        where.delisted_at = null;
         if (isoCode) where.country = { equals: isoCode, mode: 'insensitive' };
 
         return prisma.hotel_content.findMany({

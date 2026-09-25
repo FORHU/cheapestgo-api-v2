@@ -3,6 +3,7 @@ import { CITY_ALIASES, matchAliasQuery, resolveHotelDbCities } from '@/lib/cityA
 import { storedCountryCodes } from '@/lib/geo/territories';
 import { COUNTRY_SEARCH_LIST, extractCountryCode } from '@/lib/countries';
 import { DestinationsRepository } from '@/repositories/destinations.repository';
+import { matchCityEndonym } from '@/lib/cityEndonyms';
 import { logger } from '@/lib/logger';
 
 /**
@@ -402,9 +403,41 @@ export class DestinationsService {
         }
     }
 
+    /**
+     * The city a traveller named in its own language, resolved to the one thing everything
+     * downstream is keyed on: its English name.
+     *
+     * Offered ahead of everything else because the geocoder cannot be relied on to find it.
+     * Mapbox is queried in English and ranks an exact match on its English index first, so
+     * "Milano" returns Milanowek in Poland and Milan is not in the list at all — there is
+     * nothing to re-rank, only something to add.
+     */
+    private async endonymSuggestion(query: string): Promise<AutocompleteResult | null> {
+        const hit = matchCityEndonym(query);
+        if (!hit) return null;
+        const geo = await this.geocodeCanonicalCity(hit.city, hit.countryCode);
+        if (!geo) return null;
+        return {
+            type: 'city' as const,
+            rung: 'city' as const,
+            title: hit.city,
+            subtitle: geo.placeName,
+            countryCode: hit.countryCode,
+            lat: geo.lat,
+            lng: geo.lng,
+            bbox: geo.bbox,
+            // No canonicalCity and no districtName on purpose: an endonym is the same place
+            // under another name, not a sub-area of it. Setting either would frame Rome as a
+            // district of Rome and bound the search by a city's bbox, which is tighter than
+            // that city's real hotel spread.
+        };
+    }
     private async fetchAutocomplete(query: string, locale?: string): Promise<AutocompleteResult[]> {
         const countryResults = matchCountries(query);
-        const cityResults    = await this.fetchCitiesFromMapbox(query, locale);
+        const [cityResults, endonym] = await Promise.all([
+            this.fetchCitiesFromMapbox(query, locale),
+            this.endonymSuggestion(query),
+        ]);
 
         // Fill gaps in Mapbox's index from the alias dictionary, matched against
         // the raw query rather than Mapbox's output.
@@ -419,7 +452,14 @@ export class DestinationsService {
         }
         const aliasResults = await this.fetchAliasSuggestions(query, covered);
 
-        const allCities = [...cityResults, ...aliasResults];
+        // First, and never twice: Mapbox may also have found the city under its English name.
+        const named = (c: AutocompleteResult) => `${c.countryCode}|${(c.canonicalCity ?? c.title).toLowerCase()}`;
+        const fromMapbox = new Set([...cityResults, ...aliasResults].map(named));
+        const allCities = [
+            ...(endonym && !fromMapbox.has(named(endonym)) ? [endonym] : []),
+            ...cityResults,
+            ...aliasResults,
+        ];
         if (!allCities.length) return countryResults;
 
         // Destinations we stock sort to the top; the rest still show, below.
