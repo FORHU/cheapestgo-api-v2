@@ -9,7 +9,8 @@
 
 import { prisma } from '@/lib/prisma';
 import { FlightSearchParams, FlightResult, FlightOffer } from '@/types/flights';
-import { searchDuffel, normalizedToFlightOffer } from './duffel';
+import { AppError } from '@/middleware/error.middleware';
+import { searchDuffel, normalizedToFlightOffer, DuffelSearchError } from './duffel';
 // import { searchMystiflyV2 } from './mystifly'; // re-enable when live Mystifly key available
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, name: string): Promise<T> {
@@ -22,7 +23,18 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, name: string): Pr
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function searchFlights(params: FlightSearchParams): Promise<FlightOffer[]> {
-    const TIMEOUT_MS = 12_000;
+    // Impossible dates are the caller's mistake, not "no flights on this route".
+    const todayUTC = new Date().toISOString().slice(0, 10);
+    if (params.departureDate < todayUTC) {
+        throw new AppError(400, 'The departure date is in the past.', 'INVALID_FLIGHT_SEARCH');
+    }
+    if (params.returnDate && params.returnDate < params.departureDate) {
+        throw new AppError(400, 'The return date is before the departure date.', 'INVALID_FLIGHT_SEARCH');
+    }
+
+    // Whole-provider budget, retries included. Must exceed Duffel's per-attempt timeout
+    // (or retries can never run) and stay under the web client's 45s abort.
+    const TIMEOUT_MS = 40_000;
     // Cache TTL: 10 minutes in production, 0 (disabled) in development by default.
     // Override via env: FLIGHT_CACHE_TTL_MINUTES
     const TTL_MINUTES = parseInt(
@@ -69,6 +81,14 @@ export async function searchFlights(params: FlightSearchParams): Promise<FlightO
             console.error(`[Search] ${providers[i].name} failed:`, r.reason?.message ?? r.reason);
         }
     });
+
+    // Every provider failed: that's an error, not "no flights on this route".
+    const failures = settlement.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failures.length === providers.length) {
+        const invalid = failures.find(f => f.reason instanceof DuffelSearchError && f.reason.invalidSearch);
+        if (invalid) throw new AppError(400, invalid.reason.message, 'INVALID_FLIGHT_SEARCH');
+        throw new AppError(502, 'Flight search is temporarily unavailable. Please try again in a moment.', 'FLIGHT_SEARCH_UNAVAILABLE');
+    }
 
     // 4. Cache results (fire-and-forget)
     if (allResults.length > 0 && searchId) {

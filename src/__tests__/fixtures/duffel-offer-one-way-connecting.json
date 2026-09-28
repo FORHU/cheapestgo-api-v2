@@ -1,0 +1,359 @@
+{
+  "created_at": "2026-09-25T01:28:43.212912Z",
+  "updated_at": "2026-09-25T01:28:43.212912Z",
+  "id": "off_0000BAkgeXDsQCYIRasma2",
+  "live_mode": false,
+  "expires_at": "2026-09-25T02:28:43.202986Z",
+  "supported_loyalty_programmes": [
+    "AC",
+    "NZ",
+    "NH",
+    "OZ",
+    "CM",
+    "MS",
+    "AI",
+    "OU",
+    "BR",
+    "SQ",
+    "AV",
+    "UA",
+    "A3",
+    "LH",
+    "TK",
+    "CA",
+    "TG",
+    "ET",
+    "TP",
+    "SA"
+  ],
+  "base_amount": "179.00",
+  "intended_base_amount": "179.00",
+  "base_currency": "USD",
+  "tax_amount": "375.13",
+  "tax_currency": "USD",
+  "total_amount": "554.13",
+  "intended_total_amount": "554.13",
+  "total_currency": "USD",
+  "total_emissions_kg": "384",
+  "passenger_identity_documents_required": false,
+  "supported_passenger_identity_document_types": [
+    "known_traveler_number",
+    "passenger_redress_number",
+    "passport"
+  ],
+  "partial": false,
+  "private_fares": [],
+  "conditions": {
+    "change_before_departure": null,
+    "refund_before_departure": null
+  },
+  "owner": {
+    "conditions_of_carriage_url": "https://www.flytap.com/en-gb/transport-conditions?accordionid=1",
+    "iata_code": "TP",
+    "id": "arl_00009VME7DDoV8ZkzmMkZX",
+    "logo_lockup_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-lockup/TP.svg",
+    "logo_symbol_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/TP.svg",
+    "name": "TAP Air Portugal"
+  },
+  "slices": [
+    {
+      "id": "sli_0000BAkgeXDsQCYIRasmZt",
+      "duration": "PT12H40M",
+      "destination_type": "airport",
+      "origin_type": "airport",
+      "fare_brand_name": "Discount",
+      "ngs_shelf": 2,
+      "conditions": {
+        "change_before_departure": null,
+        "advance_seat_selection": false,
+        "priority_boarding": false,
+        "priority_check_in": false
+      },
+      "comparison_key": "BTzQ1w==",
+      "origin": {
+        "iata_code": "LHR",
+        "iata_country_code": "GB",
+        "id": "arp_lhr_gb",
+        "name": "Heathrow Airport",
+        "latitude": 51.470311,
+        "longitude": -0.458118,
+        "icao_code": "EGLL",
+        "time_zone": "Europe/London",
+        "city_name": "London",
+        "iata_city_code": "LON",
+        "type": "airport",
+        "city": {
+          "iata_code": "LON",
+          "iata_country_code": "GB",
+          "id": "cit_lon_gb",
+          "name": "London",
+          "latitude": null,
+          "longitude": null,
+          "icao_code": null,
+          "time_zone": null,
+          "city_name": null,
+          "iata_city_code": "LON",
+          "type": "city"
+        }
+      },
+      "destination": {
+        "iata_code": "JFK",
+        "iata_country_code": "US",
+        "id": "arp_jfk_us",
+        "name": "John F. Kennedy International Airport",
+        "latitude": 40.640556,
+        "longitude": -73.778519,
+        "icao_code": "KJFK",
+        "time_zone": "America/New_York",
+        "city_name": "New York",
+        "iata_city_code": "NYC",
+        "type": "airport",
+        "city": {
+          "iata_code": "NYC",
+          "iata_country_code": "US",
+          "id": "cit_nyc_us",
+          "name": "New York",
+          "latitude": null,
+          "longitude": null,
+          "icao_code": null,
+          "time_zone": null,
+          "city_name": null,
+          "iata_city_code": "NYC",
+          "type": "city"
+        }
+      },
+      "segments": [
+        {
+          "id": "seg_0000BAkgeXDsQCYIRasmZq",
+          "arriving_at": "2026-10-25T15:10:00",
+          "departing_at": "2026-10-25T12:25:00",
+          "destination_terminal": null,
+          "distance": null,
+          "duration": "PT2H45M",
+          "marketing_carrier_flight_number": "1367",
+          "operating_carrier_flight_number": "1367",
+          "origin_terminal": null,
+          "media": [],
+          "passengers": [
+            {
+              "passenger_id": "pas_0000BAkgeQFkKqt8pMhg17",
+              "cabin_class": "economy",
+              "cabin_class_marketing_name": "Economy",
+              "fare_basis_code": "LK0DSI05",
+              "baggages": [
+                {
+                  "type": "carry_on",
+                  "quantity": 1
+                }
+              ],
+              "cabin": {
+                "marketing_name": "Economy",
+                "name": "economy",
+                "amenities": {
+                  "wifi": {
+                    "available": false,
+                    "cost": "n/a"
+                  },
+                  "seat": {
+                    "type": "standard",
+                    "legroom": "less",
+                    "pitch": "28"
+                  },
+                  "power": {
+                    "available": false
+                  }
+                }
+              }
+            }
+          ],
+          "stops": [],
+          "aircraft": {
+            "iata_code": "32Q",
+            "id": "arc_00009lcSPZuSbgKG1u4Pku",
+            "name": "Airbus A321neo"
+          },
+          "marketing_carrier": {
+            "conditions_of_carriage_url": "https://www.flytap.com/en-gb/transport-conditions?accordionid=1",
+            "iata_code": "TP",
+            "id": "arl_00009VME7DDoV8ZkzmMkZX",
+            "logo_lockup_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-lockup/TP.svg",
+            "logo_symbol_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/TP.svg",
+            "name": "TAP Air Portugal"
+          },
+          "operating_carrier": {
+            "conditions_of_carriage_url": "https://www.flytap.com/en-gb/transport-conditions?accordionid=1",
+            "iata_code": "TP",
+            "id": "arl_00009VME7DDoV8ZkzmMkZX",
+            "logo_lockup_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-lockup/TP.svg",
+            "logo_symbol_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/TP.svg",
+            "name": "TAP Air Portugal"
+          },
+          "origin": {
+            "iata_code": "LHR",
+            "iata_country_code": "GB",
+            "id": "arp_lhr_gb",
+            "name": "Heathrow Airport",
+            "latitude": 51.470311,
+            "longitude": -0.458118,
+            "icao_code": "EGLL",
+            "time_zone": "Europe/London",
+            "city_name": "London",
+            "iata_city_code": "LON",
+            "type": "airport",
+            "city": {
+              "iata_code": "LON",
+              "iata_country_code": "GB",
+              "id": "cit_lon_gb",
+              "name": "London",
+              "latitude": null,
+              "longitude": null,
+              "icao_code": null,
+              "time_zone": null,
+              "city_name": null,
+              "iata_city_code": "LON",
+              "type": "city"
+            }
+          },
+          "destination": {
+            "iata_code": "LIS",
+            "iata_country_code": "PT",
+            "id": "arp_lis_pt",
+            "name": "Lisbon Humberto Delgado Airport",
+            "latitude": 38.778446,
+            "longitude": -9.135643,
+            "icao_code": "LPPT",
+            "time_zone": "Europe/Lisbon",
+            "city_name": "Lisbon",
+            "iata_city_code": "LIS",
+            "type": "airport",
+            "city": null
+          }
+        },
+        {
+          "id": "seg_0000BAkgeXDsQCYIRasmZs",
+          "arriving_at": "2026-10-25T21:05:00",
+          "departing_at": "2026-10-25T16:35:00",
+          "destination_terminal": null,
+          "distance": null,
+          "duration": "PT8H30M",
+          "marketing_carrier_flight_number": "0209",
+          "operating_carrier_flight_number": "0209",
+          "origin_terminal": null,
+          "media": [],
+          "passengers": [
+            {
+              "passenger_id": "pas_0000BAkgeQFkKqt8pMhg17",
+              "cabin_class": "economy",
+              "cabin_class_marketing_name": "Economy",
+              "fare_basis_code": "LK0DSI05",
+              "baggages": [
+                {
+                  "type": "carry_on",
+                  "quantity": 1
+                }
+              ],
+              "cabin": {
+                "marketing_name": "Economy",
+                "name": "economy",
+                "amenities": {
+                  "wifi": {
+                    "available": false,
+                    "cost": "n/a"
+                  },
+                  "seat": {
+                    "type": "standard",
+                    "legroom": "less",
+                    "pitch": "28"
+                  },
+                  "power": {
+                    "available": false
+                  }
+                }
+              }
+            }
+          ],
+          "stops": [],
+          "aircraft": {
+            "iata_code": "32Q",
+            "id": "arc_00009lcSPZuSbgKG1u4Pku",
+            "name": "Airbus A321neo"
+          },
+          "marketing_carrier": {
+            "conditions_of_carriage_url": "https://www.flytap.com/en-gb/transport-conditions?accordionid=1",
+            "iata_code": "TP",
+            "id": "arl_00009VME7DDoV8ZkzmMkZX",
+            "logo_lockup_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-lockup/TP.svg",
+            "logo_symbol_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/TP.svg",
+            "name": "TAP Air Portugal"
+          },
+          "operating_carrier": {
+            "conditions_of_carriage_url": "https://www.flytap.com/en-gb/transport-conditions?accordionid=1",
+            "iata_code": "TP",
+            "id": "arl_00009VME7DDoV8ZkzmMkZX",
+            "logo_lockup_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-lockup/TP.svg",
+            "logo_symbol_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/TP.svg",
+            "name": "TAP Air Portugal"
+          },
+          "origin": {
+            "iata_code": "LIS",
+            "iata_country_code": "PT",
+            "id": "arp_lis_pt",
+            "name": "Lisbon Humberto Delgado Airport",
+            "latitude": 38.778446,
+            "longitude": -9.135643,
+            "icao_code": "LPPT",
+            "time_zone": "Europe/Lisbon",
+            "city_name": "Lisbon",
+            "iata_city_code": "LIS",
+            "type": "airport",
+            "city": null
+          },
+          "destination": {
+            "iata_code": "JFK",
+            "iata_country_code": "US",
+            "id": "arp_jfk_us",
+            "name": "John F. Kennedy International Airport",
+            "latitude": 40.640556,
+            "longitude": -73.778519,
+            "icao_code": "KJFK",
+            "time_zone": "America/New_York",
+            "city_name": "New York",
+            "iata_city_code": "NYC",
+            "type": "airport",
+            "city": {
+              "iata_code": "NYC",
+              "iata_country_code": "US",
+              "id": "cit_nyc_us",
+              "name": "New York",
+              "latitude": null,
+              "longitude": null,
+              "icao_code": null,
+              "time_zone": null,
+              "city_name": null,
+              "iata_city_code": "NYC",
+              "type": "city"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "passengers": [
+    {
+      "id": "pas_0000BAkgeQFkKqt8pMhg17",
+      "type": "adult",
+      "fare_type": null,
+      "age": null,
+      "given_name": null,
+      "family_name": null,
+      "loyalty_programme_accounts": []
+    }
+  ],
+  "payment_requirements": {
+    "requires_instant_payment": false,
+    "payment_required_by": "2026-09-26T01:28:00Z",
+    "price_guarantee_expires_at": null
+  },
+  "intended_services": null,
+  "available_airline_credit_ids": []
+}

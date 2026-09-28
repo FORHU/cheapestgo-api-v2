@@ -120,21 +120,4 @@ export class FlightsController {
             res.json(result);
         } catch (err) { next(err); }
     };
-
-    priceCalendar = async (req: Request, res: Response, next: NextFunction) => {
-        try {
-            const params = z.object({
-                origin:      z.string(),
-                destination: z.string(),
-                year:        z.coerce.number().int(),
-                month:       z.coerce.number().int().min(1).max(12),
-                adults:      z.coerce.number().int().min(1).default(1),
-                cabin:       z.string().optional().default('economy'),
-                returnDate:  z.string().optional().nullable(),
-                provider:    z.string().optional().nullable(),
-            }).parse(req.query);
-            const result = await svc.getPriceCalendar(params);
-            res.json(result);
-        } catch (err) { next(err); }
-    };
 }

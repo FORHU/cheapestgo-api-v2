@@ -7,7 +7,8 @@ vi.mock('@/lib/flights/search', () => ({
     applyServerFilters: vi.fn((offers: any[]) => offers),
 }));
 
-vi.mock('@/lib/flights/duffel', () => ({
+vi.mock('@/lib/flights/duffel', async (importOriginal) => ({
+    seatMapServices:               (await importOriginal<typeof import('@/lib/flights/duffel')>()).seatMapServices,
     parseDuffelOffer:              vi.fn(),
     normalizedToFlightOffer:       vi.fn(),
     getDuffelAvailableServices:    vi.fn(),
@@ -57,8 +58,6 @@ vi.mock('@/repositories/flights.repository', () => ({
         this.updateFlightBookingRefundedStatus = vi.fn().mockResolvedValue(undefined);
         this.updateFlightBookingPaymentIntentId = vi.fn().mockResolvedValue(undefined);
         this.getBookingSessionForCancelQuote   = vi.fn().mockResolvedValue(null);
-        this.getPriceCalendarRaw               = vi.fn();
-        this.getPriceCalendarFallback          = vi.fn();
     }),
 }));
 
@@ -83,6 +82,7 @@ import { searchFlights, applyServerFilters }                from '@/lib/flights/
 import {
     placeDuffelOrder, getDuffelOrder,
     createDuffelCancellationQuote, confirmDuffelCancellation,
+    getDuffelAvailableServices, getDuffelSeatMaps,
 } from '@/lib/flights/duffel';
 import { stripe }          from '@/lib/stripe';
 import { FlightsService }  from '@/services/flights.service';
@@ -239,6 +239,60 @@ describe('FlightsService.book()', () => {
                 })],
             }),
         );
+    });
+
+    // The posted offer is a search result: Duffel never includes services on those, and
+    // never lists seats on an offer at all. Pricing extras from it charged them at zero,
+    // and Duffel refuses such orders (payment_amount_does_not_match_order_amount).
+    describe('pricing selected seats and bags', () => {
+        const SEARCH_RAW_OFFER = { id: 'off-abc', passengers: [{ id: 'pax1' }], total_amount: '100.00', total_currency: 'usd' };
+        const flight = { ...MOCK_FLIGHT, _rawOffer: SEARCH_RAW_OFFER } as any;
+
+        beforeEach(() => {
+            vi.mocked(placeDuffelOrder).mockResolvedValue({
+                kind: 'ok', order: { id: 'ord1', booking_reference: 'PNR1', documents: [] },
+                finalTotal: '100.00', finalCurrency: 'usd',
+            } as any);
+            vi.mocked(stripe.paymentIntents.create).mockResolvedValue({ id: PI_ID, client_secret: 'pi_secret_xyz' } as any);
+        });
+
+        it('adds the bag price Duffel quotes for the offer', async () => {
+            vi.mocked(getDuffelAvailableServices).mockResolvedValue([{ id: 'ase_bag', type: 'baggage', total_amount: '20.00' }]);
+
+            await service.book({ ...BOOK_PARAMS, flight, bagServiceIds: ['ase_bag'] });
+
+            expect(getDuffelAvailableServices).toHaveBeenCalledWith('off-abc');
+            expect(placeDuffelOrder).toHaveBeenCalledWith(expect.objectContaining({ total: '120.00' }));
+        });
+
+        it('adds the seat price from the seat map', async () => {
+            vi.mocked(getDuffelSeatMaps).mockResolvedValue([{
+                cabins: [{ rows: [{ sections: [{ elements: [
+                    { type: 'seat', designator: '1A', available_services: [{ id: 'ase_seat', passenger_id: 'pax1', total_amount: '12.50' }] },
+                ] }] }] }],
+            }]);
+
+            await service.book({ ...BOOK_PARAMS, flight, seatServiceIds: ['ase_seat'] });
+
+            expect(getDuffelSeatMaps).toHaveBeenCalledWith('off-abc');
+            expect(placeDuffelOrder).toHaveBeenCalledWith(expect.objectContaining({ total: '112.50' }));
+        });
+
+        it('does not look prices up when nothing extra was chosen', async () => {
+            await service.book({ ...BOOK_PARAMS, flight });
+
+            expect(getDuffelAvailableServices).not.toHaveBeenCalled();
+            expect(getDuffelSeatMaps).not.toHaveBeenCalled();
+            expect(placeDuffelOrder).toHaveBeenCalledWith(expect.objectContaining({ total: '100.00' }));
+        });
+
+        it('refuses to place the order when Duffel will not quote the extras', async () => {
+            vi.mocked(getDuffelAvailableServices).mockRejectedValue(Object.assign(new Error('Duffel services 503'), { status: 503 }));
+
+            await expect(service.book({ ...BOOK_PARAMS, flight, bagServiceIds: ['ase_bag'] }))
+                .rejects.toMatchObject({ status: 502, code: 'SERVICE_PRICES_UNAVAILABLE' });
+            expect(placeDuffelOrder).not.toHaveBeenCalled();
+        });
     });
 
     it('creates a Stripe PI with automatic capture and returns clientSecret + sessionId + paymentIntentId', async () => {
@@ -401,5 +455,17 @@ describe('FlightsService.cancelBooking()', () => {
         );
         expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
         expect(result.status).toBe('refunded');
+    });
+});
+
+// ─── getBags() ────────────────────────────────────────────────────────────────
+
+describe('FlightsService.getBags()', () => {
+    it('reports an expired offer as 404 so the client treats it as an error', async () => {
+        // Sent as 200 before, which the web client's http helper reads as success.
+        vi.mocked(getDuffelAvailableServices).mockRejectedValue(Object.assign(new Error('Not found'), { status: 404 }));
+
+        await expect(service.getBags('off-gone', []))
+            .rejects.toMatchObject({ status: 404, code: 'OFFER_EXPIRED' });
     });
 });

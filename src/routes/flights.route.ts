@@ -10,7 +10,6 @@ router.post('/bags',            ctrl.bags);
 router.post('/seat-map',        ctrl.seatMap);
 router.post('/fare-rules',      ctrl.fareRules);
 router.post('/offer-refresh',   ctrl.offerRefresh);
-router.get( '/price-calendar',  ctrl.priceCalendar);
 router.get( '/deals',           ctrl.deals);
 
 // Auth-protected

@@ -14,7 +14,7 @@ import {
     parseDuffelOffer, normalizedToFlightOffer, getDuffelAvailableServices,
     getDuffelSeatMaps, getDuffelBalances, getAvailableBalance,
     createDuffelCancellationQuote, confirmDuffelCancellation, getDuffelOrder,
-    placeDuffelOrder, refreshDuffelOffer,
+    placeDuffelOrder, refreshDuffelOffer, seatMapServices,
 } from '@/lib/flights/duffel';
 import { mystiflyRequest } from '@/lib/flights/mystifly';
 import {
@@ -38,6 +38,29 @@ function toStripeAmount(price: number, currency: string): number {
     const zeroDecimal = ['jpy', 'krw', 'clp', 'pyg', 'ugx', 'vnd', 'xaf', 'xof'];
     if (zeroDecimal.includes(currency.toLowerCase())) return Math.round(price);
     return Math.round(price * 100);
+}
+
+/**
+ * Duffel's own prices for the seats/bags a traveller picked. The offer posted to /book
+ * is a search result, which never carries services (and seats are never on an offer,
+ * only in seat maps) — pricing from it charged extras at zero and Duffel refused the
+ * order with payment_amount_does_not_match_order_amount.
+ */
+async function quotedServices(offerId: string, seatServiceIds?: string[], bagServiceIds?: string[]): Promise<any[]> {
+    const wantSeats = (seatServiceIds?.length ?? 0) > 0;
+    const wantBags = (bagServiceIds?.length ?? 0) > 0;
+    if (!wantSeats && !wantBags) return [];
+
+    try {
+        const [bags, seatMaps] = await Promise.all([
+            wantBags ? getDuffelAvailableServices(offerId) : [],
+            wantSeats ? getDuffelSeatMaps(offerId) : [],
+        ]);
+        return [...bags, ...seatMapServices(seatMaps)];
+    } catch (err: any) {
+        console.error(`[book] Could not price services for ${offerId}:`, err.message);
+        throw new AppError(502, 'We could not confirm the price of your selected seats or bags. Please try again.', 'SERVICE_PRICES_UNAVAILABLE');
+    }
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -216,7 +239,7 @@ export class FlightsService {
             }));
 
             const offerTotal = parseFloat(rawOffer.total_amount ?? '0');
-            const availableSvcs: any[] = rawOffer.available_services ?? [];
+            const availableSvcs = await quotedServices(rawOffer.id, seatServiceIds, bagServiceIds);
             let computedSeatExtra = 0;
             let computedBagExtra = 0;
             for (const id of (seatServiceIds ?? [])) {
@@ -529,7 +552,7 @@ export class FlightsService {
             services = await getDuffelAvailableServices(offerId);
         } catch (err: any) {
             if (err.status === 404) {
-                throw new AppError(200, 'This offer has expired. Please go back and search again for updated prices.', 'OFFER_EXPIRED');
+                throw new AppError(404, 'This offer has expired. Please go back and search again for updated prices.', 'OFFER_EXPIRED');
             }
             throw new AppError(err.status ?? 500, err.message, 'DUFFEL_ERROR');
         }
@@ -986,68 +1009,6 @@ export class FlightsService {
             currency: refundCurrency,
             stripeError,
         };
-    }
-
-    // ── Price calendar ────────────────────────────────────────────────────────
-
-    async getPriceCalendar(params: {
-        origin: string;
-        destination: string;
-        year: number;
-        month: number;
-        adults: number;
-        cabin: string;
-        returnDate?: string | null;
-        provider?: string | null;
-    }): Promise<Record<string, { price: number; currency: string }>> {
-        const startDate = `${params.year}-${String(params.month).padStart(2, '0')}-01`;
-        const lastDay = new Date(params.year, params.month, 0).getDate();
-        const endDate = `${params.year}-${String(params.month).padStart(2, '0')}-${lastDay}`;
-
-        const rows = await this.repo.getPriceCalendarRaw({
-            origin: params.origin,
-            destination: params.destination,
-            startDate,
-            endDate,
-            adults: params.adults,
-            cabin: params.cabin,
-            returnDate: params.returnDate,
-            provider: params.provider,
-        });
-
-        if (rows !== null) {
-            const result: Record<string, { price: number; currency: string }> = {};
-            for (const row of rows) {
-                result[row.departure_date] = { price: parseFloat(row.min_price), currency: row.currency };
-            }
-            return result;
-        }
-
-        // Fallback: direct query
-        const cutoffDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
-        const fallback = await this.repo.getPriceCalendarFallback({
-            origin: params.origin,
-            destination: params.destination,
-            startDate,
-            endDate,
-            adults: params.adults,
-            cabin: params.cabin,
-            returnDate: params.returnDate,
-            provider: params.provider,
-            cutoffDate,
-        });
-
-        const result: Record<string, { price: number; currency: string }> = {};
-        for (const row of fallback) {
-            const date = (row.flight_searches as any).departure_date?.toISOString?.()?.slice(0, 10)
-                ?? (row.flight_searches as any).departure_date;
-            if (!date) continue;
-            const price = parseFloat(row.price.toString());
-            if (!result[date] || price < result[date].price) {
-                result[date] = { price, currency: row.currency };
-            }
-        }
-        return result;
     }
 
     // ─── Private supplier helpers ─────────────────────────────────────────────

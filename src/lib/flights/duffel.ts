@@ -11,7 +11,8 @@ import { FlightResult, FlightSearchParams } from '@/types/flights';
 
 const DUFFEL_BASE = 'https://api.duffel.com';
 const DUFFEL_VERSION = 'v2';
-const SEARCH_TIMEOUT_MS = 12_000;
+// Per attempt. Busy long-haul round-trips (e.g. FRA↔BKK, 2k+ offers) take ~12s at Duffel.
+const SEARCH_TIMEOUT_MS = 20_000;
 const MAX_RETRIES = 2;
 
 // ─── Header factory ───────────────────────────────────────────────────────────
@@ -37,22 +38,22 @@ export function getDuffelToken(): string {
 
 // ─── Offer search ─────────────────────────────────────────────────────────────
 
+/**
+ * A search Duffel could not answer. Thrown rather than returning [] so the
+ * aggregator can tell an outage apart from a route with no flights.
+ * `invalidSearch` marks a 4xx validation error — the request itself was wrong.
+ */
+export class DuffelSearchError extends Error {
+    constructor(message: string, public status: number, public invalidSearch = false) {
+        super(message);
+        this.name = 'DuffelSearchError';
+    }
+}
+
 export async function searchDuffel(params: FlightSearchParams): Promise<FlightResult[]> {
     const token = config.DUFFEL_ACCESS_TOKEN;
     if (!token) {
-        console.warn('[Duffel] DUFFEL_ACCESS_TOKEN missing — skipping');
-        return [];
-    }
-
-    // Reject past dates before hitting Duffel (prevents 422)
-    const todayUTC = new Date().toISOString().slice(0, 10);
-    if (params.departureDate < todayUTC) {
-        console.warn(`[Duffel] Skipping — departure_date ${params.departureDate} is in the past`);
-        return [];
-    }
-    if (params.returnDate && params.returnDate < params.departureDate) {
-        console.warn(`[Duffel] Skipping — returnDate before departureDate`);
-        return [];
+        throw new DuffelSearchError('DUFFEL_ACCESS_TOKEN not configured', 0);
     }
 
     const passengers = [
@@ -110,7 +111,12 @@ export async function searchDuffel(params: FlightSearchParams): Promise<FlightRe
                 }
 
                 console.error(`[Duffel] search error (${res.status}):`, errMsg);
-                return [];
+                const first = errData?.errors?.[0];
+                throw new DuffelSearchError(
+                    first?.message ?? `Duffel search failed (${res.status})`,
+                    res.status,
+                    (res.status === 400 || res.status === 422) && first?.type === 'validation_error',
+                );
             }
 
             const json: any = await res.json();
@@ -120,18 +126,19 @@ export async function searchDuffel(params: FlightSearchParams): Promise<FlightRe
             return offers.map(o => parseDuffelOffer(o, params.cabinClass));
 
         } catch (err: any) {
+            if (err instanceof DuffelSearchError) throw err;
             const isTimeout = err.name === 'TimeoutError' || err.name === 'AbortError';
             if (isTimeout && attempt < MAX_RETRIES) {
                 await sleep(1500 * (attempt + 1));
                 continue;
             }
             console.error('[Duffel] search failed after retries:', err.message);
-            return [];
+            throw new DuffelSearchError(err.message, 0);
         }
     }
 
     console.error(`[Duffel] Giving up after ${MAX_RETRIES} retries. Last status: ${lastStatus}`);
-    return [];
+    throw new DuffelSearchError(`Duffel search gave up after ${MAX_RETRIES} retries`, lastStatus);
 }
 
 // ─── Balance check ────────────────────────────────────────────────────────────
@@ -165,8 +172,10 @@ export function getAvailableBalance(balances: BalanceEntry[], currency: string):
 // ─── Available services (bags) ────────────────────────────────────────────────
 
 export async function getDuffelAvailableServices(offerId: string): Promise<any[]> {
+    // Services only come back on a single-offer GET with this flag; there is no
+    // /available_services sub-resource (it 404s), and search results never include them.
     const res = await fetch(
-        `${DUFFEL_BASE}/air/offers/${encodeURIComponent(offerId)}/available_services`,
+        `${DUFFEL_BASE}/air/offers/${encodeURIComponent(offerId)}?return_available_services=true`,
         { headers: duffelHeaders() },
     );
     if (!res.ok) {
@@ -174,7 +183,7 @@ export async function getDuffelAvailableServices(offerId: string): Promise<any[]
         throw Object.assign(new Error(err?.errors?.[0]?.message ?? `Duffel services ${res.status}`), { status: res.status });
     }
     const json: any = await res.json();
-    return json.data ?? [];
+    return json.data?.available_services ?? [];
 }
 
 // ─── Seat maps ────────────────────────────────────────────────────────────────
@@ -193,6 +202,27 @@ export async function getDuffelSeatMaps(offerId: string): Promise<any[]> {
     }
     const json: any = await res.json();
     return json.data ?? [];
+}
+
+/** Every seat service in a seat map — Duffel only ever quotes seats here, never on the offer. */
+export function seatMapServices(seatMaps: any[]): any[] {
+    return (seatMaps ?? []).flatMap((m: any) => (m.cabins ?? [])
+        .flatMap((c: any) => c.rows ?? [])
+        .flatMap((r: any) => r.sections ?? [])
+        .flatMap((s: any) => s.elements ?? [])
+        .flatMap((e: any) => e.available_services ?? []));
+}
+
+/** Duffel's current prices for the chosen extras: bags from the offer, seats from the seat map. */
+export async function quoteDuffelServices(offerId: string, seatServiceIds?: string[], bagServiceIds?: string[]): Promise<any[]> {
+    const wantSeats = (seatServiceIds?.length ?? 0) > 0;
+    const wantBags = (bagServiceIds?.length ?? 0) > 0;
+    if (!wantSeats && !wantBags) return [];
+    const [bags, seatMaps] = await Promise.all([
+        wantBags ? getDuffelAvailableServices(offerId) : [],
+        wantSeats ? getDuffelSeatMaps(offerId) : [],
+    ]);
+    return [...bags, ...seatMapServices(seatMaps)];
 }
 
 // ─── Offer refresh ────────────────────────────────────────────────────────────
@@ -345,7 +375,15 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
             if (!liveRes.ok || !liveData?.data) break;
 
             const pricedOffer = liveData.data;
-            const availableSvcs: any[] = pricedOffer.available_services ?? [];
+            // The price action returns no services at all (not even bags), so extras
+            // priced from it came to zero and Duffel refused the retried payment.
+            let availableSvcs: any[];
+            try {
+                availableSvcs = includeServices ? await quoteDuffelServices(pricedOffer.id, seatServiceIds, bagServiceIds) : [];
+            } catch (e: any) {
+                console.error(`[Duffel] could not re-price services on ${pricedOffer.id}: ${e.message}`);
+                break;
+            }
             let newSeatExtra = 0;
             let newBagExtra = 0;
             if (includeServices) {
@@ -557,8 +595,11 @@ export function parseDuffelOffer(offer: any, cabinClassFallback?: string): Fligh
         slice.segments.forEach((seg: any) => {
             allSegments.push({
                 segmentIndex: sliceIdx,
-                airline: seg.operating_carrier?.iata_code || seg.marketing_carrier?.iata_code,
-                airlineName: seg.operating_carrier?.name || seg.marketing_carrier?.name,
+                // Marketing carrier: it's the brand the seat was sold under and the one the
+                // flight number below belongs to. Reading the operating carrier here put the
+                // wrong airline's name beside the flight number on every codeshare.
+                airline: seg.marketing_carrier?.iata_code || seg.operating_carrier?.iata_code,
+                airlineName: seg.marketing_carrier?.name || seg.operating_carrier?.name,
                 origin: seg.origin.iata_code,
                 destination: seg.destination.iata_code,
                 flightNumber: `${seg.marketing_carrier.iata_code}${seg.marketing_carrier_flight_number}`,
@@ -582,10 +623,25 @@ export function parseDuffelOffer(offer: any, cabinClassFallback?: string): Fligh
     const refundPenalty = refundCond?.penalty_amount != null ? parseFloat(refundCond.penalty_amount) : null;
     const changePenalty = changeCond?.penalty_amount != null ? parseFloat(changeCond.penalty_amount) : null;
 
+    const totalAmount = parseFloat(offer.total_amount);
+    // total_amount covers every passenger; divide by adults for the per-person figure.
+    const numAdults = (offer.passengers ?? []).filter((p: any) => p.type === 'adult').length || 1;
+    const pricePerAdult = numAdults > 1 ? Math.round(totalAmount / numAdults) : totalAmount;
+
+    // Keep the base/tax split only when it reconciles with the total — a breakdown
+    // that doesn't add up is worse than none.
+    const baseAmount = offer.base_amount != null ? parseFloat(offer.base_amount) : NaN;
+    const taxAmount = offer.tax_amount != null ? parseFloat(offer.tax_amount) : NaN;
+    const partsReconcile =
+        Number.isFinite(baseAmount) && Number.isFinite(taxAmount) &&
+        Math.abs(baseAmount + taxAmount - totalAmount) < 0.01;
+
     return {
         provider: 'duffel',
         offer_id: offer.id,
-        price: parseFloat(offer.total_amount),
+        price: totalAmount,
+        pricePerAdult,
+        ...(partsReconcile ? { baseFare: baseAmount, taxes: taxAmount } : {}),
         currency: offer.total_currency,
         airline: offer.owner.name,
         departure_time: firstSeg?.departure?.time,
@@ -593,32 +649,58 @@ export function parseDuffelOffer(offer: any, cabinClassFallback?: string): Fligh
         duration: offer.slices.reduce((acc: number, s: any) => acc + parseDuffelDuration(s.duration), 0),
         stops: offer.slices.reduce((acc: number, s: any) => acc + (s.segments.length - 1), 0),
         remaining_seats: offer.available_seats || null,
+        segments: allSegments,
         refundable: isRefundable,
+        farePolicy: {
+            isRefundable,
+            isChangeable,
+            refundPenaltyAmount: refundPenalty,
+            refundPenaltyCurrency: refundCond?.penalty_currency ?? null,
+            changePenaltyAmount: changePenalty,
+            changePenaltyCurrency: changeCond?.penalty_currency ?? null,
+            policyVersion: 'search' as const,
+            policySource: 'duffel' as const,
+        },
         raw: offer,
     } as any;
 }
 
 export function normalizedToFlightOffer(result: FlightResult, tripType: 'one-way' | 'round-trip' | 'multi-city' = 'one-way'): any {
     const raw: any = result.raw;
-    const allSegments: any[] = (raw as any).segments ?? [];
+    // A cache row keeps only the raw Duffel payload, so re-derive the parsed fields from it.
+    const parsed: any = (result as any).segments || !raw?.slices ? result : parseDuffelOffer(raw);
 
     const price = typeof result.price === 'number' ? result.price : 0;
+
+    const segments = (parsed.segments ?? []).map((seg: any) => ({
+        segmentIndex: seg.segmentIndex,
+        airline: { code: seg.airline ?? '', name: seg.airlineName ?? '' },
+        origin: seg.origin,
+        destination: seg.destination,
+        flightNumber: seg.flightNumber,
+        departure: seg.departure,
+        arrival: seg.arrival,
+        duration: seg.duration,
+        stops: seg.stops,
+        aircraft: seg.aircraft,
+        cabinClass: seg.cabinClass,
+    }));
 
     return {
         offerId: result.offer_id,
         provider: result.provider,
         price: {
             total: price,
-            base: (raw as any).baseFare ?? price,
-            taxes: (raw as any).taxes ?? 0,
+            base: parsed.baseFare ?? price,
+            taxes: parsed.taxes ?? 0,
             currency: result.currency,
-            pricePerAdult: (raw as any).pricePerAdult ?? price,
+            pricePerAdult: parsed.pricePerAdult ?? price,
         },
-        segments: allSegments,
+        segments,
         totalDuration: result.duration,
         totalStops: result.stops,
         refundable: (result as any).refundable ?? false,
-        farePolicy: (raw as any).farePolicy ?? null,
+        farePolicy: parsed.farePolicy ?? null,
         seatsRemaining: result.remaining_seats ?? undefined,
         tripType,
         traceId: result.traceId,
