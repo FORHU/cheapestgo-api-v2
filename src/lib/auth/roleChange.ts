@@ -29,7 +29,7 @@ export function validateRoleChange({ actorId, targetId, newRole }: RoleChangeInp
         return { ok: false, error: 'Missing or invalid userId' };
     }
     if (!isRole(newRole)) {
-        return { ok: false, error: 'Invalid role. Must be "user" or "admin".' };
+        return { ok: false, error: 'Invalid role. Must be "user", "admin" or "support_agent".' };
     }
     if (targetId === actorId && newRole !== 'admin') {
         return { ok: false, error: 'Cannot demote yourself' };

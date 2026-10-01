@@ -223,6 +223,35 @@ export async function getDuffelSeatMaps(offerId: string): Promise<any[]> {
 
 // ─── Offer refresh ────────────────────────────────────────────────────────────
 
+/**
+ * One offer, by id, straight from Duffel.
+ *
+ * The offer is the only place the things an order needs actually live: the passenger ids
+ * an order must refer to come from the offer request, and `payments` has to match
+ * `total_amount` and `total_currency` exactly or the order is rejected. A browser cannot
+ * be the source of any of that — and an offer lasts about thirty minutes, which is
+ * shorter than some checkouts. Duffel's own guidance is to fetch it again when the
+ * traveller is ready to book.
+ *
+ * Distinct from `refreshDuffelOffer`, which runs a whole new offer_request to find
+ * *alternatives* when this one has expired. This asks about the offer in hand.
+ */
+export async function getDuffelOffer(offerId: string): Promise<any | null> {
+    const res = await fetch(`${DUFFEL_BASE}/air/offers/${encodeURIComponent(offerId)}`, {
+        headers: duffelHeaders(),
+        signal: AbortSignal.timeout(12000),
+    });
+    // Gone or never existed. The caller decides whether that is fatal or a cue to
+    // re-search — it is not this function's call to make.
+    if (res.status === 404 || res.status === 410) return null;
+    if (!res.ok) {
+        const err: any = await (res.json() as Promise<any>).catch(() => ({}));
+        throw new Error(err?.errors?.[0]?.message ?? `offer fetch failed ${res.status}`);
+    }
+    const json: any = await res.json();
+    return json.data ?? null;
+}
+
 export async function refreshDuffelOffer(rawOffer: any): Promise<any[]> {
     const slices = (rawOffer.slices ?? []).map((slice: any) => {
         const firstSeg = slice.segments[0];
@@ -652,8 +681,12 @@ export function normalizedToFlightOffer(result: FlightResult, tripType: 'one-way
         provider: result.provider,
         price: {
             total: price,
-            base: (raw as any).baseFare ?? price,
-            taxes: (raw as any).taxes ?? 0,
+            // Duffel spells these `base_amount` and `tax_amount`; the camelCase names are
+            // another provider's. Neither ever matched, so the fallbacks always won and
+            // every Duffel fare reported its whole total as base fare with zero tax — on
+            // MNL→ICN, 112.50 base / 0 tax for a fare that is really 60.00 and 52.50.
+            base: Number((raw as any).base_amount ?? (raw as any).baseFare ?? price),
+            taxes: Number((raw as any).tax_amount ?? (raw as any).taxes ?? 0),
             currency: result.currency,
             pricePerAdult: (raw as any).pricePerAdult ?? price,
         },

@@ -26,11 +26,15 @@ describe('validateRoleChange', () => {
         }
     });
 
-    it('refuses a role the database would reject', () => {
-        // support_agent arrives with the Support Desk and the migration that widens the
-        // users_role_check constraint. Accepting it now is a 500 at the database.
-        expect(ROLES).not.toContain('support_agent');
-        expect(validateRoleChange({ actorId: ADMIN, targetId: 'user-2', newRole: 'support_agent' }).ok).toBe(false);
+    it('accepts support_agent, which the database now admits', () => {
+        // It was refused while users_role_check allowed only user and admin — accepting it
+        // then meant an opaque 500 at the database. The constraint has since widened.
+        expect(ROLES).toContain('support_agent');
+        expect(validateRoleChange({ actorId: ADMIN, targetId: 'user-2', newRole: 'support_agent' }).ok).toBe(true);
+    });
+
+    it('still refuses a role nothing recognises', () => {
+        expect(validateRoleChange({ actorId: ADMIN, targetId: 'user-2', newRole: 'superuser' as never }).ok).toBe(false);
     });
 
     it('will not let an admin take away their own access', () => {
@@ -52,8 +56,15 @@ describe('validateRoleChange', () => {
 describe('roles', () => {
     it('denies an unrecognised value rather than admitting it', () => {
         expect(isRole('admin')).toBe(true);
-        expect(isRole('support_agent')).toBe(false);
+        expect(isRole('superuser')).toBe(false);
         expect(canAdminister(undefined)).toBe(false);
         expect(canAdminister(null)).toBe(false);
+    });
+
+    it('does not let a Support Agent into the back office', () => {
+        // The whole point of the role. An agent reaches the Support Desk because screens
+        // were built for them (ADR-0041) — never because a role check widened underneath.
+        expect(isRole('support_agent')).toBe(true);
+        expect(canAdminister('support_agent')).toBe(false);
     });
 });

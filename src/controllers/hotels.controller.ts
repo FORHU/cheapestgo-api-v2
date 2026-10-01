@@ -252,6 +252,7 @@ export class HotelsController {
                 discountAmount:        z.coerce.number().optional(),
                 cancellationPolicies:  z.any().optional(),
                 quotedPrice:           z.coerce.number().optional(),
+                board:                 z.string().max(120).optional(),
             }).parse(req.body);
             const result = await svc.confirmBooking({ ...body, userId: req.user!.sub });
             res.json(result);

@@ -81,6 +81,11 @@ export class BookingsRepository {
         return prisma.bookings.findFirst({ where: { booking_id: bookingId, user_id: userId } });
     }
 
+    /** By row id rather than booking_id — the self-service links address the UUID. */
+    async findByRowIdForUser(id: string, userId: string) {
+        return prisma.bookings.findFirst({ where: { id, user_id: userId } });
+    }
+
     async findByProviderRef(providerRef: string) {
         return prisma.bookings.findFirst({ where: { provider_ref: providerRef } as any });
     }

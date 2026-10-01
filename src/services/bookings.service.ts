@@ -4,6 +4,9 @@ import { checkName } from '@/lib/users/names';
 import { canonicalBrandName, fromNoReply } from '@/lib/brand';
 import { escapeHtml } from '@/lib/html';
 import { config } from '@/config';
+import { sendTransactionalEmail } from '@/lib/email/send';
+import { buildHotelConfirmationHtml } from '@/lib/email/templates';
+import { policyEmailText } from '@/lib/email/policyText';
 
 /** Deliberately plain: the address is proven by the mail arriving, not by a regex. */
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -205,4 +208,58 @@ export class BookingsService {
         await this.repo.deletePriceAlert(id, userId);
         return { success: true };
     }
+
+    /**
+     * Send a booking confirmation to an address the traveller names.
+     *
+     * A deliberate resend, so it skips the dedup guard that stops the *automatic*
+     * post-booking mail firing twice — that guard exists to protect against a retry, not
+     * to stop someone forwarding their own confirmation to whoever they are travelling
+     * with. Nothing is written to the email log for the same reason: this is not the
+     * booking's confirmation, it is a copy of it.
+     *
+     * The address is not validated against the account on purpose. The whole point is to
+     * reach a companion, an assistant or a front desk.
+     */
+    async share(userId: string, bookingRowId: string, to: string) {
+        const booking = await this.repo.findByRowIdForUser(bookingRowId, userId);
+        if (!booking) throw new AppError(404, 'Booking not found', 'NOT_FOUND');
+
+        const nights = Math.max(1, Math.round(
+            (new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) / 86_400_000,
+        ));
+
+        const result = await sendTransactionalEmail({
+            bookingId: booking.booking_id,
+            to,
+            subject:   `Booking Confirmation — ${booking.property_name || 'your stay'}`,
+            emailType: 'confirmation',
+            metadata:  { shared: true, byUserId: userId },
+            html: buildHotelConfirmationHtml({
+                bookingRef:      booking.booking_id ?? booking.id,
+                bookingDbId:     booking.id,
+                guestName:       `${booking.holder_first_name ?? ''} ${booking.holder_last_name ?? ''}`.trim(),
+                propertyName:    booking.property_name ?? '',
+                propertyImage:   booking.property_image,
+                roomName:        booking.room_name ?? '',
+                checkIn:         booking.check_in.toISOString().slice(0, 10),
+                checkOut:        booking.check_out.toISOString().slice(0, 10),
+                nights,
+                adults:          booking.guests_adults ?? undefined,
+                children:        booking.guests_children ?? undefined,
+                totalPrice:      Number(booking.charged_price ?? booking.total_price),
+                currency:        booking.currency ?? 'PHP',
+                discountAmount:  Number(booking.discount_amount ?? 0),
+                policyText:      policyEmailText({
+                    policyType:         (booking.policy_type as never) ?? 'non_refundable',
+                    freeCancelDeadline: null,
+                }),
+                specialRequests: booking.special_requests,
+            }),
+        });
+
+        if (!result.success) throw new AppError(502, 'Could not send the confirmation just now.', 'EMAIL_FAILED');
+        return { success: true, sentTo: to };
+    }
+
 }

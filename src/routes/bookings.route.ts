@@ -16,6 +16,9 @@ router.get('/:id', ctrl.details);
 // BookingsService.amend.
 router.post('/amend', ctrl.amend);
 
+// A traveller forwarding their own confirmation to whoever they are travelling with.
+router.post('/:id/share', ctrl.share);
+
 // Saved trips
 router.get( '/saved-trips',         ctrl.getSavedTrips);
 router.post('/saved-trips',         ctrl.saveTrip);

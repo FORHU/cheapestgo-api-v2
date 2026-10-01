@@ -35,6 +35,13 @@ export class BookingsController {
         } catch (err) { next(err); }
     };
 
+    share = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { email } = z.object({ email: z.string().email() }).parse(req.body ?? {});
+            res.json(await svc.share(req.user!.sub, req.params.id, email));
+        } catch (err) { next(err); }
+    };
+
     getSavedTrips = async (req: Request, res: Response, next: NextFunction) => {
         try {
             const trips = await svc.getSavedTrips(req.user!.sub);

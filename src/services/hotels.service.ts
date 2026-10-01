@@ -869,6 +869,9 @@ export class HotelsService {
         discountAmount?:      number;
         cancellationPolicies?: any;
         quotedPrice?:         number;
+        /** The board the rate was quoted with, from prebook. Snapshotted: it is part of
+         *  what was bought, not of what the property offers today. */
+        board?:               string;
     }) {
         const pi = await stripe.paymentIntents.retrieve(params.paymentIntentId);
         if (pi.metadata.userId !== params.userId) throw new AppError(403, 'Payment does not belong to this user', 'FORBIDDEN');
@@ -1055,7 +1058,7 @@ export class HotelsService {
                     // The recorded fee rides along rather than being threaded through a
                     // second write: a booking that exists must never be jeopardised by a
                     // reporting figure, and every field of it is optional for that reason.
-                    provider_metadata: { supplierRef, hotelCode, clientReference, ...stripeFee },
+                    provider_metadata: { supplierRef, hotelCode, clientReference, ...stripeFee, ...(params.board ? { board: params.board } : {}) },
                     payment_intent_id: params.paymentIntentId,
                     supplier_cost:     tgxPrice,
                     charged_price:     totalPrice,

@@ -11,7 +11,7 @@ import { FlightsRepository } from '@/repositories/flights.repository';
 import { AppError } from '@/middleware/error.middleware';
 import { searchFlights, searchFlightsWithStatus, applyServerFilters, ServerFilters } from '@/lib/flights/search';
 import {
-    parseDuffelOffer, normalizedToFlightOffer, getDuffelAvailableServices,
+    parseDuffelOffer, normalizedToFlightOffer, getDuffelAvailableServices, getDuffelOffer,
     getDuffelSeatMaps, getDuffelBalances, getAvailableBalance,
     createDuffelCancellationQuote, confirmDuffelCancellation, getDuffelOrder,
     placeDuffelOrder, refreshDuffelOffer, ORDER_CREATE_TIMEOUT_MS,
@@ -68,12 +68,15 @@ export class FlightsService {
     // ── Book (create payment intent) ──────────────────────────────────────────
 
     async book(args: {
-        provider: string;
-        flight: FlightOffer & { _rawOffer?: any;[k: string]: any };
+        provider?: string;
+        flight?: FlightOffer & { _rawOffer?: any;[k: string]: any };
+        /** Enough on its own — the offer is re-fetched and everything else derived from it. */
+        offerId?: string;
+        tripType?: 'one-way' | 'round-trip' | 'multi-city';
         passengers: any[];
         contact: { email: string; phone: string; countryCode?: string };
         idempotencyKey: string;
-        farePolicy: FarePolicy;
+        farePolicy?: FarePolicy;
         seatServiceIds?: string[];
         seatTotal?: number;
         bagServiceIds?: string[];
@@ -90,21 +93,56 @@ export class FlightsService {
         paymentIntentId: string;
     }> {
         const {
-            provider, flight, passengers, contact, idempotencyKey, farePolicy,
+            passengers, contact, idempotencyKey,
             seatServiceIds, seatTotal, bagServiceIds, bagTotal, confirmedPrice,
             bundleHotelId, displayCurrency, acknowledgeDuplicate, userId,
         } = args;
 
+        /**
+         * An offer id is enough.
+         *
+         * The checkout page has one and nothing else — it is what the URL carries — and it
+         * was sending exactly that while this method demanded a whole offer object, so
+         * every flight booking in v2 was answered `INVALID_PROVIDER` before it began.
+         *
+         * Rebuilt here rather than shipped through the browser because the offer is the
+         * only authority on what an order needs: the passenger ids an order must quote come
+         * from the offer request, and Duffel rejects a payment whose amount and currency do
+         * not match the offer's exactly. A copy the browser has been holding since the
+         * search results is the one thing that cannot be trusted for either — Duffel expires
+         * offers in about thirty minutes and says to fetch again at booking time. This
+         * method already re-fetches; it just used to insist on being handed the stale copy
+         * as well.
+         */
+        let resolvedFlight     = args.flight;
+        let resolvedProvider   = args.provider;
+        let resolvedFarePolicy = args.farePolicy;
+
+        if ((!resolvedFlight || typeof resolvedFlight !== 'object') && args.offerId) {
+            const raw = await getDuffelOffer(args.offerId);
+            if (!raw) {
+                throw new AppError(410, 'This fare is no longer available. Please search again for current prices.', 'OFFER_EXPIRED');
+            }
+            resolvedFlight     = normalizedToFlightOffer(parseDuffelOffer(raw), args.tripType ?? 'one-way');
+            resolvedProvider   = resolvedProvider ?? 'duffel';
+            resolvedFarePolicy = resolvedFarePolicy ?? (resolvedFlight as any).farePolicy;
+        }
+
         // ── Validate provider ──────────────────────────────────────────────────
-        if (provider === 'mystifly_v2' || provider === 'mystifly') {
+        if (resolvedProvider === 'mystifly_v2' || resolvedProvider === 'mystifly') {
             throw new AppError(422, 'This fare is no longer available. Please search again for current prices.', 'FARE_UNAVAILABLE');
         }
-        if (provider !== 'duffel') {
+        if (resolvedProvider !== 'duffel') {
             throw new AppError(400, 'Invalid provider', 'INVALID_PROVIDER');
         }
-        if (!flight || typeof flight !== 'object') {
+        if (!resolvedFlight || typeof resolvedFlight !== 'object') {
             throw new AppError(400, 'flight object is required', 'MISSING_FLIGHT');
         }
+
+        // Bound after the guards so the rest of the method reads them as present.
+        const provider   = resolvedProvider;
+        const flight     = resolvedFlight;
+        const farePolicy = resolvedFarePolicy as FarePolicy;
 
         // ── Price resolution ───────────────────────────────────────────────────
         const flightTotal = typeof flight.price === 'number'
@@ -384,8 +422,11 @@ export class FlightsService {
         // (ADR-0009, ADR-0013). So everything that follows runs inside one guard that
         // cancels the order on the way out.
         try {
+            // The resolved trio, not `args`. When the caller sent only an offer id, `args`
+            // still has no flight on it — spreading it alone would hand the rest of the
+            // booking an undefined offer after the airline order had already been placed.
             return await this.completeBooking({
-                ...args, flightTotal, flightCurrency, duffelPreOrder,
+                ...args, provider, flight, farePolicy, flightTotal, flightCurrency, duffelPreOrder,
             });
         } catch (err) {
             if (duffelPreOrder?.orderId) {
@@ -400,6 +441,10 @@ export class FlightsService {
      * of `book` so a single guard around it can cancel the order whatever throws.
      */
     private async completeBooking(args: Parameters<FlightsService['book']>[0] & {
+        /** Resolved by `book` — an offer id has already been turned into all three. */
+        provider: string;
+        flight: FlightOffer & { _rawOffer?: any;[k: string]: any };
+        farePolicy: FarePolicy;
         flightTotal: number;
         flightCurrency: string;
         duffelPreOrder: {
