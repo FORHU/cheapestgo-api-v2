@@ -88,3 +88,49 @@ export async function fetchEtgHotelInfo(hid: string): Promise<any | null> {
     const json = await res.json() as any;
     return json?.data ?? null;
 }
+
+/**
+ * The ETG hotel whose name matches this one exactly, or nothing.
+ *
+ * `hotel_content` is keyed by TGX's numeric code, and ETG files the same hotel under a
+ * slug. Only ETG's bulk dump carries both, so a hotel the dump has not reached has no
+ * `ratehawk_hid` and therefore no route to its room photographs — 6.6% of live hotels on
+ * 2026-10-02, and every hotel added after the last dump run. This is how v1 closes that
+ * gap (`backgroundSeedEtgContent`), and the catalog it fills is shared.
+ *
+ * **Exact match only, after normalising.** A near match is a different hotel, and the
+ * consequence of accepting one is photographs of somewhere else on a page a traveller
+ * books from. Ambiguity resolves to nothing rather than to a guess.
+ */
+export async function findEtgHidByName(hotelName: string): Promise<string | null> {
+    const token = etgToken();
+    if (!token || !hotelName) return null;
+
+    const res = await fetch(`${ETG_BASE}/search/multicomplete/`, {
+        method:  'POST',
+        headers: { 'Authorization': `Basic ${token}`, 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ query: hotelName, language: 'en' }),
+        signal:  AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return null;
+
+    const json = await res.json() as any;
+    const hotels: any[] = json?.data?.hotels ?? [];
+    const normalise = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const wanted = normalise(hotelName);
+
+    const matches = hotels.filter(h => normalise(h?.name ?? '') === wanted);
+    // Two hotels of the same name is a choice this cannot make — a chain's two branches in
+    // one city are exactly that, and picking either is picking wrong half the time.
+    if (matches.length !== 1) return null;
+    return typeof matches[0]?.id === 'string' ? matches[0].id : null;
+}
+
+/** A hotel's own photographs from ETG, sized and capped the way the dump stores them. */
+export function parseHotelImages(rawImages: unknown): string[] {
+    if (!Array.isArray(rawImages)) return [];
+    return rawImages
+        .map((img: any) => resolveImageUrl(typeof img === 'string' ? img : (img?.url ?? img?.src)))
+        .filter((u: string | null): u is string => u !== null)
+        .slice(0, 20);
+}

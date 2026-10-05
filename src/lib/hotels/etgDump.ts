@@ -1,4 +1,5 @@
 import zlib from 'zlib';
+import { once } from 'events';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { parseRoomGroups } from '@/lib/hotels/roomGroups';
@@ -21,8 +22,19 @@ const ETG_BASE = 'https://api.worldota.net/api/b2b/v3';
 /** Rows written per statement. Large enough to be worth the round trip, small enough to retry. */
 const BATCH_SIZE = 400;
 
-/** The dump is a few hundred megabytes; the download alone can take minutes. */
-const DOWNLOAD_TIMEOUT_MS = 250_000;
+/**
+ * How long the download may go **without a byte arriving** before it is given up on.
+ *
+ * Deliberately not a deadline for the whole transfer. `AbortSignal.timeout` on a `fetch`
+ * bounds the body stream too, so a fixed budget is really a bet on the file's size and the
+ * link's speed — and the dump grows while a developer's connection does not. A 250 s budget
+ * (what this was, and what v1 still has) is met on production egress and missed everywhere
+ * else: locally on 2026-10-01 it aborted at 262 s having already read 1,000,000 lines and
+ * matched 323,538 hotels, and threw all of it away.
+ *
+ * A stalled connection is the thing worth aborting, and silence is what identifies it.
+ */
+const STALL_TIMEOUT_MS = 120_000;
 
 export interface DumpStats {
     linesRead:  number;
@@ -172,8 +184,26 @@ export async function processDump(
     }
     console.log(`[etg-dump] ${knownIds.size} hotels known, ${seededIds.size} already seeded`);
 
-    const res = await fetch(dumpUrl, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
-    if (!res.ok || !res.body) throw new Error(`Dump download ${res.status}`);
+    // Armed before the request and pushed forward by every chunk, so it fires only when the
+    // transfer has actually stopped moving.
+    const stall = new AbortController();
+    let stallTimer: NodeJS.Timeout = setTimeout(() => stall.abort(), STALL_TIMEOUT_MS);
+    const keepAlive = () => {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => stall.abort(), STALL_TIMEOUT_MS);
+    };
+
+    let res: Response;
+    try {
+        res = await fetch(dumpUrl, { signal: stall.signal });
+    } catch (err) {
+        clearTimeout(stallTimer);
+        throw err;
+    }
+    if (!res.ok || !res.body) {
+        clearTimeout(stallTimer);
+        throw new Error(`Dump download ${res.status}`);
+    }
 
     const batch: BatchRow[] = [];
     const decoder = new TextDecoder();
@@ -233,22 +263,46 @@ export async function processDump(
         }
     };
 
-    await new Promise<void>((resolve, reject) => {
-        const pending: Promise<void>[] = [];
-        decompressor.on('data', (chunk: Buffer) => { pending.push(onChunk(chunk)); });
-        decompressor.on('error', reject);
-        decompressor.on('end', () => { Promise.all(pending).then(() => resolve(), reject); });
-
-        (async () => {
-            const reader = res.body!.getReader();
-            for (;;) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                decompressor.write(Buffer.from(value));
-            }
-            decompressor.end();
-        })().catch(reject);
+    // Fed by one loop, consumed by another, one chunk at a time.
+    //
+    // `onChunk` awaits a database round trip whenever a batch fills, and a `data` listener
+    // does not wait for it. Chunks therefore kept arriving mid-flush and ran concurrently
+    // over the same `tail`, the same `batch` and the same `batch.length = 0` — interleaving
+    // line reassembly, letting the batch grow past its bound, and holding every chunk's
+    // text live in a `pending` array until the stream ended. On 2026-10-01 that took the
+    // whole api-v2 process down partway through a real run: the connection reset, and
+    // nothing was left in the log to say why.
+    //
+    // A dry run could never have found it. `dryRun` returns before the first `await`, so
+    // `onChunk` ran to completion synchronously and nothing interleaved — which is exactly
+    // how the check written to prove the download fixed passed over this.
+    //
+    // `for await` takes one chunk at a time and stops pulling while one is in flight, and
+    // the `drain` wait does the same for the writing side.
+    let pumpError: unknown;
+    const pump = (async () => {
+        const reader = res.body!.getReader();
+        for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            keepAlive();
+            if (!decompressor.write(Buffer.from(value))) await once(decompressor, 'drain');
+        }
+        decompressor.end();
+    })().catch((err: unknown) => {
+        // Surfaced through the consumer, so an aborted download fails the run rather than
+        // leaving `for await` waiting on a stream nobody is still feeding.
+        pumpError = err;
+        decompressor.destroy(err instanceof Error ? err : new Error(String(err)));
     });
+
+    try {
+        for await (const chunk of decompressor) await onChunk(chunk as Buffer);
+    } finally {
+        clearTimeout(stallTimer);
+    }
+    await pump;
+    if (pumpError) throw pumpError;
 
     if (!options.dryRun) await flushBatch(batch, stats);
     return stats;

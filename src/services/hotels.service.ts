@@ -6,6 +6,7 @@ import { otvCodeToLabel, normalizeAmenityList } from '@/lib/hotels/amenityCodes'
 import { normalizeMetapolicy } from '@/lib/hotels/metapolicy';
 import { RoomCatalogService } from '@/services/roomCatalog.service';
 import { orderRoomPhotosByDistinctiveness } from '@/lib/hotels/roomMatch';
+import { groupRoomsByName } from '@/lib/hotels/roomGrouping';
 import { normalizeRoomName, extractRoomVariantLabel } from '@/lib/hotels/roomNames';
 import { toClientCancelPolicy } from '@/lib/hotels/travelgatex';
 import { stripe } from '@/lib/stripe';
@@ -438,10 +439,17 @@ export class HotelsService {
                     };
                 });
 
+                // One card per room, its rates inside it. TGX prices a rate rather than a
+                // room, so until this the same room arrived once per board arrangement and
+                // cancellation term and the page drew it that many times over.
+                rooms = groupRoomsByName(rooms);
+
                 // Suppliers give neighbouring rooms overlapping photo sets — at
                 // Hotel Naru Seoul two correctly-matched rooms shared 7 of 10 — and
                 // a card shows only the first few, so both read as identical. Lead
-                // with what is unique to each; nothing is discarded.
+                // with what is unique to each; nothing is discarded. After grouping,
+                // because what has to look distinct is one room against another, not
+                // one rate against another rate of the same room.
                 rooms = orderRoomPhotosByDistinctiveness(rooms);
             } catch (err) {
                 console.warn('[property] TGX room fetch failed:', err instanceof Error ? err.message : err);
@@ -472,6 +480,20 @@ export class HotelsService {
             roomPolicySections: metapolicy?.sections ?? [],
             additionalInfo:     metapolicy?.additionalInfo,
         };
+
+        // A hotel the ETG dump has never reached has no `ratehawk_hid`, so the room
+        // catalog above gave up before it started and every card on this page is about to
+        // show the building. Resolve it from the name and store it — not for this
+        // response, which is already decided, but so the next visit has photographs.
+        //
+        // Deliberately not awaited, and deliberately only when the id is missing: this is
+        // one supplier call on the cold path, never on the warm one, and the page must not
+        // wait on it or fail with it.
+        if (!row.ratehawk_hid && row.name) {
+            void new RoomCatalogService()
+                .seedFromHotelName(String(row.hotel_id), String(row.name))
+                .catch(() => {});
+        }
 
         return { content: normalized, reviews: effectiveReviews, reviewItems, rooms };
     }

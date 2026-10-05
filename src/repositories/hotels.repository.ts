@@ -116,6 +116,32 @@ export class HotelsRepository {
     }
 
     /**
+     * First ETG content for a hotel the bulk dump has never reached.
+     *
+     * Guarded on `ratehawk_hid: null`, so it only ever fills a gap: a row the dump has
+     * since claimed keeps the dump's id, and two requests racing on the same cold hotel
+     * leave one write rather than two. Images are replaced only when ETG actually sent
+     * some — a hotel with TGX pictures and no ETG ones must not end up with none.
+     */
+    async saveFirstEtgContent(
+        hotelId: string,
+        hid: string,
+        images: string[],
+        groups: unknown,
+    ): Promise<number> {
+        const result = await prisma.hotel_content.updateMany({
+            where: { hotel_id: hotelId, ratehawk_hid: null },
+            data:  {
+                ratehawk_hid:          hid,
+                room_groups:           groups as any,
+                room_groups_seeded_at: new Date(),
+                ...(images.length ? { images } : {}),
+            },
+        });
+        return result.count;
+    }
+
+    /**
      * Hotels whose room content is missing or old enough to re-ask for (C6).
      *
      * Never seeded first, then the stalest — so a run cut short by its batch size spends its

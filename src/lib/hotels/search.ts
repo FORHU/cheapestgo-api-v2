@@ -11,6 +11,7 @@ import {
     type TgxOption,
 } from './travelgatex';
 import { otvCodeToLabel } from './amenityCodes';
+import { nightsBetween } from './nights';
 import { fetchEtgHotelContent, parseEtgHotel, type EtgHotelContent } from './etg';
 import { HotelsRepository } from '@/repositories/hotels.repository';
 import { isConfirmedOutOfCountry } from '@/lib/geo/countryBoxes';
@@ -1175,7 +1176,8 @@ async function runCityFallback(
                 // Nothing is lost by trusting it. A destination search that came back short
                 // *and* cut off is a different case, and still reaches the hotel-code path
                 // through supplierCutShort and the collecting pass that follows it.
-                return buildCityResults(destMerchant, cityName, countryCode, otv.contentMap, supplierCutShort);
+                return buildCityResults(destMerchant, cityName, countryCode, otv.contentMap, supplierCutShort,
+                    nightsBetween(searchParams.checkin, searchParams.checkout));
             }
             if (otvCodes.length === 0) {
                 // WRONG_FIELD/Empty hotels = TGX mapping gap (OTV was never called), and
@@ -1305,7 +1307,8 @@ async function runCityFallback(
                 o => o.paymentType === 'MERCHANT' && (o.status === 'AVAILABLE' || o.status === 'OK')
             );
             if (fallbackMerchant.length > 0) {
-                return buildCityResults(fallbackMerchant, cityName, countryCode, otvContentMap, supplierCutShort);
+                return buildCityResults(fallbackMerchant, cityName, countryCode, otvContentMap, supplierCutShort,
+                    nightsBetween(searchParams.checkin, searchParams.checkout));
             }
         } catch (tgxErr: any) {
             console.warn(`[tgx-search] Hotel-code search threw for "${cityName}" — falling through to ETG: ${tgxErr.message}`);
@@ -1332,7 +1335,8 @@ async function runCityFallback(
         throw new UnansweredSearchError(cityName, unansweredReasons.join('; '));
     }
 
-    return buildCityResults([], cityName, countryCode);
+    return buildCityResults([], cityName, countryCode, new Map(), false,
+        nightsBetween(searchParams.checkin, searchParams.checkout));
 }
 
 // ─── Core runTgxSearch ────────────────────────────────────────────────────────
@@ -1536,7 +1540,8 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
         };
     }
 
-    const cityResult = await buildCityResults(merchantOptions, cityName, countryCode);
+    const cityResult = await buildCityResults(merchantOptions, cityName, countryCode, new Map(), false,
+        nightsBetween(params.checkin, params.checkout));
 
     // Bounding happens once, on the way out of runTgxSearch — this is only one of the four
     // places a city search can return from.
@@ -1549,6 +1554,11 @@ async function buildCityResults(
     countryCode?: string,
     preloadedContent: Map<string, any> = new Map(),
     truncated = false,
+    /**
+     * Nights in the stay, to turn the supplier's **Stay Total** into the **Nightly Rate** a
+     * card advertises. Defaults to one, which is what a stay with no dates was priced as.
+     */
+    nights = 1,
 ): Promise<HotelSearchResult> {
     const byHotel = new Map<string, TgxOption>();
     for (const opt of merchantOptions) {
@@ -1702,7 +1712,15 @@ async function buildCityResults(
             hotelId:      code,
             id:           code,
             name:         content?.name || preloadedContent.get(code)?.name || code,
-            price:        opt.price.gross || opt.price.net,
+            // Per night. TGX quotes the whole stay, and a search card advertises a
+            // **Nightly Rate** — the figure a guest compares between hotels. Divided here,
+            // once, the same place and the same way the property endpoint does it: the two
+            // screens must not price one room differently depending on which you came from.
+            //
+            // Until 2026-10-04 this sent the Stay Total and the card printed it under a
+            // "/ night" label, so a two-night search advertised double and a week sevenfold.
+            // It was invisible on a one-night stay, which is the only kind anybody checked.
+            price:        (opt.price.gross || opt.price.net) / nights,
             currency:     opt.price.currency,
             offerId:      `TGX:${tokenId}`,
             refundableTag: toRefundableTag(opt.cancelPolicy?.refundable),

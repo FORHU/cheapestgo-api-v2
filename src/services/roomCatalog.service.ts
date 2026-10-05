@@ -1,5 +1,5 @@
 import { HotelsRepository } from '@/repositories/hotels.repository';
-import { parseRoomGroups, fetchEtgHotelInfo, type RoomGroupEntry } from '@/lib/hotels/roomGroups';
+import { parseRoomGroups, fetchEtgHotelInfo, findEtgHidByName, parseHotelImages, type RoomGroupEntry } from '@/lib/hotels/roomGroups';
 import { matchEtgRoomGroup, type EtgGroup } from '@/lib/hotels/roomMatch';
 
 /**
@@ -76,6 +76,47 @@ export class RoomCatalogService {
         }
 
         return result;
+    }
+
+    /**
+     * Give a hotel the bulk dump has never reached its first ETG content.
+     *
+     * `fetchRoomCatalog` above needs a `ratehawk_hid` and gives up silently without one,
+     * and the only thing that mints one is ETG's dump — which carried 93.4% of live hotels
+     * on 2026-10-02, leaving 81,758 that can never show a room photograph, plus every
+     * hotel added since the last run. v1 closes that gap by resolving the slug from the
+     * hotel's name after the property page has answered, and the catalog is shared, so
+     * a hotel seeded by either side is seeded for both.
+     *
+     * Never awaited by the request. It is an enrichment for the *next* visitor: this one
+     * has already been served, and a page that waits on a supplier to decorate itself is
+     * a page that is slower for everybody and broken whenever that supplier is.
+     *
+     * Returns whether anything was written, for the caller's log and for tests.
+     */
+    async seedFromHotelName(hotelId: string, hotelName: string): Promise<boolean> {
+        try {
+            const hid = await findEtgHidByName(hotelName);
+            if (!hid) return false;
+
+            const data = await fetchEtgHotelInfo(hid);
+            if (!data) return false;
+
+            const groups = parseRoomGroups(data.room_groups ?? []);
+            const images = parseHotelImages(data.images);
+            const written = await this.repo.saveFirstEtgContent(hotelId, hid, images, groups);
+            if (!written) return false;   // the dump got there first, or another request did
+
+            console.log(
+                `[etg-seed] ${hotelId} (${hotelName}) -> ${hid}: ` +
+                `${images.length} images, ${groups.length} room groups`,
+            );
+            return true;
+        } catch (e: any) {
+            // Never fatal: the page it followed has already been sent.
+            console.warn(`[etg-seed] ${hotelId}:`, e?.message?.slice(0, 80));
+            return false;
+        }
     }
 
     /**

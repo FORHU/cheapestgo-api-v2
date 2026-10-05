@@ -688,7 +688,19 @@ export function normalizedToFlightOffer(result: FlightResult, tripType: 'one-way
             base: Number((raw as any).base_amount ?? (raw as any).baseFare ?? price),
             taxes: Number((raw as any).tax_amount ?? (raw as any).taxes ?? 0),
             currency: result.currency,
-            pricePerAdult: (raw as any).pricePerAdult ?? price,
+            // Per traveller, which is what the card's "/person" label promises.
+            //
+            // Duffel sends no `pricePerAdult`, so this was `?? price` — the whole party's
+            // total, wearing a per-person label. A search for three adults offered every
+            // fare at three times its real price, and like the stay-total bug on hotel
+            // cards it was exactly right for a party of one, which is the only size
+            // anybody searched while testing.
+            //
+            // An average, not an adult fare: Duffel prices the offer as a whole and
+            // publishes no per-passenger breakdown, so a party with children spreads their
+            // cheaper seats across everyone. For an adults-only party — nearly all of them,
+            // and what the client's own fallback assumes — the two are the same number.
+            pricePerAdult: price / Math.max(1, (raw as any)?.passengers?.length ?? 1),
         },
         segments: allSegments,
         totalDuration: result.duration,
