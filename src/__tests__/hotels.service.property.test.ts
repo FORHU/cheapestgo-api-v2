@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// hotels.service reaches `@/config` (through the booking emails), which exits the
+// process when the real environment is missing.
+vi.mock('@/config', () => ({ config: { RESEND_API_KEY: '', SITE_URL: 'https://cheapestgo.com' } }));
 vi.mock('@/lib/hotels/search', () => ({ runTgxSearch: vi.fn() }));
 vi.mock('@/lib/hotels/travelgatex', () => ({
   quoteTgx: vi.fn(), bookTgx: vi.fn(), cancelTgx: vi.fn(), fetchAmenitiesByDestination: vi.fn(),
@@ -70,5 +73,52 @@ describe('HotelsService.getProperty() — ETG content', () => {
     vi.mocked(ensureEtgContent).mockRejectedValue(new Error('boom'));
     const out = await svc.getProperty('H1', { checkIn: '2026-09-10', checkOut: '2026-09-12' });
     expect(out.rooms[0].content).toBeUndefined();
+  });
+
+  it('leads each room gallery with the photos unique to it', async () => {
+    vi.mocked(runTgxSearch).mockResolvedValue({
+      data: [{ roomTypes: [
+        { offerId: 'o1', roomName: 'Standard Double Room', boardCode: 'BB', price: 200, currency: 'USD' },
+        { offerId: 'o2', roomName: 'Deluxe Double Room',   boardCode: 'BB', price: 300, currency: 'USD' },
+      ] }],
+    } as any);
+    vi.mocked(ensureEtgContent).mockResolvedValue({
+      roomGroups: [
+        { name: 'Standard Double Room', images: ['shared', 's1'], roomAmenities: [] },
+        { name: 'Deluxe Double Room',   images: ['shared', 'd1'], roomAmenities: [] },
+      ],
+      amenityGroups: [], metapolicy: {}, metapolicyExtraInfo: null, importantInformation: null,
+    } as any);
+
+    const out = await svc.getProperty('H1', { checkIn: '2026-09-10', checkOut: '2026-09-11' });
+    const gallery = (name: string) => out.rooms.find((r: any) => r.name === name)?.content?.gallery;
+
+    expect(gallery('Standard Double Room')).toEqual(['s1', 'shared']);
+    expect(gallery('Deluxe Double Room')).toEqual(['d1', 'shared']);
+  });
+});
+
+describe('HotelsService.getProperty() — prices and ratings', () => {
+  it('prices each room per night, because TGX quotes the whole stay', async () => {
+    vi.mocked(ensureEtgContent).mockResolvedValue(null);
+    // Two nights at a stay total of 200: app-v2 multiplies by the nights again at checkout.
+    const out = await svc.getProperty('H1', { checkIn: '2026-09-10', checkOut: '2026-09-12' });
+    expect(out.rooms[0].price).toBe(100);
+    expect(out.rooms[0].rates[0].price).toBe(100);
+  });
+
+  it('uses the stored Google rating when the hotel has no reviews of its own', async () => {
+    vi.mocked(ensureEtgContent).mockResolvedValue(null);
+    (svc as any).repo.findHotelContent.mockResolvedValue({
+      hotel_id: 'H1', name: 'Grand', review_rating: 8.4, review_count: 120,
+      google_enriched_at: new Date('2026-09-01'),
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const out = await svc.getProperty('H1', { checkIn: '2026-09-10', checkOut: '2026-09-11' });
+
+    expect(out.reviews).toMatchObject({ rating: 8.4, reviews_count: 120 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
   });
 });

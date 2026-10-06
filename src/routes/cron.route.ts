@@ -8,11 +8,24 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import zlib from 'zlib';
 import { config } from '@/config';
+import { SupportService } from '@/services/support.service';
 import { prisma } from '@/lib/prisma';
 import { stripe } from '@/lib/stripe';
 import { getDuffelBalances, duffelHeaders } from '@/lib/flights/duffel';
 import { searchFlights } from '@/lib/flights/search';
 import { FlightOffer } from '@/types/flights';
+import { tgxGraphQL, getTgxConfig, resolveTgxDestinationCode } from '@/lib/hotels/travelgatex';
+import { otvCodeToLabel } from '@/lib/hotels/amenityCodes';
+import { RoomCatalogService } from '@/services/roomCatalog.service';
+import { getDumpUrl, processDump } from '@/lib/hotels/etgDump';
+import { findUnrecordedReservations, filterAlreadyNotified, UNRECORDED_NOTIFICATION_TITLE } from '@/lib/admin/reconciliation';
+import { reconcilePlatformCost } from '@/lib/admin/platformCost';
+import { createNotification } from '@/lib/admin/notify';
+import { ticketNumbersFrom } from '@/lib/flights/duffelTickets';
+import { sendFlightConfirmationEmail } from '@/lib/email/flightConfirmation';
+import { makeStrictConverter } from '@/lib/payments/convertStrict';
+import { ExchangeRatesService } from '@/services/exchange-rates.service';
+import { fromStripeAmount } from '@/lib/pricing';
 
 const router = Router();
 
@@ -30,11 +43,6 @@ router.use(requireCronSecret);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function createNotification(title: string, description: string) {
-    await prisma.notifications.create({
-        data: { title, description, type: 'alert', user_id: null } as any,
-    }).catch(err => console.error('[cron] notification create failed:', err.message));
-}
 
 async function sendEmail(to: string, subject: string, html: string) {
     if (!config.RESEND_API_KEY) return { ok: false, error: 'RESEND_API_KEY not set' };
@@ -53,6 +61,43 @@ async function sendEmail(to: string, subject: string, html: string) {
 // GET /api/cron/cleanup-sessions
 // Schedule: daily at 04:00 UTC  (0 4 * * *)
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/v2/cron/resume-support-translations
+// Schedule: every minute  (* * * * *)
+//
+// A translation is marked pending before the engine is called, so a deploy mid-call leaves a
+// row nothing will settle — and a reply waiting on one is held back from the customer for good.
+// Every minute because the cost of a run with nothing to do is one indexed query.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/v2/cron/purge-support-attachments
+// Schedule: daily at 04:00 UTC  (0 4 * * *)
+//
+// A passport page sent to settle one booking is not ours to keep indefinitely. The row stays —
+// the transcript still says a file was sent, and that it has expired — and only the bytes go.
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get('/purge-support-attachments', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+        const removed = await new SupportService().purgeExpiredAttachments();
+        if (removed > 0) console.log(`[cron/purge-support-attachments] removed ${removed}`);
+        return res.json({ ok: true, removed });
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.get('/resume-support-translations', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+        const resumed = await new SupportService().resumeStalledTranslations();
+        if (resumed > 0) console.log(`[cron/resume-support-translations] picked up ${resumed}`);
+        return res.json({ ok: true, resumed });
+    } catch (err) {
+        next(err);
+    }
+});
 
 router.get('/cleanup-sessions', async (_req: Request, res: Response, next: NextFunction) => {
     try {
@@ -75,8 +120,10 @@ router.get('/cleanup-sessions', async (_req: Request, res: Response, next: NextF
 router.get('/cache-cleanup', async (_req: Request, res: Response, next: NextFunction) => {
     try {
         const [cacheDeleted, reviewsDeleted] = await Promise.all([
-            // Delete expired hotel search cache rows
-            prisma.$executeRaw`DELETE FROM hotel_search_cache WHERE expires_at < NOW()`,
+            // Drain hotel_search_cache. Nothing writes it any more — searches are always
+            // live — so this clears what is left over and then finds nothing. The table
+            // itself goes at the next schema change.
+            prisma.$executeRaw`DELETE FROM hotel_search_cache`,
 
             // Delete hotel review items not refreshed in the last 7 days
             prisma.$executeRaw`
@@ -407,6 +454,17 @@ router.get('/cleanup-orphaned-duffel-orders', async (_req: Request, res: Respons
 
                 if (!quoteRes.ok) {
                     const txt = await quoteRes.text().catch(() => '');
+                    let parsed: any;
+                    try { parsed = JSON.parse(txt); } catch { /* not json */ }
+                    const code = parsed?.errors?.[0]?.code;
+                    if (code === 'already_cancelled') {
+                        await prisma.$executeRaw`
+                            UPDATE flight_bookings SET status = 'expired' WHERE id = ${fb.id}::uuid
+                        `;
+                        skipped++;
+                        console.log(`[cron/cleanup-orphaned] Order ${fb.provider_order_id} already cancelled — marked expired`);
+                        continue;
+                    }
                     throw new Error(`Duffel quote failed (${quoteRes.status}): ${txt.slice(0, 200)}`);
                 }
 
@@ -479,11 +537,26 @@ router.get('/poll-pending-tickets', async (_req: Request, res: Response, next: N
                     || (Array.isArray(data?.data?.documents) && data.data.documents.length > 0);
 
                 if (isTicketed) {
+                    // The numbers, not just the status. An e-ticket number is what an airline
+                    // desk asks for, and this used to mark a booking ticketed while leaving
+                    // the column empty — the same field the webhook path fills.
+                    const tickets = ticketNumbersFrom(data?.data);
                     await prisma.$executeRaw`
-                        UPDATE flight_bookings SET status = 'ticketed' WHERE id = ${fb.id}::uuid
+                        UPDATE flight_bookings
+                        SET status         = 'ticketed',
+                            ticket_numbers = COALESCE(${tickets.length ? JSON.stringify(tickets) : null}::jsonb, ticket_numbers),
+                            updated_at     = NOW()
+                        WHERE id = ${fb.id}::uuid
                     `;
                     ticketed++;
                     console.log(`[cron/poll-pending-tickets] Ticketed flight booking ${fb.id}`);
+
+                    // The traveller was told the ticket was on its way. This is the third
+                    // route by which it can arrive — after the webhook and the booking call —
+                    // and the only one that catches a webhook we never received. Suppressed
+                    // by email_logs when one of the others got there first.
+                    await sendFlightConfirmationEmail(fb.id)
+                        .catch((e: any) => console.error(`[cron/poll-pending-tickets] Ticket email failed for ${fb.id}:`, e?.message));
                 } else {
                     unchanged++;
                 }
@@ -676,27 +749,56 @@ router.get('/etg-reviews-sync', async (_req: Request, res: Response, next: NextF
 
 router.get('/otv-credit-check', async (_req: Request, res: Response, next: NextFunction) => {
     try {
-        const CREDIT_LIMIT          = parseFloat(process.env.OTV_CREDIT_LIMIT ?? '0');
+        // RateHawk denominates the credit line in PHP — 600,000 PHP as of 2026-09 — while
+        // `supplier_cost` is stored in whatever TGX returns, which TGX_TARGET_CURRENCY pins
+        // to USD. The two are not comparable as written, and were compared anyway: a
+        // 600,000 PHP line read as $600,000, roughly sixty times the real ceiling, so the
+        // utilisation alert could never fire. That alert is the only warning before OTV
+        // starts silently auto-cancelling refundable bookings at their free-cancellation
+        // deadline.
+        const CREDIT_LIMIT_NATIVE   = parseFloat(process.env.OTV_CREDIT_LIMIT ?? '0');
+        const CREDIT_LIMIT_CURRENCY = (process.env.OTV_CREDIT_LIMIT_CURRENCY ?? 'PHP').toUpperCase();
+        const SUPPLIER_COST_CURRENCY = (process.env.TGX_TARGET_CURRENCY ?? 'USD').toUpperCase();
         const UTILIZATION_ALERT_PCT = parseFloat(process.env.OTV_CREDIT_UTILIZATION_ALERT_PCT ?? '0.8');
         const DEADLINE_WINDOW_HOURS = parseInt(process.env.OTV_DEADLINE_ALERT_HOURS ?? '48', 10);
         const results: Record<string, any> = {};
 
-        // 1. Credit utilization — sum total_price for confirmed/pending TGX bookings not yet checked out
-        if (CREDIT_LIMIT > 0) {
-            const creditRows = await prisma.$queryRaw<{ total: string | null; booking_count: bigint }[]>`
-                SELECT SUM(total_price)::text AS total, COUNT(*)::int AS booking_count
+        // Refused rather than guessed: a credit check that silently compares the wrong units
+        // is worse than one that does not run, because it reports reassurance.
+        let creditLimit = 0;
+        let limitError: string | null = null;
+        if (CREDIT_LIMIT_NATIVE > 0) {
+            try {
+                const convert = makeStrictConverter(await new ExchangeRatesService().getLiveRates());
+                creditLimit = convert(CREDIT_LIMIT_NATIVE, CREDIT_LIMIT_CURRENCY, SUPPLIER_COST_CURRENCY);
+            } catch (e: any) {
+                limitError = `cannot convert ${CREDIT_LIMIT_NATIVE} ${CREDIT_LIMIT_CURRENCY} to ${SUPPLIER_COST_CURRENCY}: ${e?.message}`;
+                console.error('[cron/otv-credit-check]', limitError);
+            }
+        }
+
+        // 1. Credit utilisation. Summed over `supplier_cost` — what OTV is owed — not
+        //    `total_price`, which is what the guest paid us, markup and all, in the guest's
+        //    own currency. Summing that mixed several currencies into one number and then
+        //    compared it against a limit in a third.
+        if (creditLimit > 0) {
+            const creditRows = await prisma.$queryRaw<{ total: string | null; booking_count: number }[]>`
+                SELECT SUM(COALESCE(supplier_cost, 0))::text AS total, COUNT(*)::int AS booking_count
                 FROM bookings
                 WHERE provider = 'travelgatex'
                   AND status IN ('confirmed', 'pending')
                   AND check_out > NOW()
             `;
-            const outstanding   = Number(creditRows[0]?.total ?? 0);
-            const bookingCount  = Number(creditRows[0]?.booking_count ?? 0);
-            const utilization   = outstanding / CREDIT_LIMIT;
+            const outstanding  = Number(creditRows[0]?.total ?? 0);
+            const bookingCount = Number(creditRows[0]?.booking_count ?? 0);
+            const utilization  = outstanding / creditLimit;
 
+            // Currencies are named in the output on purpose. The previous version printed two
+            // bare numbers in different units, which read as a healthy utilisation and is why
+            // the mismatch went unnoticed.
             results.credit = {
-                outstanding:    outstanding.toFixed(2),
-                limit:          CREDIT_LIMIT,
+                outstanding:    `${outstanding.toFixed(2)} ${SUPPLIER_COST_CURRENCY}`,
+                limit:          `${creditLimit.toFixed(2)} ${SUPPLIER_COST_CURRENCY} (${CREDIT_LIMIT_NATIVE} ${CREDIT_LIMIT_CURRENCY})`,
                 utilizationPct: (utilization * 100).toFixed(1) + '%',
                 bookingCount,
             };
@@ -705,9 +807,21 @@ router.get('/otv-credit-check', async (_req: Request, res: Response, next: NextF
             if (utilization >= UTILIZATION_ALERT_PCT) {
                 await createNotification(
                     'OTV credit limit warning',
-                    `Outstanding OTV credit: ${outstanding.toFixed(2)} of ${CREDIT_LIMIT} limit (${results.credit.utilizationPct} used). New non-refundable bookings may be rejected.`
+                    `Outstanding OTV credit: ${outstanding.toFixed(2)} ${SUPPLIER_COST_CURRENCY} of a `
+                    + `${CREDIT_LIMIT_NATIVE} ${CREDIT_LIMIT_CURRENCY} limit (${creditLimit.toFixed(2)} ${SUPPLIER_COST_CURRENCY}) — `
+                    + `${results.credit.utilizationPct} used. New non-refundable bookings may be rejected by RateHawk, `
+                    + 'and refundable ones can be auto-cancelled at their free-cancellation deadline.',
                 );
             }
+        } else if (limitError) {
+            // Loud, not silent. A skipped credit check looks identical to a healthy one in
+            // the job's output unless it says so.
+            results.credit = { skipped: true, reason: limitError };
+            await createNotification(
+                'OTV credit check could not run',
+                `The credit limit could not be converted for comparison — ${limitError}. `
+                + 'Utilisation is unknown until this is fixed.',
+            );
         } else {
             results.credit = { skipped: true, reason: 'OTV_CREDIT_LIMIT not set' };
         }
@@ -755,6 +869,635 @@ router.get('/sync-hotel-deals', async (_req: Request, res: Response, next: NextF
     } catch (err) {
         next(err);
     }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/cron/sync-dest-cache
+// Schedule: weekly  (0 1 * * 0)
+// Bulk-fetches the full TGX destination list and populates tgx_destination_cache
+// so city-name → dest-code resolution never hits TGX at search time.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DESTINATIONS_QUERY = `
+query TgxListDestinations($criteria: HotelXDestinationListInput!, $token: String) {
+  hotelX {
+    destinations(criteria: $criteria, token: $token) {
+      token
+      edges { node { destinationData { code type texts { text language } } } }
+    }
+  }
+}`;
+
+router.get('/sync-dest-cache', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+        const cfg = getTgxConfig();
+        const t0  = Date.now();
+
+        // city_key (lowercase english name) → destination_code
+        // CITY beats ZONE when both share the same name; first-seen wins on ties.
+        const destMap = new Map<string, string>();
+        let token: string | null = null;
+        let page = 0;
+        const MAX_PAGES = 100;
+
+        do {
+            page++;
+            let result: any;
+            try {
+                result = await tgxGraphQL(
+                    DESTINATIONS_QUERY,
+                    { criteria: { access: cfg.accessCode }, ...(token ? { token } : {}) },
+                );
+            } catch (e: any) {
+                console.warn(`[sync-dest-cache] Page ${page} failed: ${e.message?.slice(0, 200)}`);
+                break;
+            }
+
+            const conn = result?.data?.hotelX?.destinations;
+            if (!conn) {
+                console.warn('[sync-dest-cache] Unexpected TGX response:', JSON.stringify(result?.errors ?? result).slice(0, 300));
+                break;
+            }
+
+            const edges: any[] = conn.edges ?? [];
+            token = conn.token ?? null;
+
+            for (const edge of edges) {
+                const dest = edge?.node?.destinationData;
+                if (!dest?.code) continue;
+                const englishText = (dest.texts ?? []).find((t: any) => t.language === 'en')?.text;
+                if (!englishText) continue;
+                const key      = englishText.toLowerCase().trim();
+                const existing = destMap.get(key);
+                // CITY over ZONE; first-seen wins on same type
+                if (!existing || (dest.type === 'CITY')) {
+                    destMap.set(key, dest.code as string);
+                }
+            }
+
+            console.log(`[sync-dest-cache] Page ${page}: ${edges.length} edges, map=${destMap.size}${token ? '' : ' (last)'}`);
+        } while (token && page < MAX_PAGES);
+
+        if (destMap.size === 0) {
+            return res.status(502).json({ ok: false, error: 'No destinations returned from TGX — check access code' });
+        }
+
+        // Batch upsert in chunks of 500 using raw SQL for performance
+        const entries = [...destMap.entries()];
+        let upserted  = 0;
+        const BATCH   = 500;
+
+        for (let i = 0; i < entries.length; i += BATCH) {
+            const chunk = entries.slice(i, i + BATCH);
+            try {
+                // Build a VALUES list and upsert in one statement
+                await prisma.$executeRaw`
+                    INSERT INTO tgx_destination_cache (city_key, destination_code)
+                    SELECT v.city_key, v.destination_code
+                    FROM jsonb_to_recordset(${JSON.stringify(
+                        chunk.map(([city_key, destination_code]) => ({ city_key, destination_code }))
+                    )}::jsonb) AS v(city_key text, destination_code text)
+                    ON CONFLICT (city_key) DO UPDATE
+                        SET destination_code = EXCLUDED.destination_code
+                    WHERE tgx_destination_cache.destination_code != 'NONE'
+                `;
+                upserted += chunk.length;
+            } catch (e: any) {
+                console.warn(`[sync-dest-cache] Batch ${i} failed: ${e.message?.slice(0, 200)}`);
+            }
+        }
+
+        const elapsed = Date.now() - t0;
+        console.log(`[sync-dest-cache] Done: ${upserted}/${destMap.size} upserted in ${elapsed}ms`);
+        return res.json({ ok: true, pages: page, totalMapped: destMap.size, upserted, elapsedMs: elapsed });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/cron/fill-dest-cache
+// Schedule: every 1-2 hours until gap is closed, then daily
+// Fills missing entries: cities in hotel_content with no dest code yet,
+// resolved one-by-one via TGX destinationSearcher.
+// Query params: limit (default 100, max 500), min_hotels (default 5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get('/fill-dest-cache', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const limit     = Math.min(parseInt((req.query.limit      as string) ?? '100', 10), 500);
+        const minHotels = parseInt((req.query.min_hotels as string) ?? '5', 10);
+        const t0        = Date.now();
+
+        // Cities in hotel_content with enough hotels but no dest code, ordered by hotel count
+        const rows = await prisma.$queryRaw<{ city: string; cnt: bigint }[]>`
+            SELECT lower(hc.city) AS city, count(*) AS cnt
+            FROM hotel_content hc
+            WHERE hc.city IS NOT NULL
+              AND hc.city != ''
+              AND lower(hc.city) NOT IN (SELECT city_key FROM tgx_destination_cache)
+            GROUP BY lower(hc.city)
+            HAVING count(*) >= ${minHotels}
+            ORDER BY count(*) DESC
+            LIMIT ${limit}
+        `;
+
+        if (!rows.length) {
+            return res.json({ ok: true, processed: 0, resolved: 0, message: 'No uncached cities — all caught up.' });
+        }
+
+        console.log(`[fill-dest-cache] Processing ${rows.length} cities (min_hotels=${minHotels}) in background`);
+
+        // Respond immediately; resolution runs in background (each city can take up to 30s)
+        res.json({ ok: true, message: `Fill started for ${rows.length} cities`, queued: rows.length });
+
+        let resolved = 0;
+        let failed   = 0;
+
+        for (const row of rows) {
+            const cityName = row.city;
+            try {
+                const code = await Promise.race([
+                    resolveTgxDestinationCode(cityName, prisma),
+                    new Promise<undefined>(r => setTimeout(() => r(undefined), 30_000)),
+                ]);
+
+                if (code) {
+                    resolved++;
+                    console.log(`[fill-dest-cache] ✓ ${cityName} → ${code}`);
+                } else {
+                    failed++;
+                    console.log(`[fill-dest-cache] ✗ ${cityName} — no code, marking NONE`);
+                    // Insert NONE sentinel so this city is skipped on future runs
+                    await prisma.$executeRaw`
+                        INSERT INTO tgx_destination_cache (city_key, destination_code)
+                        VALUES (${cityName}, 'NONE')
+                        ON CONFLICT (city_key) DO NOTHING
+                    `;
+                }
+            } catch (e: any) {
+                failed++;
+                console.warn(`[fill-dest-cache] ✗ ${cityName} error: ${e.message?.slice(0, 80)}`);
+            }
+            await new Promise(r => setTimeout(r, 1_000));
+        }
+
+        const elapsed = Date.now() - t0;
+        console.log(`[fill-dest-cache] Done: ${resolved} resolved, ${failed} unresolvable in ${elapsed}ms`);
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/cron/refresh-hotel-content
+// Schedule: daily at 02:00 UTC  (0 2 * * *)
+// Downloads hotel static content from TGX Hotels Query for the top searched
+// cities and upserts into hotel_content. Never overwrites richer existing data.
+// Query params: limit (default 30, max 100)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const HOTEL_CONTENT_QUERY = `
+query TgxHotelContent($criteria: HotelXHotelListInput!, $token: String) {
+  hotelX {
+    hotels(criteria: $criteria, token: $token) {
+      token
+      edges {
+        node {
+          hotelData {
+            code hotelName categoryCode chainCode
+            descriptions { type texts { language text } }
+            medias { url type order }
+            location { coordinates { latitude longitude } address city country zipCode }
+            contact { email telephone fax web }
+            allAmenities { edges { node { amenityData { amenityCode type } } } }
+            checkIn  { schedule { startTime endTime } instructions { language text } }
+            checkOut { schedule { startTime endTime } instructions { language text } }
+            giataData { id }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+function _extractDescription(descriptions: any[]): { description: string | null; importantInfo: string | null } {
+    if (!descriptions?.length) return { description: null, importantInfo: null };
+    let description: string | null = null;
+    const extra: string[] = [];
+    for (const d of descriptions) {
+        const en   = (d.texts ?? []).find((t: any) => t.language?.toLowerCase().startsWith('en'));
+        const text = en?.text ?? d.texts?.[0]?.text ?? null;
+        if (!text) continue;
+        if (d.type === 'GENERAL' && !description) description = text;
+        else if (text) extra.push(text);
+    }
+    if (!description && extra.length) description = extra.shift() ?? null;
+    return { description, importantInfo: extra.length ? extra.join('\n\n') : null };
+}
+
+function _extractImages(medias: any[]): string[] {
+    return (medias ?? [])
+        .sort((a: any, b: any) => (a.order ?? 99) - (b.order ?? 99))
+        .filter((m: any) => m.url)
+        .map((m: any) => m.url as string)
+        .slice(0, 10);
+}
+
+function _extractAmenities(allAmenities: any): string[] {
+    return (allAmenities?.edges ?? [])
+        .map((e: any) => otvCodeToLabel(e?.node?.amenityData?.amenityCode ?? ''))
+        .filter(Boolean);
+}
+
+function _extractCheckTime(info: any, useStart = true): string | null {
+    if (!info) return null;
+    const fromSchedule = useStart ? info.schedule?.startTime : (info.schedule?.endTime ?? info.schedule?.startTime);
+    if (fromSchedule) return fromSchedule;
+    const instructions: any[] = info.instructions ?? [];
+    const en = instructions.find((t: any) => t.language?.toLowerCase().startsWith('en'));
+    return en?.text ?? instructions[0]?.text ?? null;
+}
+
+async function _fetchAndUpsertCityContent(
+    cfg: ReturnType<typeof getTgxConfig>,
+    cityKey: string,
+    destCode: string | null,
+    countryCode: string,
+): Promise<number> {
+    const PAGE_SIZE = 500;
+    let token: string | null = null;
+    let totalSaved = 0;
+    let page = 0;
+    const MAX_PAGES = 4;
+
+    do {
+        const criteria: Record<string, unknown> = { access: cfg.accessCode, maxSize: PAGE_SIZE };
+        if (destCode)   criteria.destinationCodes = [destCode];
+        else if (countryCode) criteria.countries  = [countryCode.toUpperCase()];
+
+        let result: any;
+        try {
+            result = await tgxGraphQL(HOTEL_CONTENT_QUERY, { criteria, ...(token ? { token } : {}) });
+        } catch (e: any) {
+            console.warn(`[refresh-hotel-content] TGX query failed for "${cityKey}": ${e.message}`);
+            break;
+        }
+
+        const hotelList = result?.data?.hotelX?.hotels ?? {};
+        const edges: any[] = hotelList.edges ?? [];
+        token = hotelList.token ?? null;
+        page++;
+
+        for (const edge of edges) {
+            const hd = edge?.node?.hotelData;
+            if (!hd?.code) continue;
+
+            const lat    = Number(hd.location?.coordinates?.latitude  ?? 0);
+            const lng    = Number(hd.location?.coordinates?.longitude ?? 0);
+            const images = _extractImages(hd.medias ?? []);
+            const { description, importantInfo } = _extractDescription(hd.descriptions ?? []);
+            const starRating  = Number((hd.categoryCode ?? '').replace(/[^0-9]/g, '') || 0);
+            const amenities   = _extractAmenities(hd.allAmenities);
+            const checkInTime  = _extractCheckTime(hd.checkIn,  true);
+            const checkOutTime = _extractCheckTime(hd.checkOut, false);
+            const rawCountry   = hd.location?.country;
+            const country      = typeof rawCountry === 'string' ? rawCountry : (rawCountry?.code ?? countryCode ?? null);
+            const contact      = hd.contact && (hd.contact.email || hd.contact.telephone || hd.contact.fax || hd.contact.web)
+                ? { email: hd.contact.email, phone: hd.contact.telephone, fax: hd.contact.fax, web: hd.contact.web }
+                : null;
+
+            try {
+                await prisma.$executeRaw`
+                    INSERT INTO hotel_content
+                        (hotel_id, name, images, lat, lng, address, city, country,
+                         description, star_rating, amenities,
+                         check_in_time, check_out_time, important_information,
+                         contact_info, chain_code, giata_id,
+                         content_source, fetched_at)
+                    VALUES (
+                        ${hd.code},
+                        ${hd.hotelName ?? null},
+                        ${images}::text[],
+                        ${lat}::float8, ${lng}::float8,
+                        ${hd.location?.address ?? null},
+                        ${hd.location?.city ?? null},
+                        ${country},
+                        ${description},
+                        ${starRating}::int,
+                        ${JSON.stringify(amenities)}::jsonb,
+                        ${checkInTime},
+                        ${checkOutTime},
+                        ${importantInfo},
+                        ${contact ? JSON.stringify(contact) : null}::jsonb,
+                        ${hd.chainCode ?? null},
+                        ${hd.giataData?.id ?? null},
+                        'tgx',
+                        now()
+                    )
+                    ON CONFLICT (hotel_id) DO UPDATE SET
+                        name        = CASE WHEN hotel_content.name IS NULL OR hotel_content.name = hotel_content.hotel_id
+                                     THEN COALESCE(EXCLUDED.name, hotel_content.name) ELSE hotel_content.name END,
+                        images      = CASE WHEN array_length(hotel_content.images, 1) > 0
+                                     THEN hotel_content.images ELSE EXCLUDED.images END,
+                        lat         = CASE WHEN EXCLUDED.lat != 0 THEN EXCLUDED.lat ELSE hotel_content.lat END,
+                        lng         = CASE WHEN EXCLUDED.lng != 0 THEN EXCLUDED.lng ELSE hotel_content.lng END,
+                        address     = COALESCE(hotel_content.address,     EXCLUDED.address),
+                        city        = COALESCE(hotel_content.city,        EXCLUDED.city),
+                        country     = COALESCE(hotel_content.country,     EXCLUDED.country),
+                        description = COALESCE(hotel_content.description, EXCLUDED.description),
+                        star_rating = CASE WHEN hotel_content.star_rating IS NOT NULL AND hotel_content.star_rating != 0
+                                     THEN hotel_content.star_rating ELSE EXCLUDED.star_rating END,
+                        amenities   = CASE WHEN hotel_content.amenities IS NOT NULL
+                                          AND jsonb_typeof(hotel_content.amenities) = 'array'
+                                          AND jsonb_array_length(hotel_content.amenities) > 0
+                                     THEN hotel_content.amenities ELSE EXCLUDED.amenities END,
+                        check_in_time         = COALESCE(hotel_content.check_in_time,         EXCLUDED.check_in_time),
+                        check_out_time        = COALESCE(hotel_content.check_out_time,        EXCLUDED.check_out_time),
+                        important_information = COALESCE(hotel_content.important_information, EXCLUDED.important_information),
+                        contact_info          = COALESCE(hotel_content.contact_info,          EXCLUDED.contact_info),
+                        chain_code            = COALESCE(hotel_content.chain_code,            EXCLUDED.chain_code),
+                        giata_id              = COALESCE(hotel_content.giata_id,              EXCLUDED.giata_id),
+                        content_source        = COALESCE(hotel_content.content_source, 'tgx'),
+                        fetched_at            = now()
+                `;
+                totalSaved++;
+            } catch { /* skip individual hotel failures */ }
+        }
+
+        console.log(`[refresh-hotel-content] "${cityKey}" page ${page}: ${edges.length} hotels (more=${!!token})`);
+    } while (token && page < MAX_PAGES);
+
+    return totalSaved;
+}
+
+router.get('/refresh-hotel-content', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const limit = Math.min(parseInt((req.query.limit as string) ?? '30', 10), 100);
+        const cfg   = getTgxConfig();
+        const t0    = Date.now();
+
+        const cities = await prisma.hotel_search_stats.findMany({
+            orderBy: { search_count: 'desc' },
+            take:    limit,
+            select:  { city_key: true, country_code: true },
+        });
+
+        if (!cities.length) {
+            console.log('[refresh-hotel-content] No cities in hotel_search_stats — skipping');
+            return res.json({ ok: true, message: 'No cities to refresh', updated: 0 });
+        }
+
+        const cityKeys  = cities.map(r => r.city_key);
+        const destRows  = await prisma.tgx_destination_cache.findMany({
+            where:  { city_key: { in: cityKeys } },
+            select: { city_key: true, destination_code: true },
+        });
+        const destCodeMap = new Map(destRows.map(r => [r.city_key, r.destination_code]));
+
+        // Respond immediately — each city can take minutes
+        res.json({ ok: true, message: `Hotel content refresh started (limit=${limit})`, cities: cities.length });
+
+        let totalUpdated = 0;
+        for (const { city_key, country_code } of cities) {
+            const destCode = destCodeMap.get(city_key) ?? null;
+            if (destCode === 'NONE') continue;
+            console.log(`[refresh-hotel-content] Seeding "${city_key}" destCode=${destCode ?? 'none'}`);
+            try {
+                const saved = await _fetchAndUpsertCityContent(cfg, city_key, destCode, country_code);
+                totalUpdated += saved;
+            } catch (e: any) {
+                console.warn(`[refresh-hotel-content] Failed for "${city_key}": ${e.message}`);
+            }
+            await new Promise(r => setTimeout(r, 300));
+        }
+
+        const elapsed = Date.now() - t0;
+        console.log(`[refresh-hotel-content] Done: ${totalUpdated} hotels across ${cities.length} cities in ${elapsed}ms`);
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── Geocode hotels via Nominatim (OSM) ───────────────────────────────────────
+// GET /cron/geocode-hotels?batch=100&offset=0
+// Finds hotels with lat=0 & lng=0, geocodes each address via Nominatim (1 req/s),
+// and writes the precise coordinates back to hotel_content.
+router.get('/geocode-hotels', async (req: Request, res: Response, next: NextFunction) => {
+    const batch  = Math.min(parseInt(String(req.query.batch  ?? 100), 10), 500);
+    const offset = parseInt(String(req.query.offset ?? 0),   10);
+
+    try {
+        const hotels = await prisma.hotel_content.findMany({
+            where:   { address: { not: null }, osm_geocoded_at: null },
+            select:  { hotel_id: true, name: true, address: true, city: true, country: true },
+            take:    batch,
+            skip:    offset,
+            orderBy: { hotel_id: 'asc' },
+        });
+
+        if (!hotels.length) {
+            return res.json({ updated: 0, remaining: 0, message: 'Nothing to geocode' });
+        }
+
+        let updated = 0;
+        let failed  = 0;
+
+        for (const hotel of hotels) {
+            const query = [hotel.address, hotel.city, hotel.country].filter(Boolean).join(', ');
+            try {
+                const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`;
+                const nominatimRes = await fetch(url, {
+                    headers: { 'User-Agent': 'CheapestGo/1.0 (support@cheapestgo.com)' },
+                    signal: AbortSignal.timeout(8000),
+                });
+                const data = await nominatimRes.json() as { lat: string; lon: string }[];
+                if (data.length && data[0].lat && data[0].lon) {
+                    await prisma.hotel_content.update({
+                        where: { hotel_id: hotel.hotel_id },
+                        data:  { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), osm_geocoded_at: new Date() },
+                    });
+                    updated++;
+                } else {
+                    await prisma.hotel_content.update({
+                        where: { hotel_id: hotel.hotel_id },
+                        data:  { osm_geocoded_at: new Date() },
+                    });
+                    failed++;
+                }
+            } catch {
+                // network error — don't mark as done, will retry next run
+                failed++;
+            }
+            // Nominatim policy: max 1 request per second
+            await new Promise(r => setTimeout(r, 1100));
+        }
+
+        const remaining = await prisma.hotel_content.count({ where: { address: { not: null }, osm_geocoded_at: null } });
+
+        return res.json({ updated, failed, remaining, processed: hotels.length });
+    } catch (err) {
+        next(err);
+    }
+});
+
+/**
+ * GET /api/v2/cron/seed-room-groups?batch=150&force=true
+ *
+ * Fills in room-level photos and amenities from ETG ahead of anyone searching (C6, ported from
+ * v1). Without it the first customer to open a property pays for the supplier call, and a
+ * hotel nobody has opened yet shows rooms with no pictures.
+ *
+ * Never-seeded hotels come first, then the stalest, so a run cut short by its batch spends its
+ * calls where they are worth most.
+ */
+router.get('/seed-room-groups', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const batch = Number.parseInt(String(req.query.batch ?? '150'), 10) || 150;
+        const force = String(req.query.force ?? '') === 'true';
+        const result = await new RoomCatalogService().seedRoomGroupsBatch({ batch, force });
+        res.json({ ok: true, ...result });
+    } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/v2/cron/etg-dump-sync?type=incremental&force=true&dry_run=true
+ *
+ * The catalog's static content — rooms, photos, description, amenities, policies — from ETG's
+ * bulk dump (C6, ported from v1). `incremental` for the nightly run, `full` for a rebuild.
+ *
+ * Long-running by nature: the dump is hundreds of megabytes and the response is the summary of
+ * a pass over all of it.
+ */
+router.get('/etg-dump-sync', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const type   = String(req.query.type ?? '') === 'incremental' ? 'incremental' : 'full';
+        const force  = String(req.query.force ?? '') === 'true';
+        const dryRun = String(req.query.dry_run ?? '') === 'true';
+
+        console.log(`[etg-dump] start ${type} (force=${force} dry_run=${dryRun})`);
+        const stats = await processDump(await getDumpUrl(type), { force, dryRun });
+        console.log('[etg-dump] done', stats);
+
+        res.json({ ok: true, type, force, dry_run: dryRun, ...stats });
+    } catch (err) { next(err); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/cron/hotel-reconciliation
+// Schedule: hourly  (0 * * * *)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** How far back a run looks. A charge older than this is a support matter, not an alert. */
+const RECONCILIATION_WINDOW_DAYS = 30;
+
+/**
+ * Hotel charges that succeeded in Stripe with no booking row behind them — **Unrecorded
+ * Reservations** — raised as one notification per reference, ever.
+ *
+ * It deliberately repairs nothing. A reconciler that writes based on payment evidence
+ * eventually acts on a stale read, and the action at the end of that path is a refund;
+ * ADR-0023 already settled that refusing is the safe direction. Repair is an admin action.
+ */
+router.get('/hotel-reconciliation', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+        const result = await findUnrecordedReservations(RECONCILIATION_WINDOW_DAYS);
+
+        // A refusal is not a failure to report quietly — it means the job cannot tell whether
+        // anything is wrong, which is worse than finding nothing.
+        if (!result.ok) {
+            console.error('[hotel-reconciliation] REFUSED:', result.refusedReason);
+            return res.status(409).json({ success: false, refused: result.refusedReason });
+        }
+
+        const fresh = await filterAlreadyNotified(result.unrecorded);
+
+        for (const item of fresh) {
+            // fromStripeAmount, not `/ 100` — a KRW charge has no subunit, and an
+            // unrecorded-charge alert that understates the money by 100× reads as noise.
+            const amount = fromStripeAmount(item.amount, item.currency)
+                .toLocaleString('en-US', { maximumFractionDigits: 2 });
+            await createNotification(
+                UNRECORDED_NOTIFICATION_TITLE,
+                `${item.bookingReference} — ${item.currency.toUpperCase()} ${amount} charged ${item.created.slice(0, 10)} `
+                + `to ${item.holderEmail ?? 'unknown'} (${item.brand ?? 'brand unknown'}) has no booking row. `
+                + `PaymentIntent: ${item.paymentIntentId}. ${item.refunded ? 'Charge was refunded. ' : ''}`
+                + 'The guest may be holding a reservation the platform cannot see — check the supplier dashboard before acting.',
+            );
+            console.warn(`[hotel-reconciliation] unrecorded reservation: ${item.bookingReference} (${item.paymentIntentId})`);
+        }
+
+        res.json({
+            success:       true,
+            windowDays:    result.windowDays,
+            scanned:       result.scanned,
+            unrecorded:    result.unrecorded.length,
+            newlyNotified: fresh.length,
+            references:    result.unrecorded.map((u) => u.bookingReference),
+        });
+    } catch (err) { next(err); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/cron/platform-cost-reconciliation
+// Schedule: monthly on the 4th  (0 6 4 * *)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Half a point of drift in the Stripe rate is worth a decision; less is noise. */
+const STRIPE_RATE_DRIFT_TOLERANCE = 0.005;
+
+/**
+ * Monthly check that the markup actually covered Platform Cost.
+ *
+ * Runs after Duffel invoices (issued by the 3rd), so the number it reports can be checked
+ * against the real bill rather than standing alone. It notifies only when something needs a
+ * decision — an under-recovering month, or a Stripe rate that has drifted from what
+ * pricing.ts charges against — because a job that reports every month is a job nobody reads.
+ */
+router.get('/platform-cost-reconciliation', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        // `month=YYYY-MM` re-runs a past period; the default is last month, since Duffel bills
+        // in arrears and the current month is always partial.
+        const month  = typeof req.query.month === 'string' ? req.query.month : undefined;
+        const result = await reconcilePlatformCost(month);
+
+        console.log(
+            `[platform-cost] ${result.month}: orders=${result.orders} cancelled=${result.cancelled} `
+            + `c=${result.cancellationRate === null ? 'n/a' : (result.cancellationRate * 100).toFixed(1) + '%'} `
+            + `markup=${result.markupRetainedUsd} stripe=${result.stripeFeeRecordedUsd} (est ${result.stripeFeeEstimatedUsd}) `
+            + `duffel≈${result.duffelExpectedUsd} net=${result.netUsd}`,
+        );
+        for (const c of result.caveats) console.log(`[platform-cost] caveat: ${c}`);
+
+        // Under-recovery is the condition the whole pricing model exists to avoid, so it is
+        // worth waking someone for. A month with no orders is not under-recovery.
+        if (result.orders > 0 && result.netUsd < 0) {
+            await createNotification(
+                'Platform Cost not recovered',
+                `${result.month}: markup retained ${result.markupRetainedUsd} against `
+                + `${result.stripeFeeRecordedUsd || result.stripeFeeEstimatedUsd} Stripe and `
+                + `~${result.duffelExpectedUsd} Duffel — short by ${Math.abs(result.netUsd).toFixed(2)}. `
+                + `${result.orders} order(s), ${result.cancelled} cancelled. `
+                + 'Check against the Duffel invoice before retuning rates.',
+            );
+        }
+
+        // A drifted Stripe rate is the failure that hid the original problem: the model charges
+        // against a number that stopped being true and nothing says so.
+        if (
+            result.stripeRateObserved !== null
+            && Math.abs(result.stripeRateObserved - result.stripeRateConfigured) > STRIPE_RATE_DRIFT_TOLERANCE
+        ) {
+            await createNotification(
+                'Stripe rate has drifted from STRIPE_RATE',
+                `${result.month}: charges settled at ${(result.stripeRateObserved * 100).toFixed(2)}% `
+                + `while pricing.ts assumes ${(result.stripeRateConfigured * 100).toFixed(2)}%. `
+                + 'Every markup figure is derived from the configured rate, so this understates cost on every booking.',
+            );
+        }
+
+        res.json({ success: true, ...result });
+    } catch (err) { next(err); }
 });
 
 export default router;

@@ -6,6 +6,7 @@
 
 import { config } from '@/config';
 import { prisma } from '@/lib/prisma';
+import { CITY_ALIASES, resolveHotelDbCities } from '@/lib/cityAliases';
 
 function getKey(): string {
     const key = config.GOOGLE_PLACES_API_KEY;
@@ -45,153 +46,6 @@ export async function getPlaceDetails(placeId: string): Promise<any> {
     return placeDetails;
 }
 
-// ─── Autocomplete (Mapbox-based in monolith; we expose the same shape) ────────
-
-export interface AutocompleteResult {
-    type: 'city' | 'country';
-    title: string;
-    subtitle: string;
-    countryCode: string;
-    id?: string;
-    code?: string;
-}
-
-const COUNTRY_SEARCH_LIST = [
-    // Asia Pacific
-    { name: 'Philippines', code: 'PH' }, { name: 'Indonesia', code: 'ID' },
-    { name: 'Japan', code: 'JP' }, { name: 'Thailand', code: 'TH' },
-    { name: 'South Korea', code: 'KR' }, { name: 'Vietnam', code: 'VN' },
-    { name: 'Cambodia', code: 'KH' }, { name: 'Singapore', code: 'SG' },
-    { name: 'Malaysia', code: 'MY' }, { name: 'Myanmar', code: 'MM' },
-    { name: 'Laos', code: 'LA' }, { name: 'India', code: 'IN' },
-    { name: 'China', code: 'CN' }, { name: 'Hong Kong', code: 'HK' },
-    { name: 'Taiwan', code: 'TW' }, { name: 'Maldives', code: 'MV' },
-    { name: 'Sri Lanka', code: 'LK' }, { name: 'Nepal', code: 'NP' },
-    { name: 'Australia', code: 'AU' }, { name: 'New Zealand', code: 'NZ' },
-    // Middle East & Gulf
-    { name: 'United Arab Emirates', code: 'AE' }, { name: 'Saudi Arabia', code: 'SA' },
-    { name: 'Qatar', code: 'QA' }, { name: 'Kuwait', code: 'KW' },
-    { name: 'Bahrain', code: 'BH' }, { name: 'Jordan', code: 'JO' },
-    { name: 'Turkey', code: 'TR' },
-    // Europe
-    { name: 'France', code: 'FR' }, { name: 'Italy', code: 'IT' },
-    { name: 'Spain', code: 'ES' }, { name: 'Germany', code: 'DE' },
-    { name: 'Greece', code: 'GR' }, { name: 'United Kingdom', code: 'GB' },
-    { name: 'Ireland', code: 'IE' }, { name: 'Portugal', code: 'PT' },
-    { name: 'Netherlands', code: 'NL' }, { name: 'Switzerland', code: 'CH' },
-    { name: 'Austria', code: 'AT' }, { name: 'Norway', code: 'NO' },
-    { name: 'Sweden', code: 'SE' }, { name: 'Denmark', code: 'DK' },
-    { name: 'Iceland', code: 'IS' },
-    // Africa
-    { name: 'Egypt', code: 'EG' }, { name: 'Morocco', code: 'MA' },
-    { name: 'South Africa', code: 'ZA' }, { name: 'Kenya', code: 'KE' },
-    // Americas
-    { name: 'United States', code: 'US' }, { name: 'Canada', code: 'CA' },
-    { name: 'Mexico', code: 'MX' }, { name: 'Brazil', code: 'BR' },
-    { name: 'Argentina', code: 'AR' }, { name: 'Peru', code: 'PE' },
-];
-
-function matchCountries(query: string): AutocompleteResult[] {
-    const q = query.toLowerCase().trim();
-    return COUNTRY_SEARCH_LIST
-        .filter(c => c.name.toLowerCase().includes(q))
-        .slice(0, 4)
-        .map(c => ({
-            type:        'country' as const,
-            title:       c.name,
-            subtitle:    'Country · Browse all hotels',
-            countryCode: c.code,
-        }));
-}
-
-async function fetchCitiesFromMapbox(query: string): Promise<AutocompleteResult[]> {
-    const token = process.env.MAPBOX_TOKEN;
-    if (!token) return [];
-
-    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?types=place,locality,region&limit=8&language=en&proximity=126.9780,37.5665&access_token=${token}`;
-    try {
-        const res  = await fetch(url);
-        if (!res.ok) return [];
-        const data: any = await res.json();
-
-        return (data.features ?? []).map((feature: any) => {
-            const cityName     = feature.text ?? '';
-            const placeName    = feature.place_name ?? '';
-            const countryCtx   = (feature.context ?? []).find((c: any) => c.id?.startsWith('country.'));
-            const rawCode      = countryCtx?.short_code ?? '';
-            const countryCode  = rawCode ? rawCode.toUpperCase().slice(0, 2) : '';
-            return {
-                type:        'city' as const,
-                title:       cityName,
-                subtitle:    placeName,
-                countryCode,
-                id:          feature.id ?? undefined,
-            };
-        });
-    } catch {
-        return [];
-    }
-}
-
-async function filterCitiesWithHotels(cities: Array<{ title: string; countryCode: string }>): Promise<Set<string>> {
-    if (!cities.length) return new Set();
-    try {
-        const cityNames = cities.map(c => c.title.toLowerCase());
-        const rows = await prisma.hotel_content.findMany({
-            where:  { city: { in: cityNames, mode: 'insensitive' } },
-            select: { city: true, country: true },
-            distinct: ['city', 'country'],
-        });
-        const matched = new Set(rows.map((r: any) => `${r.city?.toLowerCase()}|${r.country?.toLowerCase()}`));
-        const result  = new Set<string>();
-        for (const c of cities) {
-            if (matched.has(`${c.title.toLowerCase()}|${c.countryCode.toLowerCase()}`)) {
-                result.add(c.title.toLowerCase());
-            }
-        }
-        if (result.size === 0) {
-            const cityOnlyMatched = new Set(rows.map((r: any) => r.city?.toLowerCase() as string));
-            for (const c of cities) {
-                if (cityOnlyMatched.has(c.title.toLowerCase())) result.add(c.title.toLowerCase());
-            }
-        }
-        return result;
-    } catch {
-        return new Set(cities.map(c => c.title.toLowerCase()));
-    }
-}
-
-export async function autocompleteDestinations(
-    query: string,
-): Promise<{ success: true; data: AutocompleteResult[] } | { success: false; error: string }> {
-    if (!query || query.length < 2) return { success: true, data: [] };
-
-    try {
-        const countryResults = matchCountries(query);
-        const q              = query.toLowerCase().trim();
-        const isExactCountry = countryResults.some(
-            c => c.title.toLowerCase() === q || (c.title.toLowerCase().startsWith(q) && q.length >= 4)
-        );
-        if (isExactCountry) return { success: true, data: countryResults };
-
-        const cityResults = await fetchCitiesFromMapbox(query);
-        if (!cityResults.length) return { success: true, data: countryResults };
-
-        const citiesWithHotels = await filterCitiesWithHotels(cityResults);
-        const sorted = [
-            ...cityResults.filter(c => citiesWithHotels.has(c.title.toLowerCase())),
-            ...cityResults.filter(c => !citiesWithHotels.has(c.title.toLowerCase())),
-        ];
-        return { success: true, data: [...countryResults, ...sorted] };
-    } catch (err) {
-        return {
-            success: false,
-            error: err instanceof Error ? err.message : 'Autocomplete failed',
-        };
-    }
-}
-
-// ─── Geocode (reverse or place_id → coords) ───────────────────────────────────
 
 export async function geocode(params: {
     lat?: string;
@@ -316,4 +170,34 @@ export async function discoverNearbyPlaces(params: {
         .slice(0, 25);
 
     return { features };
+}
+
+// ─── Place Autocomplete ───────────────────────────────────────────────────────
+
+/**
+ * Predictions for a partly-typed place (v1's /api/google/search, ported in C7).
+ *
+ * Distinct from `discoverNearbyPlaces`, which answers "what is around this point" — this
+ * answers "what might they be typing", and the map's own search box is its only caller.
+ *
+ * `proximity` biases the results towards where the map is looking: without it, typing
+ * "station" from a hotel page in Seoul offers stations in three continents. It is a bias and
+ * not a filter, so a customer searching for somewhere far away still finds it.
+ */
+export async function placeAutocomplete(input: string, proximity?: string | null): Promise<any> {
+    const key = getKey();
+    const params = new URLSearchParams({
+        input,
+        key,
+        language: 'en',
+        types: 'geocode|establishment',
+    });
+    // 50km, matching v1: wide enough to cover a metropolitan area, narrow enough to rank it first.
+    if (proximity) {
+        params.set('location', proximity);
+        params.set('radius', '50000');
+    }
+
+    const res = await fetch(`https://maps.googleapis.com/maps/api/place/autocomplete/json?${params}`);
+    return res.json();
 }

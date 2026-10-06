@@ -1,16 +1,73 @@
 import { HotelsRepository } from '@/repositories/hotels.repository';
+import { hotelCountry } from '@/lib/geo/territories';
 import { runTgxSearch as searchHotels } from '@/lib/hotels/search';
 import { quoteTgx, bookTgx, cancelTgx, fetchAmenitiesByDestination } from '@/lib/hotels/travelgatex';
 import { groupByRoomName } from '@/lib/hotels/property';
 import { ensureEtgContent } from '@/lib/hotels/etgContent';
 import { buildRoomContent, buildPolicySections, buildAdditionalInfo } from '@/lib/hotels/roomContent';
-import { otvCodeToLabel } from '@/lib/hotels/amenityCodes';
+import { otvCodeToLabel, normalizeAmenityList } from '@/lib/hotels/amenityCodes';
+import { orderRoomPhotosByDistinctiveness } from '@/lib/hotels/roomMatch';
 import { stripe } from '@/lib/stripe';
 import { AppError } from '@/middleware/error.middleware';
-import { redis } from '@/lib/redis';
 import { prisma } from '@/lib/prisma';
+import { toStripeAmount, fromStripeAmount, hotelServiceFee, PREBOOK_QUOTE_TTL_MS } from '@/lib/pricing';
+import { resolveHotelChargeBase } from '@/lib/payments/chargeBase';
+import { nightsBetween } from '@/lib/hotels/nights';
+import { makeStrictConverter } from '@/lib/payments/convertStrict';
+import { capAtDisplayedTotal } from '@/lib/payments/chargeBase';
+import { snapshotFromPolicy } from '@/lib/policies/snapshotFromPolicy';
+import { sendTransactionalEmail } from '@/lib/email/send';
+import { buildHotelConfirmationHtml } from '@/lib/email/templates';
+import { policyEmailText } from '@/lib/email/policyText';
+import { bookingReferenceFromBytes, isBookingReference, mintBookingReference } from '@/lib/payments/bookingReference';
+import { extractStripeFee, STRIPE_FEE_EXPAND } from '@/lib/payments/stripeFee';
+import { canonicalBrandName } from '@/lib/brand';
+import { lockFx } from '@/lib/payments/fxLock';
+import { calculateCancellation } from '@/lib/policies/cancellationEngine';
+import { ExchangeRatesService } from '@/services/exchange-rates.service';
+import { createHash } from 'crypto';
 
-// ─── ETG hotel/info helpers ───────────────────────────────────────────────────
+// âââ TGX prebook helpers âââââââââââââââââââââââââââââââââââââââââââââââââââââ
+
+function parseTgxOptionToken(token: string): { hotelCode: string | null; checkIn: string | null; checkOut: string | null; nationality: string } {
+    const segs: Record<string, string> = {};
+    const separator = token.includes('!~|') ? '!~|' : '[';
+    for (const seg of token.split(separator)) {
+        if (seg.length > 1) segs[seg[0]] = seg.slice(1);
+    }
+    const parseYYMMDD = (v?: string): string | null => {
+        if (!v || v.length !== 6) return null;
+        return `20${v.slice(0, 2)}-${v.slice(2, 4)}-${v.slice(4, 6)}`;
+    };
+    return { hotelCode: segs['d'] || null, checkIn: parseYYMMDD(segs['b']), checkOut: parseYYMMDD(segs['c']), nationality: segs['h'] || 'US' };
+}
+
+function roomNamesMatch(a: string, b: string): boolean {
+    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+    const na = normalize(a); const nb = normalize(b);
+    if (!na || !nb) return false;
+    if (na === nb || na.includes(nb) || nb.includes(na)) return true;
+    const stopWords = new Set(['room', 'type', 'bed', 'with', 'and', 'the', 'for']);
+    const wordsA = na.split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
+    const wordsB = new Set(nb.split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w)));
+    return wordsA.filter(w => wordsB.has(w)).length >= 2;
+}
+
+function normalizeTgxCancelPolicy(tgxPolicy: any): object {
+    if (!tgxPolicy) return {};
+    const penalties: any[] = tgxPolicy.cancelPenalties || [];
+    const refundable: boolean = tgxPolicy.refundable ?? false;
+    const cancelPolicyInfos: object[] = [];
+    if (refundable && penalties.length > 0) {
+        cancelPolicyInfos.push({ cancelTime: penalties[0].deadline, amount: 0, currency: penalties[0].currency || 'USD', type: 'AMOUNT' });
+    }
+    for (const p of penalties) {
+        cancelPolicyInfos.push({ cancelTime: p.deadline, amount: p.value ?? 0, currency: p.currency || 'USD', type: p.penaltyType || 'AMOUNT' });
+    }
+    return { refundableTag: refundable ? 'RFN' : 'NRFN', cancelPolicyInfos };
+}
+
+// âââ ETG hotel/info helpers âââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 function getEtgToken(): string {
     const keyId  = process.env.ETG_KEY_ID  ?? '';
@@ -70,10 +127,78 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
     ]).catch(() => null);
 }
 
+// âââ Google Places rating enrichment âââââââââââââââââââââââââââââââââââââââââ
+// Fetches guest rating + review count from Google Places and caches it in
+// hotel_content so we only pay for one API call per hotel per 30 days.
+
+const GOOGLE_ENRICH_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+async function enrichHotelRating(content: {
+    hotel_id: string;
+    name: string | null;
+    lat: unknown;
+    lng: unknown;
+    google_enriched_at: Date | null;
+}): Promise<{ rating: number; reviews_count: number } | null> {
+    // Skip if enriched recently (TTL guard)
+    if (content.google_enriched_at &&
+        Date.now() - content.google_enriched_at.getTime() < GOOGLE_ENRICH_TTL_MS) {
+        return null;
+    }
+
+    const key = process.env.GOOGLE_PLACES_API_KEY;
+    if (!key || !content.name) return null;
+
+    try {
+        const lat  = Number(content.lat);
+        const lng  = Number(content.lng);
+        const bias = lat && lng ? `&locationbias=point:${lat},${lng}` : '';
+        const url  = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json` +
+            `?input=${encodeURIComponent(content.name)}&inputtype=textquery${bias}` +
+            `&fields=place_id,rating,user_ratings_total&key=${key}`;
+
+        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        if (!res.ok) return null;
+        const json = await res.json() as any;
+
+        const candidate = json?.candidates?.[0];
+        if (!candidate?.rating) return null;
+
+        // Convert Google 1-5 scale â 0-10 to match our existing rating convention
+        const rating        = Math.round(candidate.rating * 2 * 10) / 10;
+        const reviews_count = candidate.user_ratings_total ?? 0;
+        const placeId       = candidate.place_id ?? null;
+
+        // Persist â one charge, reused for 30 days
+        await prisma.hotel_content.update({
+            where: { hotel_id: content.hotel_id },
+            data: {
+                review_rating:      rating,
+                review_count:       reviews_count,
+                google_place_id:    placeId,
+                google_enriched_at: new Date(),
+            },
+        });
+
+        return { rating, reviews_count };
+    } catch (e) {
+        console.warn('[enrichHotelRating] Google Places failed:', e instanceof Error ? e.message : e);
+        return null;
+    }
+}
+
 export class HotelsService {
     private repo = new HotelsRepository();
 
-    // ── Search ────────────────────────────────────────────────────────────────
+    // ── Catalog counts ─────────────────────────────────────────
+
+    /** Catalogued hotel count for a city. Zero is a legitimate answer, not an error. */
+    async countByCity(cityName: string, countryCode?: string): Promise<number> {
+        if (!cityName.trim()) return 0;
+        return this.repo.countHotelContentByCity(cityName, countryCode);
+    }
+
+    // ââ Search ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
     async search(params: {
         destination:  string;
@@ -106,7 +231,7 @@ export class HotelsService {
         return results;
     }
 
-    // ── Amenities ─────────────────────────────────────────────────────────────
+    // ââ Amenities âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
     async getAmenitiesByDestination(destinationCode: string) {
         const hotels = await fetchAmenitiesByDestination(destinationCode);
@@ -210,7 +335,7 @@ export class HotelsService {
         });
     }
 
-    // ── Property detail ───────────────────────────────────────────────────────
+    // ââ Property detail âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
     async getProperty(hotelId: string, stay: { checkIn: string; checkOut: string; adults?: number; children?: number }) {
         const [content, reviews, reviewItems, tgxResult] = await Promise.all([
@@ -229,12 +354,57 @@ export class HotelsService {
         ]);
         if (!content) throw new AppError(404, 'Property not found', 'NOT_FOUND');
 
+        // ââ Rating enrichment from Google Places (cached in hotel_content) ââââââ
+        let effectiveReviews: typeof reviews = reviews;
+        if (!effectiveReviews) {
+            const c = content as any;
+            if (c.review_rating !== null && c.review_rating !== undefined) {
+                // Already cached from a previous Google fetch â use it directly
+                effectiveReviews = {
+                    hotel_id:      hotelId,
+                    rating:        c.review_rating,
+                    reviews_count: c.review_count ?? 0,
+                    synced_at:     c.google_enriched_at ?? new Date(),
+                } as any;
+            } else {
+                // First time: call Google Places, save to DB so we're never charged twice
+                const enriched = await enrichHotelRating(content as any);
+                if (enriched) {
+                    effectiveReviews = {
+                        hotel_id:      hotelId,
+                        rating:        enriched.rating,
+                        reviews_count: enriched.reviews_count,
+                        synced_at:     new Date(),
+                    } as any;
+                }
+            }
+        }
+
+        // Per night, matching the search stream and v1. TGX quotes the whole stay and
+        // every room card prints "/ night" beside the figure, so the division belongs
+        // on this side of the wire — app-v2's checkout multiplies it back up by the
+        // nights, so a stay total sent here is billed nights times over.
+        const nights   = nightsBetween(stay.checkIn, stay.checkOut);
         const rawTypes = tgxResult?.data?.[0]?.roomTypes ?? [];
-        let rooms = groupByRoomName(rawTypes);
+        let rooms = groupByRoomName(rawTypes).map((room) => ({
+            ...room,
+            price: room.price / nights,
+            rates: room.rates.map((rate) => ({ ...rate, price: rate.price / nights })),
+        }));
 
         const etg = await withTimeout(ensureEtgContent(hotelId, content), 8_000);
         if (etg) {
             rooms = rooms.map((room) => ({ ...room, content: buildRoomContent(room.name, etg) }));
+
+            // Neighbouring rooms often match ETG groups that share most of their photos,
+            // so two cards lead with the same shots and read as identical. Lead each
+            // gallery with what is unique to it; nothing is discarded.
+            const ordered = orderRoomPhotosByDistinctiveness(
+                rooms.map((room) => ({ roomPhotos: room.content?.gallery })),
+            );
+            rooms = rooms.map((room, i) => (room.content
+                ? { ...room, content: { ...room.content, gallery: ordered[i].roomPhotos ?? room.content.gallery } }
+                : room));
         }
 
         // The property response is client-facing: drop the raw ETG blobs and the
@@ -248,9 +418,21 @@ export class HotelsService {
         void room_groups; void amenity_groups; void metapolicy_struct; void metapolicy_extra_info;
         void important_information; void ratehawk_hid; void content_source; void last_attempt_at;
 
+        const row = publicContent as any;
+        const normalizedContent = {
+            ...publicContent,
+            // A territory's hotels arrive filed under its parent's code, so the address
+            // on a Hong Kong property page read "Hong Kong, CN" (QA BG-8).
+            country:   hotelCountry(row.country, row.city, row.lat, row.lng),
+            // `hotel_content.amenities` mixes prettified non-English supplier strings
+            // with `{ code }` objects from TGX; returned raw, a Spanish or Russian
+            // label reaches an English page.
+            amenities: normalizeAmenityList(row.amenities),
+        };
+
         const outContent = etg
             ? {
-                  ...publicContent,
+                  ...normalizedContent,
                   amenityGroups:      etg.amenityGroups,
                   roomPolicySections: buildPolicySections(etg.metapolicy),
                   additionalInfo:     buildAdditionalInfo(
@@ -259,148 +441,839 @@ export class HotelsService {
                       etg.metapolicyExtraInfo,
                   ),
               }
-            : publicContent;
+            : normalizedContent;
 
-        return { content: outContent, reviews, reviewItems, rooms };
+        return { content: outContent, reviews: effectiveReviews, reviewItems, rooms };
     }
 
-    // ── Pre-book (validate + hold) ────────────────────────────────────────────
+    // ââ Pre-book (validate + quote) âââââââââââââââââââââââââââââââââââââââââââ
 
     async preBook(params: {
-        optionRefId: string;
-        checkIn:     string;
-        checkOut:    string;
-        adults:      number;
-        children?:   number;
-        rooms?:      number;
-        occupancies?: any[];
-        hotelId:     string;
-        rateKey:     string;
-        currency?:   string;
+        offerId:   string;
+        currency?: string;
+        roomName?: string;
+        adults?:   number;
+        children?: number;
     }) {
-        const result = await quoteTgx(params.rateKey);
-        return result;
-    }
-
-    // ── Get quote / booking price ─────────────────────────────────────────────
-
-    async createPayment(params: {
-        userId:      string;
-        hotelId:     string;
-        optionRefId: string;
-        rateKey:     string;
-        totalPrice:  number;
-        currency:    string;
-        checkIn:     string;
-        checkOut:    string;
-        guestName:   string;
-        guestEmail:  string;
-        details:     any;
-    }) {
-        const lockKey = `hotel-book-lock:${params.userId}:${params.hotelId}:${params.checkIn}`;
-        const locked  = await redis.set(lockKey, '1', 'EX', 300, 'NX');
-        if (!locked) throw new AppError(409, 'A booking for this property is already in progress.', 'BOOKING_IN_PROGRESS');
-
-        try {
-            const zeroDecimal = ['jpy', 'krw', 'clp', 'pyg', 'ugx', 'vnd'];
-            const stripeAmount = zeroDecimal.includes(params.currency.toLowerCase())
-                ? Math.round(params.totalPrice)
-                : Math.round(params.totalPrice * 100);
-
-            const paymentIntent = await stripe.paymentIntents.create({
-                amount:   stripeAmount,
-                currency: params.currency.toLowerCase(),
-                capture_method: 'manual',
-                metadata: {
-                    userId:    params.userId,
-                    hotelId:   params.hotelId,
-                    rateKey:   params.rateKey,
-                    checkIn:   params.checkIn,
-                    checkOut:  params.checkOut,
-                    guestName: params.guestName,
-                    type:      'hotel',
-                },
-            });
-
-            return {
-                clientSecret:    paymentIntent.client_secret!,
-                paymentIntentId: paymentIntent.id,
-            };
-        } finally {
-            await redis.del(lockKey).catch(() => {});
+        if (!params.offerId?.startsWith('TGX:')) {
+            throw new AppError(400, 'This hotel is not available for instant online booking.', 'INVALID_OFFER');
         }
-    }
 
-    // ── Confirm booking ───────────────────────────────────────────────────────
+        const staleToken = params.offerId.slice(4);
+        const adults   = params.adults   ?? 2;
+        const children = params.children ?? 0;
+        const currency = params.currency || 'USD';
 
-    async confirmBooking(params: {
-        paymentIntentId: string;
-        userId:          string;
-        optionRefId:     string;
-        rateKey:         string;
-        guestName:       string;
-        guestEmail:      string;
-        guestPhone?:     string;
-        checkIn:         string;
-        checkOut:        string;
-        hotelId:         string;
-        currency?:       string;
-        occupancies?:    any[];
-    }) {
-        const pi = await stripe.paymentIntents.retrieve(params.paymentIntentId);
-        if (pi.metadata.userId !== params.userId) throw new AppError(403, 'Payment mismatch', 'FORBIDDEN');
-        if (pi.status !== 'requires_capture') throw new AppError(402, 'Payment not authorized', 'PAYMENT_REQUIRED');
+        const { hotelCode, checkIn, checkOut, nationality } = parseTgxOptionToken(staleToken);
+        if (!hotelCode || !checkIn || !checkOut) {
+            throw new AppError(400, 'Invalid TGX offer ID â could not decode hotel details', 'INVALID_OFFER');
+        }
 
-        const nameParts = params.guestName.split(' ');
-        const bookingResult = await bookTgx({
-            quoteToken:      params.optionRefId,
-            clientReference: `CG-${params.userId}-${Date.now()}`,
-            holder: {
-                firstName: nameParts[0] ?? params.guestName,
-                lastName:  (nameParts.slice(1).join(' ') || nameParts[0]) ?? '',
-                email:     params.guestEmail,
-            },
-            rooms: (params.occupancies ?? [{ occupancyRefId: 1, paxes: [{ name: nameParts[0] ?? '', surname: nameParts[1] ?? '', age: 30 }] }]),
-        } as any);
+        console.log(`[prebook/tgx] Fresh search: hotel=${hotelCode} ${checkIn}â${checkOut} adults=${adults}`);
+        const freshResult = await searchHotels({
+            hotelCode,
+            checkin:  checkIn,
+            checkout: checkOut,
+            adults,
+            children,
+            currency,
+            guest_nationality: nationality,
+        });
 
-        await stripe.paymentIntents.capture(params.paymentIntentId);
+        const freshRooms: any[] = freshResult?.data?.[0]?.roomTypes || [];
+        if (!freshRooms.length) {
+            throw new AppError(409, 'Room is no longer available for the selected dates', 'UNAVAILABLE');
+        }
+
+        const originalRoomName = params.roomName || '';
+        const matchedRooms = originalRoomName
+            ? freshRooms.filter(r => roomNamesMatch(r.roomName || r.roomType || '', originalRoomName))
+            : [];
+        const otherRooms = originalRoomName
+            ? freshRooms.filter(r => !roomNamesMatch(r.roomName || r.roomType || '', originalRoomName))
+            : freshRooms;
+        const candidates = [...matchedRooms, ...otherRooms].slice(0, 5);
+
+        if (!candidates.length) {
+            throw new AppError(409, 'Room is no longer available for the selected dates', 'UNAVAILABLE');
+        }
+
+        // OTV needs a moment to propagate the freshly-searched option into its valuation cache.
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        let optionQuote: any = null;
+        let quotedToken = candidates[0]?.offerId?.slice(4) ?? staleToken;
+        let successfulRoom = candidates[0];
+
+        for (const room of candidates) {
+            const rOfferId: string = room?.offerId || '';
+            if (!rOfferId.startsWith('TGX:')) continue;
+            const rOptionId    = rOfferId.slice(4);
+            const rTgxId       = room?.rates?.[0]?._tgx?.id    || '';
+            const rNativeToken = room?.rates?.[0]?._tgx?.token  || '';
+            const tokensToTry  = [...new Set([rOptionId, rTgxId, rNativeToken].filter(Boolean))];
+
+            for (const tok of tokensToTry) {
+                console.log('[prebook/tgx] Quoting with token:', tok.substring(0, 80));
+                try {
+                    const q = await quoteTgx(tok);
+                    optionQuote    = q;
+                    quotedToken    = tok;
+                    successfulRoom = room;
+                    break;
+                } catch (e: any) {
+                    console.warn('[prebook/tgx] Quote failed:', tok.substring(0, 40), 'â', e.message?.substring(0, 100));
+                }
+            }
+            if (optionQuote) break;
+        }
+
+        if (!optionQuote) {
+            throw new AppError(409, 'This room is currently unavailable for booking. Please try a different hotel or check back later.', 'UNAVAILABLE');
+        }
+
+        if (optionQuote.paymentType && optionQuote.paymentType !== 'MERCHANT') {
+            throw new AppError(409, 'This room is not available for online payment. Please contact support.', 'NON_MERCHANT');
+        }
+
+        const bookToken       = optionQuote.optionRefId || quotedToken;
+        const bookedRoomName  = successfulRoom?.roomName || successfulRoom?.roomType || '';
+        const roomSubstituted = originalRoomName ? !roomNamesMatch(bookedRoomName, originalRoomName) : false;
+
+        console.log(`[prebook/tgx] Success | book token: ${bookToken.substring(0, 60)} | room: ${bookedRoomName} | price: ${optionQuote.price?.gross || optionQuote.price?.net} ${optionQuote.price?.currency}`);
+
+        // Record what TGX quoted. createPayment charges from this row rather than from
+        // the client's payload, so the Stripe base comes from the supplier instead of
+        // the browser. Failing to record must not fail the prebook: checkout rejects a
+        // prebookId it has no quote for, so the worst case is the customer retrying.
+        const prebookId = `TGX:${bookToken}`;
+        try {
+            await this.repo.savePrebookQuote({
+                prebookId,
+                net:       optionQuote.price?.net   || 0,
+                gross:     optionQuote.price?.gross || optionQuote.price?.net || 0,
+                currency:  optionQuote.price?.currency || currency,
+                roomName:  bookedRoomName || null,
+                checkIn,
+                checkOut,
+                expiresAt: new Date(Date.now() + PREBOOK_QUOTE_TTL_MS),
+            });
+        } catch (persistErr) {
+            console.error('[prebook/tgx] Failed to persist quote — checkout will reject this prebookId:', persistErr);
+        }
+
+        // ── What the customer is shown, produced here rather than in the browser ──
+        //
+        // The browser renders prices; it does not compute them. Converting and adding the
+        // service fee here means the figure on the checkout is made by the same code and the
+        // same rates createPayment charges from, so the two cannot drift. app-v2's checkout
+        // used to add a hardcoded 6% itself while the server charged 5.9%.
+        const quotedSubtotal = optionQuote.price?.net || 0;
+        const quotedTotal    = optionQuote.price?.gross || optionQuote.price?.net || 0;
+        const quotedTaxes    = (optionQuote.price?.gross || 0) - (optionQuote.price?.net || 0);
+        const quotedCurrency = String(optionQuote.price?.currency || currency).toUpperCase();
+        const displayCurrency = String(params.currency || quotedCurrency).toUpperCase();
+
+        let display: Record<string, unknown> | undefined;
+        try {
+            // Rates are needed to convert the room, and — because the fee's flat part is
+            // quoted in USD — whenever the display currency is not USD at all.
+            const needsRates = quotedCurrency !== displayCurrency || displayCurrency !== 'USD';
+            const convert = makeStrictConverter(needsRates ? await new ExchangeRatesService().getLiveRates() : null);
+            const to = (n: number) => Math.round(convert(n, quotedCurrency, displayCurrency) * 100) / 100;
+            const total = to(quotedTotal);
+            const fee   = hotelServiceFee(total, displayCurrency, convert);
+            display = {
+                currency:     displayCurrency,
+                subtotal:     to(quotedSubtotal),
+                taxes:        to(quotedTaxes),
+                total,
+                serviceFee:   fee.serviceFee,
+                chargedTotal: fee.chargedTotal,
+                converted:    quotedCurrency !== displayCurrency,
+            };
+        } catch (fxErr: any) {
+            // Left absent: the checkout says prices are still being confirmed rather than
+            // showing a total the charge might not match.
+            console.warn('[prebook/tgx] display conversion unavailable:', fxErr?.message);
+        }
 
         return {
-            bookingRef: (bookingResult as any).clientRef ?? (bookingResult as any).supplierRef,
-            status:     bookingResult.status,
-            details:    bookingResult,
+            success: true,
+            data: {
+                prebookId,
+                provider:   'travelgatex',
+                price: {
+                    subtotal: quotedSubtotal,
+                    taxes:    quotedTaxes,
+                    total:    quotedTotal,
+                },
+                ...(display ? { display } : {}),
+                surcharges:           optionQuote.surcharges || [],
+                currency:             optionQuote.price?.currency || currency,
+                cancellationPolicies: normalizeTgxCancelPolicy(optionQuote.cancelPolicy),
+                boardCode:            optionQuote.boardCode || '',
+                rooms:                optionQuote.rooms || [],
+                ...(roomSubstituted && bookedRoomName && { roomSubstituted: true, substitutedRoomName: bookedRoomName }),
+            },
         };
     }
 
-    // ── Cancel booking ────────────────────────────────────────────────────────
+    // ââ Create Stripe Payment Intent ââââââââââââââââââââââââââââââââââââââââââ
+
+    async createPayment(params: {
+        userId:          string;
+        prebookId:       string;
+        amount:          number;
+        currency:        string;
+        holderEmail?:    string;
+        propertyName?:   string;
+        roomName?:       string;
+        checkIn?:        string;
+        checkOut?:       string;
+        bundleFlightId?: string;
+        /** The total the checkout showed, service fee included. Nothing is billed above it. */
+        displayedTotal?: number;
+    }) {
+        const SUPPORTED_CURRENCIES = new Set([
+            'usd', 'eur', 'gbp', 'aud', 'cad', 'sgd', 'hkd', 'jpy', 'krw',
+            'thb', 'php', 'myr', 'idr', 'inr', 'aed', 'nzd', 'chf', 'sek',
+            'nok', 'dkk', 'brl', 'mxn', 'zar', 'try', 'pln', 'czk', 'huf',
+        ]);
+
+        const MAX_AMOUNT_BY_CURRENCY: Record<string, number> = {
+            usd: 100_000,     eur: 95_000,      gbp: 80_000,
+            aud: 160_000,     cad: 140_000,     sgd: 140_000,
+            hkd: 800_000,     chf: 92_000,      nzd: 170_000,
+            aed: 370_000,     inr: 8_500_000,   thb: 3_600_000,
+            php: 5_800_000,   myr: 480_000,     brl: 510_000,
+            mxn: 1_700_000,   zar: 1_900_000,   try: 3_200_000,
+            pln: 410_000,     czk: 2_300_000,   huf: 37_000_000,
+            sek: 1_100_000,   nok: 1_100_000,   dkk: 700_000,
+            jpy: 15_000_000,  krw: 140_000_000, idr: 1_600_000_000,
+        };
+
+        const currencyLower = params.currency?.toLowerCase();
+        if (!SUPPORTED_CURRENCIES.has(currencyLower)) {
+            throw new AppError(400, `Unsupported currency: ${params.currency}`, 'UNSUPPORTED_CURRENCY');
+        }
+
+        const maxAmount = MAX_AMOUNT_BY_CURRENCY[currencyLower] ?? 100_000;
+        if (!params.amount || params.amount <= 0 || params.amount > maxAmount) {
+            throw new AppError(400, `Valid amount is required (0 â ${maxAmount.toLocaleString()} ${params.currency.toUpperCase()})`, 'INVALID_AMOUNT');
+        }
+
+        // Duplicate booking guard
+        if (params.propertyName && params.checkIn && params.checkOut) {
+            const dup = await prisma.bookings.findFirst({
+                where: {
+                    user_id:      params.userId,
+                    property_name: params.propertyName,
+                    status:       { in: ['confirmed', 'pending', 'completed'] },
+                    check_in:     { lt: new Date(params.checkOut) },
+                    check_out:    { gt: new Date(params.checkIn) },
+                },
+                select: { booking_id: true, check_in: true, check_out: true },
+            }).catch(() => null);
+
+            if (dup) {
+                throw new AppError(
+                    409,
+                    `You already have an active booking at ${params.propertyName} for overlapping dates.`,
+                    'DUPLICATE_BOOKING',
+                    { existingBookingId: dup.booking_id, existingCheckIn: dup.check_in, existingCheckOut: dup.check_out },
+                );
+            }
+        }
+
+        // ── Establish the trusted base price ──
+        //
+        // `params.amount` is what the browser says it displayed: client-controlled, and
+        // computed with client-side FX. Charge from the supplier quote recorded at
+        // prebook instead, converting it here (ADR-0021).
+        const quote = await this.repo.findPrebookQuote(params.prebookId);
+
+        // Rates are only needed when the quote is in another currency; fetching them
+        // unconditionally would make a same-currency booking fail on an FX outage.
+        const needsFx = !!quote && String(quote.currency).toUpperCase() !== params.currency.toUpperCase();
+        const rates   = needsFx ? await new ExchangeRatesService().getLiveRates() : null;
+
+        const resolved = resolveHotelChargeBase(
+            quote,
+            params.amount,
+            params.currency,
+            makeStrictConverter(rates),
+        );
+
+        if (!resolved.ok) {
+            console.warn(
+                `[create-payment] Rejected (${resolved.code}) prebookId=${params.prebookId.slice(0, 40)} `
+                + `client=${params.amount} ${params.currency.toUpperCase()}`
+                + (resolved.serverPrice !== undefined ? ` server=${resolved.serverPrice}` : '')
+            );
+            throw new AppError(
+                resolved.code === 'FX_UNAVAILABLE' ? 503 : 409,
+                resolved.message,
+                resolved.code,
+                resolved.serverPrice !== undefined
+                    ? { serverPrice: resolved.serverPrice, currency: resolved.currency }
+                    : undefined,
+            );
+        }
+
+        // Platform markup on the server's figure, never the client's.
+        //
+        // One rate, bundled or not: bundling was never a discount line, only a swap to a
+        // lower rate, and the gap it spent is now an earmarked provision against
+        // TravelgateX's incoming connection fee (ADR-0036).
+        //
+        // Through hotelServiceFee, which is also what prebook's display block uses — the fee
+        // shown and the fee charged are one function of one base. The flat $0.40 of
+        // ADR-0036 is charged; this used to pass zero.
+        const fee = hotelServiceFee(
+            resolved.base,
+            params.currency,
+            // The flat part is quoted in USD, so it needs rates even when the room did not.
+            makeStrictConverter(params.currency.toUpperCase() === 'USD' ? null : (rates ?? await new ExchangeRatesService().getLiveRates())),
+        );
+
+        // The customer is never billed above the total they were shown, fee included.
+        const shown = capAtDisplayedTotal(fee.chargedTotal, params.displayedTotal, params.currency);
+        if (!shown.ok) {
+            console.warn(`[create-payment] Rejected (${shown.code}) prebookId=${params.prebookId.slice(0, 40)} shown=${params.displayedTotal} server=${shown.serverPrice} ${shown.currency}`);
+            throw new AppError(409, shown.message, shown.code, {
+                serverPrice: shown.serverPrice,
+                currency:    shown.currency,
+            });
+        }
+
+        const pricing = {
+            originalPrice: resolved.base,
+            chargedPrice:  shown.total,
+            markupAmount:  Math.round((shown.total - resolved.base) * 100) / 100,
+            markupRate:    fee.markupRate,
+            capped:        fee.capped,
+        };
+        const stripeAmount = toStripeAmount(pricing.chargedPrice, params.currency);
+
+        console.log(`[create-payment] Hotel pricing: original=${pricing.originalPrice} ${params.currency}, charged=${pricing.chargedPrice}, markup=${(pricing.markupRate * 100).toFixed(1)}%${pricing.capped ? ' (CAPPED)' : ''}${params.bundleFlightId ? ' (bundled with a flight — no longer discounted)' : ''}`);
+
+        // Idempotency key â scoped to prebookId + amount + currency so a prebook
+        // refresh (different amount) produces a new PI rather than a Stripe rejection.
+        const prebookHash = createHash('sha256')
+            .update(`${params.prebookId}:${stripeAmount}:${currencyLower}`)
+            .digest('hex')
+            .slice(0, 40);
+        const idempotencyKey = `hotel-pi-${params.userId}-${prebookHash}`;
+
+        // Minted here rather than at confirmation, so it exists before the charge does. A
+        // charge whose booking later fails still took the customer's money and still has to
+        // be attributable — those are the hardest rows to trace, and giving them no reference
+        // leaves exactly the wrong gap.
+        //
+        // Derived from the idempotency key, never random: Stripe replays a key only when the
+        // parameters are identical, and this request is replayed whenever a customer steps
+        // back from payment and proceeds again. A random reference made every retry a
+        // "different request" under the same key — a 500, and no way to pay (QA BG-19).
+        const bookingReference = bookingReferenceFromBytes(
+            createHash('sha256').update(idempotencyKey).digest(),
+            canonicalBrandName(process.env.BRAND_NAME ?? process.env.NEXT_PUBLIC_BRAND_NAME),
+        );
+
+        const paymentIntent = await stripe.paymentIntents.create({
+            amount:         stripeAmount,
+            currency:       currencyLower,
+            capture_method: 'manual',
+            metadata: {
+                prebookId:     params.prebookId.slice(0, 490),
+                // FORHU settles several products into one Stripe account and one pooled daily
+                // payout, so the bank line cannot be split per product. This is what makes a
+                // charge attributable to this platform from inside Stripe.
+                bookingReference,
+                userId:        params.userId,
+                holderEmail:   params.holderEmail || '',
+                type:          params.bundleFlightId ? 'hotel_bundle' : 'hotel',
+                bundleFlightId: params.bundleFlightId || '',
+                originalPrice: String(pricing.originalPrice),
+                // The effective rate, after the flat component and the cap — the only one
+                // consistent with the amounts stored beside it.
+                markupRate:    String(pricing.markupRate),
+                markupAmount:  String(pricing.markupAmount),
+            },
+            description: `CG: ${params.propertyName || 'Hotel'} â ${params.roomName || 'Room'}`,
+            automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
+        }, { idempotencyKey });
+
+        return {
+            success: true,
+            data: {
+                clientSecret:    paymentIntent.client_secret!,
+                paymentIntentId: paymentIntent.id,
+                // What the intent is for, so the payment step renders the figure it is about
+                // to confirm rather than one the browser worked out.
+                chargedTotal:    pricing.chargedPrice,
+                serviceFee:      pricing.markupAmount,
+                currency:        params.currency.toUpperCase(),
+            },
+        };
+    }
+
+    // ââ Confirm booking âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+
+    async confirmBooking(params: {
+        paymentIntentId:      string;
+        userId:               string;
+        prebookId:            string;
+        holder:               { firstName: string; lastName: string; email: string };
+        guests?:              Array<{ firstName: string; lastName: string; age?: number }>;
+        propertyName?:        string;
+        propertyImage?:       string;
+        roomName?:            string;
+        checkIn:              string;
+        checkOut:             string;
+        adults?:              number;
+        children?:            number;
+        currency?:            string;
+        specialRequests?:     string;
+        voucherCode?:         string;
+        discountAmount?:      number;
+        cancellationPolicies?: any;
+        quotedPrice?:         number;
+        /** The board the rate was quoted with, from prebook. Snapshotted: it is part of
+         *  what was bought, not of what the property offers today. */
+        board?:               string;
+    }) {
+        const pi = await stripe.paymentIntents.retrieve(params.paymentIntentId);
+        if (pi.metadata.userId !== params.userId) throw new AppError(403, 'Payment does not belong to this user', 'FORBIDDEN');
+
+        // Read off the PaymentIntent, never accepted from the request body: the client must
+        // not get to choose the identifier a payment is filed under. Absent only for charges
+        // taken before references existed.
+        const paidReference = isBookingReference(pi.metadata?.bookingReference)
+            ? pi.metadata.bookingReference
+            : undefined;
+        if (pi.status !== 'requires_capture') throw new AppError(402, `Payment not authorized (status: ${pi.status})`, 'PAYMENT_REQUIRED');
+
+        // Idempotency: if booking already exists for this PI, return it
+        const existing = await prisma.bookings.findFirst({
+            where: { payment_intent_id: params.paymentIntentId },
+            select: { booking_id: true, status: true, total_price: true, currency: true },
+        }).catch(() => null);
+        if (existing) {
+            console.log(`[confirm] Idempotent return for PI ${params.paymentIntentId}: ${existing.booking_id}`);
+            return { success: true, data: { bookingId: existing.booking_id, status: existing.status, policyType: 'standard', policySummary: '' } };
+        }
+
+        const quoteToken     = params.prebookId.startsWith('TGX:') ? params.prebookId.slice(4) : params.prebookId;
+        const adults         = params.adults   ?? 2;
+        const children       = params.children ?? 0;
+        const currency       = params.currency || 'USD';
+        const guests         = params.guests   || [];
+        // The reference OTV files the reservation under, and the one a cancellation has to
+        // quote — the supplier reference is rejected by OTV.
+        //
+        // Was `FORHU-<millis>-<rand>`. FORHU Inc owns the Stripe account every FORHU product
+        // settles into, so that prefix named the one thing all of them share and could never
+        // answer "which project did this money come from". It now comes from the
+        // PaymentIntent, so the booking and the charge carry the same reference; a booking
+        // taken before references existed falls back to a fresh one.
+        const clientReference = paidReference
+            ?? mintBookingReference(canonicalBrandName(process.env.BRAND_NAME ?? process.env.NEXT_PUBLIC_BRAND_NAME));
+
+        const adultPaxes = Array(adults).fill(null).map((_, i) => ({
+            name: guests[i]?.firstName || params.holder.firstName,
+            surname: guests[i]?.lastName || params.holder.lastName,
+            age: 30,
+        }));
+        const childPaxes = Array(children).fill(null).map((_, i) => ({
+            name: guests[adults + i]?.firstName || `Child${i + 1}`,
+            surname: guests[adults + i]?.lastName || params.holder.lastName,
+            age: (guests[adults + i] as any)?.age || 10,
+        }));
+
+        let tgxResult: any;
+        try {
+            tgxResult = await bookTgx({
+                quoteToken,
+                clientReference,
+                holder: params.holder,
+                rooms: [{ occupancyRefId: 1, paxes: [...adultPaxes, ...childPaxes] }],
+            } as any);
+        } catch (firstErr: any) {
+            const msg = firstErr?.message || '';
+            const isExpired = /option not found|not found in|expired|unavailable|301|wrong_field/i.test(msg);
+            if (!isExpired) {
+                console.error('[confirm] TGX book failed:', msg);
+                return { success: false, providerConfirmed: false, error: msg };
+            }
+            // Retry with fresh token
+            console.log('[confirm] Token expired, retrying with fresh search...');
+            const { hotelCode, checkIn, checkOut, nationality } = parseTgxOptionToken(quoteToken);
+            if (!hotelCode || !checkIn || !checkOut) return { success: false, error: 'Room is no longer available for these dates' };
+            const freshResult = await searchHotels({ hotelCode, checkin: checkIn, checkout: checkOut, adults, children, currency, guest_nationality: nationality }).catch(() => null);
+            const freshRoom = freshResult?.data?.[0]?.roomTypes?.[0];
+            const freshOfferId: string = freshRoom?.offerId || '';
+            if (!freshOfferId.startsWith('TGX:')) return { success: false, error: 'Room is no longer available for these dates' };
+            const freshOptionId  = freshOfferId.slice(4);
+            const freshNative    = freshRoom?.rates?.[0]?._tgx?.token || freshOptionId;
+            await new Promise(r => setTimeout(r, 1500));
+            let freshToken: string | null = null;
+            for (const tok of [...new Set([freshNative, freshOptionId])]) {
+                try {
+                    const q = await quoteTgx(tok);
+                    freshToken = q.optionRefId || tok;
+                    break;
+                } catch { /* try next */ }
+            }
+            if (!freshToken) return { success: false, error: 'Room is no longer available for these dates' };
+            try {
+                tgxResult = await bookTgx({ quoteToken: freshToken, clientReference, holder: params.holder, rooms: [{ occupancyRefId: 1, paxes: [...adultPaxes, ...childPaxes] }] } as any);
+            } catch (retryErr: any) {
+                return { success: false, error: retryErr.message || 'TravelgateX booking failed after retry' };
+            }
+        }
+
+        const booking     = tgxResult;
+        const clientRef   = booking?.clientRef;
+        if (!clientRef) return { success: false, error: 'Booking failed â no reference returned from TravelgateX' };
+
+        const bookingId   = clientRef;
+        const supplierRef = booking?.supplierRef;
+        const hotelCode   = booking?.hotelCode   ?? null;
+        const rawStatus   = (booking.status || 'confirmed').toLowerCase();
+        const bookingStatus = (['confirmed', 'pending'].includes(rawStatus) ? rawStatus : 'confirmed') as string;
+
+        const tgxPrice = booking.price?.gross || booking.price?.net || 0;
+
+        // Price change guard (>5%)
+        if (params.quotedPrice && params.quotedPrice > 0 && tgxPrice > 0) {
+            if (tgxPrice > params.quotedPrice * 1.05) {
+                console.warn(`[confirm] Price increased beyond threshold: quoted=${params.quotedPrice} booked=${tgxPrice}`);
+                return { success: false, errorCode: 'price_changed', oldPrice: params.quotedPrice, newPrice: tgxPrice };
+            }
+        }
+
+        // Prefer actual Stripe PI amount over TGX supplier price
+        let totalPrice: number;
+        let storedCurrency = currency;
+        try {
+            // Not `/ 100`: KRW has no minor unit, so dividing records a ₩1,200,000 booking
+            // as ₩12,000. AirangGo is Korea-locked, which makes this a primary market rather
+            // than an edge case.
+            totalPrice = fromStripeAmount(pi.amount, pi.currency || 'usd');
+            storedCurrency = (pi.currency || 'usd').toUpperCase();
+        } catch {
+            totalPrice = params.quotedPrice ?? tgxPrice;
+        }
+
+        // Cancel policy: prefer prebook policy over book-time policy
+        const prebookPolicy   = params.cancellationPolicies;
+        const hasPrebookPolicy = prebookPolicy != null && typeof prebookPolicy === 'object' && Object.keys(prebookPolicy).length > 0;
+        const isRefundable     = hasPrebookPolicy
+            ? (prebookPolicy.refundableTag === 'RFN' || prebookPolicy.refundableTag === 'REFUNDABLE')
+            : booking.cancelPolicy?.refundable === true;
+        const storedCancelPolicy = hasPrebookPolicy ? prebookPolicy : (booking.cancelPolicy ? {
+            refundableTag: isRefundable ? 'RFN' : 'NRFN',
+            cancelPolicyInfos: (booking.cancelPolicy.cancelPenalties || []).map((p: any) => ({
+                cancelTime: p.deadline, amount: p.value ?? 0, currency: p.currency || storedCurrency, type: p.penaltyType || 'AMOUNT',
+            })),
+        } : null);
+
+        // The terms this booking is held to. Derived by the same function the backfill uses
+        // for bookings taken before snapshots existed, so a backfilled booking and one
+        // confirmed today are judged by one rule.
+        const terms = snapshotFromPolicy(storedCancelPolicy, storedCurrency);
+        const { policyType } = terms;
+
+        // Capture Stripe payment.
+        //
+        // Expanded on the way back so the fee Stripe really took can be recorded beside the
+        // booking. `STRIPE_RATE` in pricing.ts has to be an estimate — the markup is computed
+        // before a charge exists — but nothing ever checked it against anything, and it
+        // carried Stripe's 2.9% headline while every live charge on this account settles at
+        // 4.4%. The balance transaction says the exact figure, for free, and only exists once
+        // the payment is captured. See ADR-0036.
+        const captured = await stripe.paymentIntents.capture(params.paymentIntentId, {
+            expand: STRIPE_FEE_EXPAND,
+        });
+        const stripeFee = extractStripeFee(captured);
+
+        // Save booking to DB (non-fatal â provider already confirmed)
+        const providerConfirmed = true;
+        let bookingRow: { id: string } | null = null;
+        try {
+            bookingRow = await prisma.bookings.create({
+                data: {
+                    booking_id:        bookingId,
+                    user_id:           params.userId,
+                    property_name:     params.propertyName || '',
+                    property_image:    params.propertyImage ?? null,
+                    room_name:         params.roomName || '',
+                    check_in:          new Date(params.checkIn),
+                    check_out:         new Date(params.checkOut),
+                    guests_adults:     adults,
+                    guests_children:   children,
+                    total_price:       totalPrice,
+                    currency:          storedCurrency,
+                    holder_first_name: params.holder.firstName,
+                    holder_last_name:  params.holder.lastName,
+                    holder_email:      params.holder.email,
+                    status:            bookingStatus,
+                    special_requests:  params.specialRequests ?? null,
+                    voucher_code:      params.voucherCode ?? null,
+                    discount_amount:   params.discountAmount ?? 0,
+                    policy_type:       policyType,
+                    cancellation_policy: storedCancelPolicy ? storedCancelPolicy : undefined,
+                    provider:          'travelgatex',
+                    // The recorded fee rides along rather than being threaded through a
+                    // second write: a booking that exists must never be jeopardised by a
+                    // reporting figure, and every field of it is optional for that reason.
+                    provider_metadata: { supplierRef, hotelCode, clientReference, ...stripeFee, ...(params.board ? { board: params.board } : {}) },
+                    payment_intent_id: params.paymentIntentId,
+                    supplier_cost:     tgxPrice,
+                    charged_price:     totalPrice,
+                },
+            });
+
+            // Update PI metadata with bookingId
+            stripe.paymentIntents.update(params.paymentIntentId, { metadata: { bookingId } }).catch(() => {});
+        } catch (dbErr: any) {
+            console.error('[confirm] CRITICAL: DB save failed after TGX confirm:', dbErr.message);
+            return { success: false, providerConfirmed, error: dbErr.message, data: { bookingId, status: bookingStatus, policyType, policySummary: '' } };
+        }
+
+        // The rate this booking was taken at, for USD reporting (ADR-0008). Deliberately
+        // after the insert and in its own try: the money has moved and the booking is
+        // already recorded, so a rates outage must leave the FX columns null for a
+        // backfill to resolve — never cost us the row.
+        try {
+            const fx = await lockFx(totalPrice, storedCurrency);
+            await prisma.bookings.update({
+                where: { booking_id: bookingId },
+                data: {
+                    usd_amount:     fx.usd_amount,
+                    fx_rate:        fx.fx_rate,
+                    fx_captured_at: fx.fx_captured_at,
+                    fx_source:      fx.fx_source,
+                    source_brand:   process.env.BRAND_NAME ?? 'CheapestGo',
+                },
+            });
+        } catch (fxErr) {
+            console.error('[confirm] FX lock failed — booking recorded unconverted:', fxErr);
+        }
+
+        // The cancellation terms as they stood when the guest agreed to them. Written
+        // after the booking row so a failure here cannot cost the booking; a snapshot
+        // that is missing later makes the cancellation refuse rather than over-refund,
+        // which is the safe direction (ADR-0023).
+        try {
+            await this.repo.savePolicySnapshot({
+                bookingId,
+                ...terms,
+                rawResponse: storedCancelPolicy ?? {},
+            });
+        } catch (policyErr) {
+            console.error('[confirm] Policy snapshot failed — cancellation will need support:', policyErr);
+        }
+
+        // The confirmation the guest is actually owed. Fire-and-forget on purpose: the
+        // booking exists and the money has moved, so a mail outage must not turn a
+        // successful booking into a failed response. A send that fails leaves a row in
+        // email_logs for the retry job rather than disappearing.
+        void sendTransactionalEmail({
+            bookingId,
+            to:        params.holder.email,
+            subject:   `Booking Confirmed — ${params.propertyName || 'your stay'}`,
+            emailType: 'confirmation',
+            html: buildHotelConfirmationHtml({
+                bookingRef:      bookingId,
+                bookingDbId:     bookingRow?.id ?? null,
+                guestName:       `${params.holder.firstName} ${params.holder.lastName}`.trim(),
+                propertyName:    params.propertyName || '',
+                propertyImage:   params.propertyImage ?? null,
+                roomName:        params.roomName || '',
+                checkIn:         params.checkIn,
+                checkOut:        params.checkOut,
+                nights:          Math.max(1, Math.round((new Date(params.checkOut).getTime() - new Date(params.checkIn).getTime()) / 86_400_000)),
+                adults,
+                children,
+                totalPrice,
+                currency:        storedCurrency,
+                discountAmount:  params.discountAmount ?? 0,
+                policyText:      policyEmailText(terms),
+                specialRequests: params.specialRequests ?? null,
+            }),
+        }).catch((err) => console.error('[confirm] Confirmation email failed:', err?.message));
+
+        console.log(JSON.stringify({ _event: 'tgx_confirmed', bookingId, supplierRef, userId: params.userId, email: params.holder.email, checkIn: params.checkIn, checkOut: params.checkOut, timestamp: new Date().toISOString() }));
+
+        return {
+            success: true,
+            data: {
+                bookingId,
+                status:       bookingStatus,
+                policyType,
+                policySummary: isRefundable ? 'Refundable rate' : 'Non-refundable rate',
+                totalPrice,
+                currency:     storedCurrency,
+            },
+        };
+    }
+
+    // ââ Cancel booking ââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
     async cancelBooking(params: {
         bookingRef: string;
         userId:     string;
         paymentIntentId?: string;
     }) {
-        const cancelled = await cancelTgx({ clientReference: params.bookingRef });
+        const { bookingRef, userId } = params;
 
-        if (params.paymentIntentId) {
+        // 1. Ownership check
+        const booking = await prisma.bookings.findFirst({ where: { booking_id: bookingRef } });
+        if (!booking) throw new AppError(404, 'Booking not found', 'BOOKING_NOT_FOUND');
+        if (booking.user_id !== userId) throw new AppError(403, 'Not authorized to cancel this booking', 'FORBIDDEN');
+
+        // 1b. What the recorded terms say this cancellation returns. Decided before
+        //     anything is cancelled, so the supplier call and the refund agree on the
+        //     same answer, and computed from the snapshot taken at booking time rather
+        //     than from whatever the supplier quotes today (ADR-0023).
+        const policy = await this.repo.findPolicySnapshot(bookingRef);
+        const cancellation = calculateCancellation({
+            totalPrice: Number(booking.total_price),
+            currency:   booking.currency ?? 'PHP',
+            checkIn:    booking.check_in ?? new Date(),
+            policy,
+        });
+
+        // 2. Resolve payment_intent_id â from params, then DB, then Stripe search
+        let paymentIntentId = params.paymentIntentId || booking.payment_intent_id || null;
+        if (!paymentIntentId) {
             try {
-                const pi = await stripe.paymentIntents.retrieve(params.paymentIntentId);
-                if (pi.status === 'requires_capture') {
-                    await stripe.paymentIntents.cancel(params.paymentIntentId, { cancellation_reason: 'requested_by_customer' });
-                } else if (pi.status === 'succeeded') {
-                    await stripe.refunds.create({
-                        payment_intent: params.paymentIntentId,
-                        reason:         'requested_by_customer',
-                    }, { idempotencyKey: `hotel-refund-${params.bookingRef}` });
+                const sr = await stripe.paymentIntents.search({
+                    query: `metadata['bookingId']:'${bookingRef}'`,
+                    limit: 1,
+                });
+                if (sr.data.length > 0) {
+                    paymentIntentId = sr.data[0].id;
+                    await prisma.bookings.update({ where: { booking_id: bookingRef }, data: { payment_intent_id: paymentIntentId } });
                 }
-            } catch (stripeErr: any) {
-                console.error('[hotels.cancelBooking] Stripe refund failed:', stripeErr.message);
+            } catch { /* non-fatal */ }
+        }
+
+        // 3. TGX cancellation (skip on refund-failed retry to avoid duplicate cancel)
+        const isRefundRetry = booking.status === 'cancelled_refund_failed';
+        if (!isRefundRetry) {
+            const meta = booking.provider_metadata as any;
+            const cancelHotelCode: string | undefined = meta?.hotelCode ||
+                (/^\d+$/.test(booking.property_name) ? booking.property_name : undefined);
+            try {
+                await cancelTgx({
+                    clientReference:   bookingRef,
+                    supplierReference: meta?.supplierRef,
+                    hotelCode:         cancelHotelCode,
+                });
+            } catch (tgxErr: any) {
+                console.warn('[hotels.cancelBooking] TGX cancel failed (proceeding):', tgxErr.message?.slice(0, 200));
             }
         }
 
-        return { status: 'cancelled', cancelled };
+        // 4. Stripe refund / void
+        let stripeRefundId: string | undefined;
+        let stripeError: string | undefined;
+
+        // Logged before any money moves, so a crash between Stripe and the update below
+        // still leaves a trace of the refund that was on its way.
+        const refundLogId = paymentIntentId && cancellation.refundable && cancellation.refundAmount > 0
+            ? await this.repo.openRefund({
+                bookingId:       bookingRef,
+                userId,
+                refundType:      cancellation.refundType,
+                requestedAmount: cancellation.refundAmount,
+                penaltyAmount:   cancellation.penaltyAmount,
+                currency:        cancellation.currency,
+                reason:          cancellation.message,
+            })
+            : null;
+
+        if (paymentIntentId) {
+            try {
+                const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+                if (pi.status === 'requires_capture') {
+                    await stripe.paymentIntents.cancel(paymentIntentId, { cancellation_reason: 'requested_by_customer' });
+                    stripeRefundId = paymentIntentId; // void, not a refund ID â use PI id as marker
+                } else if (pi.status === 'succeeded') {
+                    // How much comes back is the policy's decision, not the charge's.
+                    // This used to refund pi.amount outright, which returned the full
+                    // price on a non-refundable stay while the supplier still billed us.
+                    const refundAmountCents = Math.min(
+                        Math.round(pi.amount * cancellation.refundRatio),
+                        pi.amount,
+                    );
+
+                    console.log(
+                        `[hotels.cancelBooking] policy=${cancellation.policyUsed} type=${cancellation.refundType} `
+                        + `ratio=${cancellation.refundRatio.toFixed(4)} penalty=${cancellation.penaltyAmount} `
+                        + `${cancellation.currency} -> refunding ${refundAmountCents} of ${pi.amount}`,
+                    );
+
+                    if (refundAmountCents > 0) {
+                        const refund = await stripe.refunds.create({
+                            payment_intent: paymentIntentId,
+                            amount:         refundAmountCents,
+                            reason:         'requested_by_customer',
+                            metadata:       {
+                                bookingId:  bookingRef,
+                                type:       'hotel_cancellation',
+                                refundType: cancellation.refundType,
+                                penalty:    String(cancellation.penaltyAmount),
+                            },
+                        }, {
+                            // Scoped to the amount so a corrected policy produces a new
+                            // refund rather than silently reusing the previous figure.
+                            idempotencyKey: `hotel-refund-${bookingRef}-${refundAmountCents}`,
+                        });
+                        if (refund.status === 'failed') throw new Error(`Stripe refund created but failed: ${refund.id}`);
+                        stripeRefundId = refund.id;
+                    }
+                }
+            } catch (stripeErr: any) {
+                stripeError = stripeErr.message;
+                console.error('[hotels.cancelBooking] Stripe refund failed:', stripeError);
+            }
+        }
+
+        // 4b. Close the log with what actually happened.
+        if (refundLogId) {
+            await this.repo.closeRefund(refundLogId, stripeRefundId
+                ? { issued: true, approvedAmount: cancellation.refundAmount, externalRef: stripeRefundId }
+                : { issued: false, reason: stripeError ?? 'No refund was issued' });
+        }
+
+        // 5. Update booking status in DB
+        const finalStatus = paymentIntentId
+            ? (stripeRefundId ? 'cancelled_refunded' : (stripeError ? 'cancelled_refund_failed' : 'cancelled'))
+            : 'cancelled';
+        await prisma.bookings.update({
+            where: { booking_id: bookingRef },
+            data:  { status: finalStatus, updated_at: new Date() },
+        });
+
+        return {
+            success: true,
+            data: {
+                bookingId: bookingRef,
+                status:    finalStatus,
+                message:   stripeRefundId
+                    ? 'Booking cancelled and refund processed.'
+                    : stripeError
+                        ? `Booking cancelled. Refund failed: ${stripeError}`
+                        : 'Booking cancelled. Non-refundable.',
+            },
+        };
     }
 
-    // ── Deals ─────────────────────────────────────────────────────────────────
+    // ââ Deals âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
     async getDeals(limit = 12) {
         return this.repo.getHotelDeals(limit);

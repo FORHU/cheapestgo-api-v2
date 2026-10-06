@@ -3,20 +3,87 @@ import { prisma } from '@/lib/prisma';
 export class BookingsRepository {
 
     async listForUser(userId: string, tripType?: 'flight' | 'hotel') {
-        const where: any = { user_id: userId };
-        if (tripType) where.trip_type = tripType;
-        return prisma.bookings.findMany({
-            where,
-            orderBy: { created_at: 'desc' },
+        const results: any[] = [];
+
+        // Query hotel bookings when type is unspecified or 'hotel'
+        if (!tripType || tripType === 'hotel') {
+            const hotelRows = await prisma.bookings.findMany({
+                where:   { user_id: userId },
+                orderBy: { created_at: 'desc' },
+            });
+            for (const row of hotelRows) {
+                results.push({ ...row, type: 'hotel' });
+            }
+        }
+
+        // Query flight bookings when type is unspecified or 'flight'
+        if (!tripType || tripType === 'flight') {
+            const flightRows = await prisma.flight_bookings.findMany({
+                where:   { user_id: userId },
+                orderBy: { created_at: 'desc' },
+                include: {
+                    flight_segments: { orderBy: { segment_index: 'asc' } },
+                    passengers:      true,
+                },
+            });
+            for (const row of flightRows) {
+                results.push({ ...row, type: 'flight' });
+            }
+        }
+
+        // Sort merged results by created_at descending
+        results.sort((a, b) => {
+            const da = a.created_at ? new Date(a.created_at).getTime() : 0;
+            const db = b.created_at ? new Date(b.created_at).getTime() : 0;
+            return db - da;
+        });
+
+        return results;
+    }
+
+    /** The fields an amendment can change, as they stand before it — for the email's diff. */
+    async findAmendable(bookingId: string) {
+        return prisma.bookings.findFirst({
+            where:  { booking_id: bookingId },
+            select: {
+                id: true, user_id: true, property_name: true, property_image: true, room_name: true,
+                check_in: true, check_out: true, guests_adults: true, guests_children: true,
+                holder_first_name: true, holder_last_name: true, holder_email: true, special_requests: true,
+            },
         });
     }
 
+    async amendContact(bookingId: string, change: {
+        firstName: string; lastName: string; email: string; remarks: string | null;
+    }) {
+        await prisma.bookings.updateMany({
+            where: { booking_id: bookingId },
+            data: {
+                holder_first_name: change.firstName,
+                holder_last_name:  change.lastName,
+                holder_email:      change.email,
+                special_requests:  change.remarks,
+                updated_at:        new Date(),
+            },
+        });
+    }
+
+    /** A line in the admin notifications, so support can see a booking's contact changed. */
+    async notifyAdmins(title: string, description: string) {
+        await prisma.notifications.create({ data: { title, description, type: 'booking', user_id: null } }).catch(() => {});
+    }
+
     async findById(bookingId: string) {
-        return prisma.bookings.findUnique({ where: { id: bookingId } });
+        return prisma.bookings.findFirst({ where: { booking_id: bookingId } });
     }
 
     async findByIdForUser(bookingId: string, userId: string) {
-        return prisma.bookings.findFirst({ where: { id: bookingId, user_id: userId } });
+        return prisma.bookings.findFirst({ where: { booking_id: bookingId, user_id: userId } });
+    }
+
+    /** By row id rather than booking_id — the self-service links address the UUID. */
+    async findByRowIdForUser(id: string, userId: string) {
+        return prisma.bookings.findFirst({ where: { id, user_id: userId } });
     }
 
     async findByProviderRef(providerRef: string) {
@@ -54,8 +121,8 @@ export class BookingsRepository {
     }
 
     async updateStatus(bookingId: string, status: string, extra?: Record<string, any>) {
-        return prisma.bookings.update({
-            where: { id: bookingId },
+        return prisma.bookings.updateMany({
+            where: { booking_id: bookingId },
             data:  { status, ...(extra ?? {}), updated_at: new Date() },
         });
     }

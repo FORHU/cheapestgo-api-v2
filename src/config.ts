@@ -29,12 +29,16 @@ const schema = z.object({
     CRON_SECRET: z.string().optional(),
     FUNCTIONS_SECRET: z.string().optional(),
     ANTHROPIC_API_KEY: z.string().optional(),
+    CHAT_WONDER_API_URL: z.string().default('https://chat-dev.forhu.ai'),
+    CHAT_WONDER_API_KEY: z.string().optional(),
+    CHAT_WONDER_MODEL: z.string().default('gpt-4o-mini'),
     GOOGLE_PLACES_API_KEY: z.string().optional(),
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
     SITE_URL: z.string().default('http://localhost:3000'),
     API_URL: z.string().default('http://localhost:4000'),
-    DUFFEL_WEBHOOK_SECRET: z.string().optional()
+    DUFFEL_WEBHOOK_SECRET: z.string().optional(),
+    MAPBOX_TOKEN: z.string().optional()
 });
 
 const parsed = schema.safeParse(process.env);

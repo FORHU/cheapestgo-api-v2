@@ -1,4 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { clampName } from '@/lib/users/names';
+import { fromNoReply } from '@/lib/brand';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { AuthController } from '@/controllers/auth.controller';
@@ -10,6 +12,20 @@ import { redis } from '@/lib/redis';
 import { config } from '@/config';
 
 const router = Router();
+
+/**
+ * Where Google sends the browser back, quoted identically by both legs of the exchange.
+ *
+ * Google rejects the token exchange unless the authorize call and the token call name the
+ * same redirect_uri, so this is one function rather than the same string written twice — v1
+ * broke exactly this way when one of its two copies was edited.
+ *
+ * The router mounts at /api/v2, so the callback lives there too; building this without the
+ * version prefix points Google at a path that 404s.
+ */
+function googleRedirectUri(): string {
+    return `${config.API_URL}/api/v2/auth/google/callback`;
+}
 const controller = new AuthController();
 
 router.post('/register', authRateLimit, controller.register);
@@ -64,7 +80,11 @@ router.post('/request-reset', authRateLimit, async (req: Request, res: Response,
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    from: 'CheapestGo <no-reply@mail.cheapestgo.com>',
+                    // Named for the brand the recipient actually used, not a literal (v1,
+                    // C4). A password reset arriving from a company they have never heard of
+                    // is the one email most likely to be read as phishing and ignored, and
+                    // the sending domain must match the brand or SPF/DKIM alignment fails.
+                    from: fromNoReply(),
                     to:   [user.email],
                     subject: 'Reset your password',
                     html: `<p>Click <a href="${resetUrl}">here</a> to reset your password. This link expires in 1 hour.</p>`,
@@ -154,11 +174,10 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
         res.cookie('oauth_state', state, { ...COOKIE_OPTIONS, maxAge: 600_000 });
         res.cookie('oauth_provider', 'google', { ...COOKIE_OPTIONS, maxAge: 600_000 });
 
-        const redirectUri = `${config.API_URL}/api/auth/google/callback`;
 
         const params = new URLSearchParams({
             client_id:     config.GOOGLE_CLIENT_ID,
-            redirect_uri:  redirectUri,
+            redirect_uri:  googleRedirectUri(),
             response_type: 'code',
             scope:         'openid email profile',
             state,
@@ -175,7 +194,7 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
 });
 
 /**
- * GET /api/auth/google/callback?code=...&state=...
+ * GET /api/v2/auth/google/callback?code=...&state=...
  *
  * Handles the redirect back from Google after the user grants consent.
  * - Verifies state against Redis (CSRF protection)
@@ -220,7 +239,6 @@ router.get('/google/callback', async (req: Request, res: Response, next: NextFun
         res.clearCookie('oauth_provider', COOKIE_OPTIONS);
 
         // Exchange authorization code for tokens
-        const redirectUri = `${config.API_URL}/api/auth/google/callback`;
         const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -228,7 +246,7 @@ router.get('/google/callback', async (req: Request, res: Response, next: NextFun
                 code,
                 client_id:     config.GOOGLE_CLIENT_ID,
                 client_secret: config.GOOGLE_CLIENT_SECRET,
-                redirect_uri:  redirectUri,
+                redirect_uri:  googleRedirectUri(),
                 grant_type:    'authorization_code',
             }),
         });
@@ -270,8 +288,10 @@ router.get('/google/callback', async (req: Request, res: Response, next: NextFun
             create: {
                 email:      googleUser.email.toLowerCase(),
                 role:       'user',
-                first_name: googleUser.given_name  ?? null,
-                last_name:  googleUser.family_name ?? null,
+                // Clamped, not refused: turning someone away from their own account over the
+                // length of the name Google holds for them would be the wrong answer.
+                first_name: clampName(googleUser.given_name),
+                last_name:  clampName(googleUser.family_name),
                 avatar_url: googleUser.picture     ?? null,
             },
             update: {

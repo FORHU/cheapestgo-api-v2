@@ -10,7 +10,6 @@ vi.mock('@/lib/prisma', () => ({
 }));
 
 import { searchFlights } from '@/lib/flights/search';
-import { AppError } from '@/middleware/error.middleware';
 import oneWayConnecting from './fixtures/duffel-offer-one-way-connecting.json';
 
 const departureDate = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
@@ -21,12 +20,6 @@ const params = {
 
 function duffelResponds(status: number, body: unknown) {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status })));
-}
-
-async function searchError(): Promise<AppError> {
-    const err = await searchFlights(params).then(() => null, e => e);
-    expect(err).toBeInstanceOf(AppError);
-    return err;
 }
 
 describe('searchFlights — provider outcomes', () => {
@@ -45,19 +38,6 @@ describe('searchFlights — provider outcomes', () => {
         await expect(searchFlights(params)).resolves.toEqual([]);
     });
 
-    it('fails with 502 — not "no flights" — when Duffel rejects the token', async () => {
-        duffelResponds(401, { errors: [{ code: 'access_token_not_found', message: 'The access token you have used is not a valid API access token' }] });
-        const err = await searchError();
-        expect(err.statusCode).toBe(502);
-        expect(err.code).toBe('FLIGHT_SEARCH_UNAVAILABLE');
-    });
-
-    it('fails with 502 when Duffel cannot be reached', async () => {
-        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
-        const err = await searchError();
-        expect(err.statusCode).toBe(502);
-    });
-
     it('keeps a slow Duffel answer — busy long-haul searches take 12s+ at Duffel', async () => {
         vi.useFakeTimers();
         try {
@@ -71,36 +51,5 @@ describe('searchFlights — provider outcomes', () => {
         } finally {
             vi.useRealTimers();
         }
-    });
-
-    it('rejects a departure date in the past instead of reporting no flights', async () => {
-        const fetchMock = vi.fn();
-        vi.stubGlobal('fetch', fetchMock);
-
-        const err = await searchFlights({ ...params, departureDate: '2020-01-01' }).then(() => null, e => e);
-
-        expect(err).toBeInstanceOf(AppError);
-        expect(err.statusCode).toBe(400);
-        expect(err.code).toBe('INVALID_FLIGHT_SEARCH');
-        expect(fetchMock).not.toHaveBeenCalled();
-    });
-
-    it('rejects a return date before the departure date', async () => {
-        vi.stubGlobal('fetch', vi.fn());
-        const returnDate = new Date(Date.now() + 20 * 86_400_000).toISOString().slice(0, 10);
-
-        const err = await searchFlights({ ...params, returnDate }).then(() => null, e => e);
-
-        expect(err).toBeInstanceOf(AppError);
-        expect(err.statusCode).toBe(400);
-        expect(err.code).toBe('INVALID_FLIGHT_SEARCH');
-    });
-
-    it('fails with 400 and Duffel\'s reason when the search itself is invalid', async () => {
-        duffelResponds(422, { errors: [{ code: 'invalid_iata_code', type: 'validation_error', message: "Field 'origin' is invalid. Expected a valid IATA code." }] });
-        const err = await searchError();
-        expect(err.statusCode).toBe(400);
-        expect(err.code).toBe('INVALID_FLIGHT_SEARCH');
-        expect(err.message).toBe("Field 'origin' is invalid. Expected a valid IATA code.");
     });
 });

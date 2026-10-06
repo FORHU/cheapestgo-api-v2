@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Duffel API client.
  *
  * Wraps raw HTTP calls to https://api.duffel.com.
@@ -8,12 +8,15 @@
 
 import { config } from '@/config';
 import { FlightResult, FlightSearchParams } from '@/types/flights';
+import { PROVIDER_ATTEMPT_TIMEOUT_MS, PROVIDER_RETRY_BACKOFF_MS } from '@/lib/flights/searchBudget';
+import { sameItineraryOffers } from '@/lib/flights/offerItineraryMatch';
 
 const DUFFEL_BASE = 'https://api.duffel.com';
 const DUFFEL_VERSION = 'v2';
-// Per attempt. Busy long-haul round-trips (e.g. FRA↔BKK, 2k+ offers) take ~12s at Duffel.
-const SEARCH_TIMEOUT_MS = 20_000;
-const MAX_RETRIES = 2;
+// The ladder is sized in searchBudget so the orchestrator ceiling and the browser abort are
+// derived from it rather than guessed alongside it. One retry, not two: a second only starts
+// after 26 seconds have already gone, and nothing it returns arrives while anyone is watching.
+const MAX_RETRIES = PROVIDER_RETRY_BACKOFF_MS.length;
 
 // ─── Header factory ───────────────────────────────────────────────────────────
 
@@ -39,12 +42,13 @@ export function getDuffelToken(): string {
 // ─── Offer search ─────────────────────────────────────────────────────────────
 
 /**
- * A search Duffel could not answer. Thrown rather than returning [] so the
- * aggregator can tell an outage apart from a route with no flights.
- * `invalidSearch` marks a 4xx validation error — the request itself was wrong.
+ * The provider tried and could not answer — a 429, a 5xx, a timeout, an unreachable host.
+ * Distinct from an empty offer list, which is a real answer about the route. The
+ * orchestrator turns this into a named `failedProviders` entry so the results page can
+ * offer a retry instead of telling the traveller "No flights found" over an outage.
  */
 export class DuffelSearchError extends Error {
-    constructor(message: string, public status: number, public invalidSearch = false) {
+    constructor(message: string, readonly status?: number) {
         super(message);
         this.name = 'DuffelSearchError';
     }
@@ -53,7 +57,19 @@ export class DuffelSearchError extends Error {
 export async function searchDuffel(params: FlightSearchParams): Promise<FlightResult[]> {
     const token = config.DUFFEL_ACCESS_TOKEN;
     if (!token) {
-        throw new DuffelSearchError('DUFFEL_ACCESS_TOKEN not configured', 0);
+        console.warn('[Duffel] DUFFEL_ACCESS_TOKEN missing — skipping');
+        return [];
+    }
+
+    // Reject past dates before hitting Duffel (prevents 422)
+    const todayUTC = new Date().toISOString().slice(0, 10);
+    if (params.departureDate < todayUTC) {
+        console.warn(`[Duffel] Skipping — departure_date ${params.departureDate} is in the past`);
+        return [];
+    }
+    if (params.returnDate && params.returnDate < params.departureDate) {
+        console.warn(`[Duffel] Skipping — returnDate before departureDate`);
+        return [];
     }
 
     const passengers = [
@@ -83,6 +99,7 @@ export async function searchDuffel(params: FlightSearchParams): Promise<FlightRe
 
     const startMs = Date.now();
     let lastStatus = 0;
+    let lastErrMsg = '';
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
@@ -90,7 +107,7 @@ export async function searchDuffel(params: FlightSearchParams): Promise<FlightRe
                 method: 'POST',
                 headers: duffelHeaders(),
                 body: JSON.stringify(body),
-                signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+                signal: AbortSignal.timeout(PROVIDER_ATTEMPT_TIMEOUT_MS),
             });
             lastStatus = res.status;
 
@@ -98,25 +115,21 @@ export async function searchDuffel(params: FlightSearchParams): Promise<FlightRe
                 const errData: any = await (res.json() as Promise<any>).catch(() => ({}));
                 const errMsg = `Duffel ${res.status}: ${JSON.stringify(errData)}`;
 
-                if (res.status === 429 && attempt < MAX_RETRIES) {
-                    const retryAfter = parseInt(res.headers.get('Retry-After') ?? '5', 10);
-                    const waitMs = Math.min(retryAfter * 1000, 10_000);
-                    console.warn(`[Duffel] Rate limited — waiting ${waitMs}ms`);
-                    await sleep(waitMs);
-                    continue;
-                }
-                if (res.status === 500 && attempt < MAX_RETRIES) {
-                    await sleep(2000 * (attempt + 1));
+                lastErrMsg = errMsg;
+
+                // 429 is an account-level rate limit; retrying immediately just generates
+                // more of them, so it never retries. Any other 5xx gets the ladder.
+                if (res.status >= 500 && attempt < MAX_RETRIES) {
+                    await sleep(PROVIDER_RETRY_BACKOFF_MS[attempt]);
                     continue;
                 }
 
-                console.error(`[Duffel] search error (${res.status}):`, errMsg);
-                const first = errData?.errors?.[0];
-                throw new DuffelSearchError(
-                    first?.message ?? `Duffel search failed (${res.status})`,
-                    res.status,
-                    (res.status === 400 || res.status === 422) && first?.type === 'validation_error',
-                );
+                if (res.status === 429) {
+                    console.warn(`[Duffel] Rate limited (429). Retry-After: ${res.headers.get('Retry-After') ?? 'unknown'}s — not attempted further.`);
+                } else {
+                    console.error(`[Duffel] search error (${res.status}):`, errMsg);
+                }
+                break;
             }
 
             const json: any = await res.json();
@@ -126,19 +139,25 @@ export async function searchDuffel(params: FlightSearchParams): Promise<FlightRe
             return offers.map(o => parseDuffelOffer(o, params.cabinClass));
 
         } catch (err: any) {
-            if (err instanceof DuffelSearchError) throw err;
+            lastErrMsg = err.message;
             const isTimeout = err.name === 'TimeoutError' || err.name === 'AbortError';
             if (isTimeout && attempt < MAX_RETRIES) {
-                await sleep(1500 * (attempt + 1));
+                await sleep(PROVIDER_RETRY_BACKOFF_MS[attempt]);
                 continue;
             }
-            console.error('[Duffel] search failed after retries:', err.message);
-            throw new DuffelSearchError(err.message, 0);
+            console.error('[Duffel] search failed:', err.message);
+            break;
         }
     }
 
-    console.error(`[Duffel] Giving up after ${MAX_RETRIES} retries. Last status: ${lastStatus}`);
-    throw new DuffelSearchError(`Duffel search gave up after ${MAX_RETRIES} retries`, lastStatus);
+    // Reached only when every attempt failed. Throwing — rather than returning [] — is what
+    // lets the orchestrator name Duffel in `failedProviders`, so the page offers a retry
+    // instead of telling the traveller there are no flights on the route.
+    console.error(`[Duffel] Giving up after ${MAX_RETRIES} retr${MAX_RETRIES === 1 ? 'y' : 'ies'}. Last status: ${lastStatus}`);
+    throw new DuffelSearchError(
+        `Duffel search failed${lastStatus ? ` (HTTP ${lastStatus})` : ''}: ${lastErrMsg || 'no response'}`,
+        lastStatus || undefined,
+    );
 }
 
 // ─── Balance check ────────────────────────────────────────────────────────────
@@ -172,10 +191,8 @@ export function getAvailableBalance(balances: BalanceEntry[], currency: string):
 // ─── Available services (bags) ────────────────────────────────────────────────
 
 export async function getDuffelAvailableServices(offerId: string): Promise<any[]> {
-    // Services only come back on a single-offer GET with this flag; there is no
-    // /available_services sub-resource (it 404s), and search results never include them.
     const res = await fetch(
-        `${DUFFEL_BASE}/air/offers/${encodeURIComponent(offerId)}?return_available_services=true`,
+        `${DUFFEL_BASE}/air/offers/${encodeURIComponent(offerId)}/available_services`,
         { headers: duffelHeaders() },
     );
     if (!res.ok) {
@@ -183,7 +200,7 @@ export async function getDuffelAvailableServices(offerId: string): Promise<any[]
         throw Object.assign(new Error(err?.errors?.[0]?.message ?? `Duffel services ${res.status}`), { status: res.status });
     }
     const json: any = await res.json();
-    return json.data?.available_services ?? [];
+    return json.data ?? [];
 }
 
 // ─── Seat maps ────────────────────────────────────────────────────────────────
@@ -204,28 +221,36 @@ export async function getDuffelSeatMaps(offerId: string): Promise<any[]> {
     return json.data ?? [];
 }
 
-/** Every seat service in a seat map — Duffel only ever quotes seats here, never on the offer. */
-export function seatMapServices(seatMaps: any[]): any[] {
-    return (seatMaps ?? []).flatMap((m: any) => (m.cabins ?? [])
-        .flatMap((c: any) => c.rows ?? [])
-        .flatMap((r: any) => r.sections ?? [])
-        .flatMap((s: any) => s.elements ?? [])
-        .flatMap((e: any) => e.available_services ?? []));
-}
-
-/** Duffel's current prices for the chosen extras: bags from the offer, seats from the seat map. */
-export async function quoteDuffelServices(offerId: string, seatServiceIds?: string[], bagServiceIds?: string[]): Promise<any[]> {
-    const wantSeats = (seatServiceIds?.length ?? 0) > 0;
-    const wantBags = (bagServiceIds?.length ?? 0) > 0;
-    if (!wantSeats && !wantBags) return [];
-    const [bags, seatMaps] = await Promise.all([
-        wantBags ? getDuffelAvailableServices(offerId) : [],
-        wantSeats ? getDuffelSeatMaps(offerId) : [],
-    ]);
-    return [...bags, ...seatMapServices(seatMaps)];
-}
-
 // ─── Offer refresh ────────────────────────────────────────────────────────────
+
+/**
+ * One offer, by id, straight from Duffel.
+ *
+ * The offer is the only place the things an order needs actually live: the passenger ids
+ * an order must refer to come from the offer request, and `payments` has to match
+ * `total_amount` and `total_currency` exactly or the order is rejected. A browser cannot
+ * be the source of any of that — and an offer lasts about thirty minutes, which is
+ * shorter than some checkouts. Duffel's own guidance is to fetch it again when the
+ * traveller is ready to book.
+ *
+ * Distinct from `refreshDuffelOffer`, which runs a whole new offer_request to find
+ * *alternatives* when this one has expired. This asks about the offer in hand.
+ */
+export async function getDuffelOffer(offerId: string): Promise<any | null> {
+    const res = await fetch(`${DUFFEL_BASE}/air/offers/${encodeURIComponent(offerId)}`, {
+        headers: duffelHeaders(),
+        signal: AbortSignal.timeout(12000),
+    });
+    // Gone or never existed. The caller decides whether that is fatal or a cue to
+    // re-search — it is not this function's call to make.
+    if (res.status === 404 || res.status === 410) return null;
+    if (!res.ok) {
+        const err: any = await (res.json() as Promise<any>).catch(() => ({}));
+        throw new Error(err?.errors?.[0]?.message ?? `offer fetch failed ${res.status}`);
+    }
+    const json: any = await res.json();
+    return json.data ?? null;
+}
 
 export async function refreshDuffelOffer(rawOffer: any): Promise<any[]> {
     const slices = (rawOffer.slices ?? []).map((slice: any) => {
@@ -260,6 +285,17 @@ export async function refreshDuffelOffer(rawOffer: any): Promise<any[]> {
 
 // ─── Order placement ──────────────────────────────────────────────────────────
 
+/**
+ * How long to wait on POST /air/orders before giving up.
+ *
+ * 130s is Duffel's documented client-timeout floor for order creation, not a generous
+ * margin. **Aborting does not cancel the order** — Duffel completes the airline booking
+ * regardless — so a shorter bound does not save the traveller from a slow airline, it just
+ * hides a real, paid PNR from this system: the traveller is told the booking failed, the
+ * balance is debited, and nothing links the two. This was 45s.
+ */
+export const ORDER_CREATE_TIMEOUT_MS = 130_000;
+
 export interface PlaceDuffelOrderParams {
     rawOffer: any;
     passengers: any[];
@@ -278,13 +314,13 @@ export type PlaceDuffelOrderResult =
     | { kind: 'success'; order: any; finalTotal: string; finalCurrency: string; usedOffer: any }
     | { kind: 'price_changed'; oldPrice: number; newPrice: number; currency: string }
     | { kind: 'offer_replaced'; newOfferId: string; newOffer: any }
-    | { kind: 'error'; status: number; data: any };
+    | { kind: 'error'; status: number; data: any; timedOut?: boolean };
 
 export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<PlaceDuffelOrderResult> {
     const {
         rawOffer, seatServiceIds, bagServiceIds, confirmedPrice,
         priceTolerance, idempotencyKey, refreshPoolSize = 3,
-        orderTimeoutMs = 45_000,
+        orderTimeoutMs = ORDER_CREATE_TIMEOUT_MS,
     } = params;
 
     const token = getDuffelToken();
@@ -309,6 +345,8 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
 
     interface TryResult {
         isPriceChangedError: boolean; isOfferUnavailable: boolean;
+        /** The request was aborted; the order may still exist at Duffel. */
+        timedOut?: boolean;
         oldPrice?: number; newPrice?: number; newCurrency?: string;
         res?: Response; data?: any; finalTotal?: string; finalCurrency?: string;
     }
@@ -336,8 +374,10 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
         } catch (fetchErr: any) {
             clearTimeout(tmo);
             if (fetchErr?.name === 'AbortError') {
+                // The request is gone; the order may well not be. Whoever handles this result
+                // has to look for it — see findOrderFromTimedOutAttempt.
                 const synRes = new Response(null, { status: 504 });
-                return { isPriceChangedError: false, isOfferUnavailable: false, res: synRes, data: { errors: [{ code: 'timeout', message: 'Airline booking system timed out. Please try again.' }] }, finalTotal: currentTotal, finalCurrency: currentCurrency };
+                return { isPriceChangedError: false, isOfferUnavailable: false, timedOut: true, res: synRes, data: { errors: [{ code: 'timeout', message: 'Airline booking system timed out. Please try again.' }] }, finalTotal: currentTotal, finalCurrency: currentCurrency };
             }
             throw fetchErr;
         }
@@ -375,15 +415,7 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
             if (!liveRes.ok || !liveData?.data) break;
 
             const pricedOffer = liveData.data;
-            // The price action returns no services at all (not even bags), so extras
-            // priced from it came to zero and Duffel refused the retried payment.
-            let availableSvcs: any[];
-            try {
-                availableSvcs = includeServices ? await quoteDuffelServices(pricedOffer.id, seatServiceIds, bagServiceIds) : [];
-            } catch (e: any) {
-                console.error(`[Duffel] could not re-price services on ${pricedOffer.id}: ${e.message}`);
-                break;
-            }
+            const availableSvcs: any[] = pricedOffer.available_services ?? [];
             let newSeatExtra = 0;
             let newBagExtra = 0;
             if (includeServices) {
@@ -440,7 +472,9 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
         return { kind: 'success', order: attempt1.data.data, finalTotal: attempt1.finalTotal!, finalCurrency: attempt1.finalCurrency!, usedOffer: rawOffer };
     }
     if (!attempt1.isOfferUnavailable && attempt1.res && attempt1.res.status !== 422) {
-        return { kind: 'error', status: attempt1.res.status, data: attempt1.data };
+        // `timedOut` travels with the failure because aborting the request does not cancel
+        // the order: the caller has to go looking for it before telling anyone it failed.
+        return { kind: 'error', status: attempt1.res.status, data: attempt1.data, timedOut: attempt1.timedOut };
     }
 
     // Auto-refresh: offer expired
@@ -476,23 +510,22 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
         }
         if (offers.length === 0) return { kind: 'error', status: 422, data: attempt1.data };
 
-        const targetCarrier = rawOffer.validating_carrier_iata_code
-            ?? rawOffer.slices?.[0]?.segments?.[0]?.operating_carrier?.iata_code
-            ?? rawOffer.slices?.[0]?.segments?.[0]?.marketing_carrier?.iata_code;
         const targetTotal = parseFloat(rawOffer.total_amount ?? '0');
 
-        const matchingOffers = targetCarrier
-            ? offers.filter((o: any) => {
-                const carrier = o.validating_carrier_iata_code
-                    ?? o.slices?.[0]?.segments?.[0]?.operating_carrier?.iata_code
-                    ?? o.slices?.[0]?.segments?.[0]?.marketing_carrier?.iata_code;
-                return carrier === targetCarrier;
-            })
-            : offers;
+        // Only offers for the SAME journey — marketing carrier, flight number and departure
+        // instant, segment by segment. This used to take the validating carrier's offers (or,
+        // failing that, every offer on the route) and sort them by how close the price was.
+        // Price proximity is not identity: a 06:00 and a 22:00 departure on one airline at one
+        // fare are interchangeable to that sort, so a traveller could be ticketed sixteen hours
+        // from the flight they chose without being asked — and flight_segments would still
+        // record the one they picked. Cheapest first within the true matches, which are by
+        // definition the same product.
+        const sortedPool = sameItineraryOffers(rawOffer, offers);
+        console.warn(`[Duffel] refresh pool: ${offers.length} offer(s), ${sortedPool.length} match the selected itinerary exactly`);
 
-        const sortedPool = (matchingOffers.length > 0 ? matchingOffers : offers).sort((a: any, b: any) =>
-            Math.abs(parseFloat(a.total_amount) - targetTotal) - Math.abs(parseFloat(b.total_amount) - targetTotal),
-        );
+        // Nothing that is actually this flight. Substituting a different one is not a
+        // recovery; report it unavailable and let the traveller choose.
+        if (sortedPool.length === 0) return { kind: 'error', status: 422, data: attempt1.data };
 
         const hadAncillaries = (seatServiceIds?.length ?? 0) > 0 || (bagServiceIds?.length ?? 0) > 0;
         const maxAttempts = Math.min(sortedPool.length, refreshPoolSize);
@@ -595,11 +628,8 @@ export function parseDuffelOffer(offer: any, cabinClassFallback?: string): Fligh
         slice.segments.forEach((seg: any) => {
             allSegments.push({
                 segmentIndex: sliceIdx,
-                // Marketing carrier: it's the brand the seat was sold under and the one the
-                // flight number below belongs to. Reading the operating carrier here put the
-                // wrong airline's name beside the flight number on every codeshare.
-                airline: seg.marketing_carrier?.iata_code || seg.operating_carrier?.iata_code,
-                airlineName: seg.marketing_carrier?.name || seg.operating_carrier?.name,
+                airline: seg.operating_carrier?.iata_code || seg.marketing_carrier?.iata_code,
+                airlineName: seg.operating_carrier?.name || seg.marketing_carrier?.name,
                 origin: seg.origin.iata_code,
                 destination: seg.destination.iata_code,
                 flightNumber: `${seg.marketing_carrier.iata_code}${seg.marketing_carrier_flight_number}`,
@@ -623,25 +653,10 @@ export function parseDuffelOffer(offer: any, cabinClassFallback?: string): Fligh
     const refundPenalty = refundCond?.penalty_amount != null ? parseFloat(refundCond.penalty_amount) : null;
     const changePenalty = changeCond?.penalty_amount != null ? parseFloat(changeCond.penalty_amount) : null;
 
-    const totalAmount = parseFloat(offer.total_amount);
-    // total_amount covers every passenger; divide by adults for the per-person figure.
-    const numAdults = (offer.passengers ?? []).filter((p: any) => p.type === 'adult').length || 1;
-    const pricePerAdult = numAdults > 1 ? Math.round(totalAmount / numAdults) : totalAmount;
-
-    // Keep the base/tax split only when it reconciles with the total — a breakdown
-    // that doesn't add up is worse than none.
-    const baseAmount = offer.base_amount != null ? parseFloat(offer.base_amount) : NaN;
-    const taxAmount = offer.tax_amount != null ? parseFloat(offer.tax_amount) : NaN;
-    const partsReconcile =
-        Number.isFinite(baseAmount) && Number.isFinite(taxAmount) &&
-        Math.abs(baseAmount + taxAmount - totalAmount) < 0.01;
-
     return {
         provider: 'duffel',
         offer_id: offer.id,
-        price: totalAmount,
-        pricePerAdult,
-        ...(partsReconcile ? { baseFare: baseAmount, taxes: taxAmount } : {}),
+        price: parseFloat(offer.total_amount),
         currency: offer.total_currency,
         airline: offer.owner.name,
         departure_time: firstSeg?.departure?.time,
@@ -651,56 +666,47 @@ export function parseDuffelOffer(offer: any, cabinClassFallback?: string): Fligh
         remaining_seats: offer.available_seats || null,
         segments: allSegments,
         refundable: isRefundable,
-        farePolicy: {
-            isRefundable,
-            isChangeable,
-            refundPenaltyAmount: refundPenalty,
-            refundPenaltyCurrency: refundCond?.penalty_currency ?? null,
-            changePenaltyAmount: changePenalty,
-            changePenaltyCurrency: changeCond?.penalty_currency ?? null,
-            policyVersion: 'search' as const,
-            policySource: 'duffel' as const,
-        },
         raw: offer,
     } as any;
 }
 
 export function normalizedToFlightOffer(result: FlightResult, tripType: 'one-way' | 'round-trip' | 'multi-city' = 'one-way'): any {
     const raw: any = result.raw;
-    // A cache row keeps only the raw Duffel payload, so re-derive the parsed fields from it.
-    const parsed: any = (result as any).segments || !raw?.slices ? result : parseDuffelOffer(raw);
+    const allSegments: any[] = (result as any).segments ?? (raw?.slices ? parseDuffelOffer(raw).segments : []);
 
     const price = typeof result.price === 'number' ? result.price : 0;
-
-    const segments = (parsed.segments ?? []).map((seg: any) => ({
-        segmentIndex: seg.segmentIndex,
-        airline: { code: seg.airline ?? '', name: seg.airlineName ?? '' },
-        origin: seg.origin,
-        destination: seg.destination,
-        flightNumber: seg.flightNumber,
-        departure: seg.departure,
-        arrival: seg.arrival,
-        duration: seg.duration,
-        stops: seg.stops,
-        aircraft: seg.aircraft,
-        cabinClass: seg.cabinClass,
-    }));
 
     return {
         offerId: result.offer_id,
         provider: result.provider,
         price: {
             total: price,
-            base: parsed.baseFare ?? price,
-            taxes: parsed.taxes ?? 0,
+            // Duffel spells these `base_amount` and `tax_amount`; the camelCase names are
+            // another provider's. Neither ever matched, so the fallbacks always won and
+            // every Duffel fare reported its whole total as base fare with zero tax — on
+            // MNL→ICN, 112.50 base / 0 tax for a fare that is really 60.00 and 52.50.
+            base: Number((raw as any).base_amount ?? (raw as any).baseFare ?? price),
+            taxes: Number((raw as any).tax_amount ?? (raw as any).taxes ?? 0),
             currency: result.currency,
-            pricePerAdult: parsed.pricePerAdult ?? price,
+            // Per traveller, which is what the card's "/person" label promises.
+            //
+            // Duffel sends no `pricePerAdult`, so this was `?? price` — the whole party's
+            // total, wearing a per-person label. A search for three adults offered every
+            // fare at three times its real price, and like the stay-total bug on hotel
+            // cards it was exactly right for a party of one, which is the only size
+            // anybody searched while testing.
+            //
+            // An average, not an adult fare: Duffel prices the offer as a whole and
+            // publishes no per-passenger breakdown, so a party with children spreads their
+            // cheaper seats across everyone. For an adults-only party — nearly all of them,
+            // and what the client's own fallback assumes — the two are the same number.
+            pricePerAdult: price / Math.max(1, (raw as any)?.passengers?.length ?? 1),
         },
-        segments,
+        segments: allSegments,
         totalDuration: result.duration,
         totalStops: result.stops,
         refundable: (result as any).refundable ?? false,
-        farePolicy: parsed.farePolicy ?? null,
+        farePolicy: (raw as any).farePolicy ?? null,
         seatsRemaining: result.remaining_seats ?? undefined,
         tripType,
         traceId: result.traceId,

@@ -114,6 +114,35 @@ export class FlightsRepository {
 
     // ─── Duplicate booking guard ───────────────────────────────────────────────
 
+    /**
+     * A user's recent booking sessions that bought a Duffel order — the candidates for reusing
+     * one instead of buying the same trip twice. See preorderReuse.
+     */
+    async findRecentPreOrderSessions(userId: string, since: Date) {
+        return prisma.booking_sessions.findMany({
+            where: {
+                user_id: userId,
+                duffel_pre_order_id: { not: null },
+                created_at: { gte: since },
+            },
+            orderBy: { created_at: 'desc' },
+            take: 20,
+            select: {
+                id: true, status: true, duffel_pre_order_id: true, duffel_pre_order_pnr: true,
+                duffel_pre_order_tickets: true, duffel_pre_order_ticketed: true,
+                payment_intent_id: true, flight: true, created_at: true,
+            },
+        });
+    }
+
+    /** Retire a session whose order was superseded, so it stops presenting itself for reuse. */
+    async expireSessionsForPreOrder(orderId: string) {
+        await prisma.booking_sessions.updateMany({
+            where: { duffel_pre_order_id: orderId },
+            data:  { status: 'expired' },
+        });
+    }
+
     async getActiveBookingsForUser(userId: string): Promise<{ id: string }[]> {
         return prisma.flight_bookings.findMany({
             where: {
@@ -250,13 +279,70 @@ export class FlightsRepository {
         });
     }
 
-    // ─── Deals ────────────────────────────────────────────────────────────────
+    // ─── Price calendar ────────────────────────────────────────────────────────
 
-    /** Route deals kept fresh by the `sync-flight-deals` cron. Public, read-only. */
-    async getFlightDeals(limit = 12) {
-        return prisma.flight_deals.findMany({
-            orderBy: { updated_at: 'desc' },
-            take:    limit,
+    async getPriceCalendarRaw(params: {
+        origin: string;
+        destination: string;
+        startDate: string;
+        endDate: string;
+        adults: number;
+        cabin: string;
+        returnDate?: string | null;
+        provider?: string | null;
+    }): Promise<Array<{ departure_date: string; min_price: string; currency: string }> | null> {
+        try {
+            const rows = await prisma.$queryRaw<Array<{ departure_date: string; min_price: string; currency: string }>>`
+                SELECT * FROM get_cheapest_prices_per_day(
+                    ${params.origin},
+                    ${params.destination},
+                    ${params.startDate}::date,
+                    ${params.endDate}::date,
+                    ${params.adults},
+                    ${params.cabin},
+                    24,
+                    ${params.returnDate ?? null},
+                    ${params.provider ?? null}
+                )
+            `;
+            return rows;
+        } catch {
+            return null; // RPC not available — caller falls back
+        }
+    }
+
+    async getPriceCalendarFallback(params: {
+        origin: string;
+        destination: string;
+        startDate: string;
+        endDate: string;
+        adults: number;
+        cabin: string;
+        returnDate?: string | null;
+        provider?: string | null;
+        cutoffDate: Date;
+    }) {
+        return prisma.flight_results_cache.findMany({
+            where: {
+                created_at: { gte: params.cutoffDate },
+                ...(params.provider ? { provider: params.provider } : {}),
+                flight_searches: {
+                    origin: params.origin,
+                    destination: params.destination,
+                    adults: params.adults,
+                    cabin_class: params.cabin,
+                    departure_date: {
+                        gte: new Date(params.startDate),
+                        lte: new Date(params.endDate),
+                    },
+                    ...(params.returnDate
+                        ? { return_date: new Date(params.returnDate) }
+                        : { return_date: null }),
+                },
+            },
+            include: {
+                flight_searches: { select: { departure_date: true } },
+            },
         });
     }
 }

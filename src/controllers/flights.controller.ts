@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { revalidateFlight } from '@/lib/flights/revalidate';
 import { z } from 'zod';
 import { FlightsService } from '@/services/flights.service';
 
@@ -29,11 +30,15 @@ export class FlightsController {
         } catch (err) { next(err); }
     };
 
-    deals = async (req: Request, res: Response, next: NextFunction) => {
+    /**
+     * Is this fare still buyable at the price shown? Answered before the card is entered —
+     * see revalidateFlight. Soft failures come back 200 with priceChanged false, because a
+     * provider hiccup must not block a booking the order path can still complete.
+     */
+    revalidate = async (req: Request, res: Response, next: NextFunction) => {
         try {
-            const { limit } = z.object({ limit: z.coerce.number().optional().default(12) }).parse(req.query);
-            const result = await svc.getDeals(limit);
-            res.json({ deals: result });
+            const result = await revalidateFlight(req.body ?? {});
+            res.status(result.badRequest ? 400 : 200).json(result);
         } catch (err) { next(err); }
     };
 
@@ -119,5 +124,54 @@ export class FlightsController {
             const result = await svc.cancelBooking(bookingId, req.user!.sub, cancellationId);
             res.json(result);
         } catch (err) { next(err); }
+    };
+
+    priceCalendar = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const params = z.object({
+                origin:      z.string(),
+                destination: z.string(),
+                year:        z.coerce.number().int(),
+                month:       z.coerce.number().int().min(1).max(12),
+                adults:      z.coerce.number().int().min(1).default(1),
+                cabin:       z.string().optional().default('economy'),
+                returnDate:  z.string().optional().nullable(),
+                provider:    z.string().optional().nullable(),
+            }).parse(req.query);
+            const result = await svc.getPriceCalendar(params);
+            res.json(result);
+        } catch (err) { next(err); }
+    };
+
+    priceCalendarLive = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { origin, destination, adults = 1, cabin = 'economy', dates, returnDate, provider } =
+                z.object({
+                    origin:      z.string().regex(/^[A-Z]{3}$/),
+                    destination: z.string().regex(/^[A-Z]{3}$/),
+                    adults:      z.coerce.number().int().min(1).default(1),
+                    cabin:       z.string().optional().default('economy'),
+                    dates:       z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).min(1).max(7),
+                    returnDate:  z.string().optional().nullable(),
+                    provider:    z.string().optional().nullable(),
+                }).parse(req.body);
+
+            const result = await svc.getPriceCalendarLive({ origin, destination, adults, cabin, dates, returnDate, provider });
+            res.json(result);
+        } catch (err) { next(err); }
+    };
+
+    // ── Mystifly-only stubs (not available in v2 without Supabase edge functions) ──
+
+    tripDetails = async (_req: Request, res: Response) => {
+        res.status(503).json({ success: false, error: 'Trip details not available', code: 'MYSTIFLY_NOT_LIVE' });
+    };
+
+    ticketDisplay = async (_req: Request, res: Response) => {
+        res.status(503).json({ success: false, error: 'Ticket display not available', code: 'MYSTIFLY_NOT_LIVE' });
+    };
+
+    bookingNote = async (_req: Request, res: Response) => {
+        res.status(503).json({ success: false, error: 'Booking notes not available', code: 'MYSTIFLY_NOT_LIVE' });
     };
 }

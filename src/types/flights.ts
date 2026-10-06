@@ -32,6 +32,7 @@ export interface FlightResult {
     stops: number;
     remaining_seats: number | null;
     traceId?: string;
+    segments?: any[];
     raw: any;
 }
 

@@ -1,4 +1,23 @@
 services:
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "4001:4000"
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      # Override .env so the API container reaches postgres/redis via Docker network names
+      # rather than localhost (which resolves to the container itself inside Docker).
+      DATABASE_URL: postgresql://cheapestgo:cheapestgo@postgres:5432/cheapestgo
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
@@ -9,9 +28,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin123}
       POSTGRES_DB: ${POSTGRES_DB:-cheapestgo_v2}
     ports:
-      # Published on IPv4 only. Use 127.0.0.1 (not "localhost") in DATABASE_URL:
+      # Use 127.0.0.1 (not "localhost") in DATABASE_URL:
       # Prisma resolves localhost to ::1 first and fails to connect.
-      - "5433:5432"
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -24,7 +43,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -32,6 +51,16 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  cron:
+    build: ./docker/cron
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      APP_URL: ${APP_URL:-http://api:4000}
+      CRON_SECRET: ${CRON_SECRET}
+      FUNCTIONS_SECRET: ${FUNCTIONS_SECRET}
 
 volumes:
   postgres_data:

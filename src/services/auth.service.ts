@@ -4,6 +4,7 @@ import { config } from '@/config';
 import { AppError } from '@/middleware/error.middleware';
 import { AuthRepository } from '@/repositories/auth.repository';
 import { JwtPayload } from '@/types';
+import { checkName } from '@/lib/users/names';
 
 export class AuthService {
     private repo = new AuthRepository();
@@ -12,8 +13,22 @@ export class AuthService {
         const existing = await this.repo.findByEmail(data.email);
         if (existing) throw new AppError(409, 'Email already in use', 'EMAIL_TAKEN');
 
+        // Names are capped at the door, not only in the form. v1 learned this the expensive
+        // way: a profile reached the database with a 13,708-character first name (QA BG-9),
+        // and a name that long renders as a wall of text everywhere the account appears.
+        const names: { first_name?: string; last_name?: string } = {};
+        for (const [key, label, value] of [
+            ['first_name', 'First name', data.first_name],
+            ['last_name',  'Last name',  data.last_name],
+        ] as const) {
+            if (value === undefined) continue;
+            const checked = checkName(value, label);
+            if (!checked.ok) throw new AppError(400, checked.error!, 'VALIDATION_ERROR');
+            names[key] = checked.value;
+        }
+
         const password_hash = await bcrypt.hash(data.password, 12);
-        const user = await this.repo.create({ email: data.email, password_hash, first_name: data.first_name, last_name: data.last_name });
+        const user = await this.repo.create({ email: data.email, password_hash, ...names });
         return { user: this.sanitize(user), ...this.generateTokens(user) };
     }
 
