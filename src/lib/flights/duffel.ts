@@ -633,8 +633,8 @@ export function parseDuffelOffer(offer: any, cabinClassFallback?: string): Fligh
                 origin: seg.origin.iata_code,
                 destination: seg.destination.iata_code,
                 flightNumber: `${seg.marketing_carrier.iata_code}${seg.marketing_carrier_flight_number}`,
-                departure: { airport: seg.origin.iata_code, terminal: seg.origin_terminal, time: seg.departing_at },
-                arrival: { airport: seg.destination.iata_code, terminal: seg.destination_terminal, time: seg.arriving_at },
+                departure: { ...airportPlace(seg.origin), terminal: seg.origin_terminal, time: seg.departing_at },
+                arrival: { ...airportPlace(seg.destination), terminal: seg.destination_terminal, time: seg.arriving_at },
                 duration: parseDuffelDuration(seg.duration),
                 stops: 0,
                 aircraft: seg.aircraft?.name,
@@ -704,6 +704,12 @@ export function normalizedToFlightOffer(result: FlightResult, tripType: 'one-way
         },
         segments: allSegments,
         totalDuration: result.duration,
+        // Each direction's own elapsed time, as Duffel quotes it. The times on the
+        // segments carry no UTC offset, so the client cannot work this out by
+        // subtracting them — it would be off by the zone gap between the two ends.
+        sliceDurations: Array.isArray(raw?.slices)
+            ? raw.slices.map((s: any) => parseDuffelDuration(s.duration))
+            : undefined,
         totalStops: result.stops,
         refundable: (result as any).refundable ?? false,
         farePolicy: (raw as any).farePolicy ?? null,
@@ -718,6 +724,19 @@ export function normalizedToFlightOffer(result: FlightResult, tripType: 'one-way
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
+
+/**
+ * One end of a segment: the code, plus the airport and city named the way Duffel
+ * names them, for the itinerary's "Hamad International Airport (DOH)". The names
+ * are left off, not guessed, when Duffel sends none.
+ */
+function airportPlace(place: any): { airport: string; airportName?: string; city?: string } {
+    return {
+        airport: place?.iata_code,
+        airportName: place?.name || undefined,
+        city: place?.city_name || place?.city?.name || undefined,
+    };
+}
 
 function parseDuffelDuration(duration: string): number {
     const matches = duration?.match(/P(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?/);

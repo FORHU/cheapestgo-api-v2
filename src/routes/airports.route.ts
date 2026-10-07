@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { config } from '@/config';
-import { searchAirports } from '@/lib/airports';
+import { searchAirports, placeMatchesQuery } from '@/lib/airports';
 
 const router = Router();
 
@@ -83,7 +83,8 @@ router.get('/search', async (req: Request, res: Response, next: NextFunction) =>
         for (const r of localResults) {
             if (!seen.has(r.iata)) { seen.add(r.iata); merged.push(r); }
         }
-        for (const r of (duffelResults ?? [])) {
+        // The supplier matches fuzzily; keep only what answers the query (see placeMatchesQuery).
+        for (const r of (duffelResults ?? []).filter(p => placeMatchesQuery(p, query))) {
             if (!seen.has(r.iata)) { seen.add(r.iata); merged.push(r); }
         }
 

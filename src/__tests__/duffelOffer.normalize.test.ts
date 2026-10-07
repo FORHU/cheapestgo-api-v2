@@ -24,4 +24,19 @@ describe('Duffel offer → FlightOffer', () => {
         expect(cached.price).toEqual(fresh.price);
         expect(cached.farePolicy).toEqual(fresh.farePolicy);
     });
+
+    it('names each airport and city, as Duffel sends them', () => {
+        const offer = normalizedToFlightOffer(parseDuffelOffer(roundTrip, 'economy'), 'round-trip');
+        const [out, back] = offer.segments;
+
+        expect(out.departure).toMatchObject({ airport: 'LHR', airportName: 'Heathrow Airport', city: 'London' });
+        expect(out.arrival).toMatchObject({ airport: 'JFK', airportName: 'John F. Kennedy International Airport', city: 'New York' });
+        expect(back.departure).toMatchObject({ airport: 'JFK', city: 'New York' });
+    });
+
+    it("gives each direction its own run time — the outbound's is not the return's", () => {
+        const offer = normalizedToFlightOffer(parseDuffelOffer(roundTrip, 'economy'), 'round-trip');
+        expect(offer.sliceDurations).toEqual([480, 410]);
+        expect(offer.totalDuration).toBe(890);
+    });
 });

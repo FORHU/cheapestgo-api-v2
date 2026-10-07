@@ -189,15 +189,31 @@ const INDEXED: IndexedAirport[] = AIRPORTS.map(a => ({
     _countryLower: a.country.toLowerCase(),
 }));
 
+/**
+ * Places travellers search for that have no airport of their own, and the airports
+ * they fly into instead. Without this, "Kyoto" found nothing locally and the supplier's
+ * fuzzy matching offered Accra (Kotoka) in its place.
+ */
+const SERVED_BY: { city: string; iata: string[] }[] = [
+    { city: 'kyoto', iata: ['KIX', 'ITM'] },
+];
+
 export function searchAirports(query: string, limit = 8): Airport[] {
     const q = query.trim().toLowerCase();
     if (!q) return [];
 
     const scored: { airport: Airport; score: number }[] = [];
 
+    // Scored like a city-name prefix, and ahead of one: the traveller typed the city.
+    const served = new Map<string, number>();
+    for (const s of SERVED_BY) {
+        if (q.length >= 2 && s.city.startsWith(q)) s.iata.forEach((code, i) => served.set(code, 70 - i));
+    }
+
     for (const a of INDEXED) {
         let score = 0;
-        if (a._iataLower === q)              score = 100;
+        if (served.has(a.iata))              score = served.get(a.iata)!;
+        else if (a._iataLower === q)         score = 100;
         else if (a._iataLower.startsWith(q)) score = 80;
         else if (a._cityLower.startsWith(q)) score = 60;
         else if (a._cityLower.includes(q))   score = 40;
@@ -215,6 +231,29 @@ export function searchAirports(query: string, limit = 8): Airport[] {
         country:     s.airport.country,
         countryCode: s.airport.countryCode,
     }));
+}
+
+const fold = (s: string) =>
+    s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/ı/g, 'i').toLowerCase();
+
+/**
+ * Whether a supplier suggestion plausibly answers what was typed: its code starts with
+ * the query, or its city or a word of its name does. The supplier matches fuzzily, so
+ * "Kyoto" came back as Kotoka (Accra) and "Bali" as Batman and Baltimore.
+ *
+ * Only judged for Latin-script queries; a query in another script is left to the
+ * supplier, whose data is romanised and could never match it here.
+ */
+export function placeMatchesQuery(place: { iata: string; name: string; city: string }, query: string): boolean {
+    const q = fold(query.trim());
+    if (!q || !/[a-z]/.test(q)) return true;
+    if (place.iata.toLowerCase().startsWith(q)) return true;
+    const words = (s: string) => fold(s).split(/[^a-z0-9]+/).filter(Boolean);
+    const startsAWordRun = (s: string) => {
+        const w = words(s);
+        return w.some((_, i) => w.slice(i).join(' ').startsWith(q));
+    };
+    return startsAWordRun(place.city) || startsAWordRun(place.name);
 }
 
 export function getAirportByCode(iataCode: string): Airport | undefined {
