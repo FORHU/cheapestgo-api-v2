@@ -11,10 +11,19 @@ import { config } from '@/config';
 import { AppError } from '@/middleware/error.middleware';
 import { photosRateLimit } from '@/middleware/rate-limit.middleware';
 import { lookupPoiDetails, fetchPlacePhoto, placeholderSvg } from '@/lib/google/poi-details';
+import { logger } from '@/lib/logger';
 
 const router = Router();
 
-router.use(photosRateLimit);
+// These photos are public and loaded as <img> from the web app's origin; helmet's default
+// same-origin policy would make the browser block them.
+router.use((_req, res, next) => {
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+});
+
+/** The message only: library errors never carry the API key, and nothing else is logged. */
+const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 async function proxyGooglePhoto(req: Request, res: Response, next: NextFunction) {
     try {
@@ -83,26 +92,31 @@ export async function poiPhotoOrDetails(req: Request, res: Response, next: NextF
         if (name.length > 200) throw new AppError(400, 'name is too long', 'VALIDATION_ERROR');
         const lat = coordinate(req.query.lat);
         const lng = coordinate(req.query.lng);
-        if (lat === null || lng === null) throw new AppError(400, 'Missing or invalid lat/lng', 'VALIDATION_ERROR');
+        if (lat === null || lng === null || Math.abs(lat) > 90 || Math.abs(lng) > 180) throw new AppError(400, 'Missing or invalid lat/lng', 'VALIDATION_ERROR');
         const placeId = typeof req.query.placeId === 'string' && req.query.placeId ? req.query.placeId : undefined;
         if (placeId && placeId.length > 300) throw new AppError(400, 'placeId is too long', 'VALIDATION_ERROR');
 
-        const lookup = {
-            name,
-            lat,
-            lng,
-            placeId,
-            category: typeof req.query.category === 'string' && req.query.category ? req.query.category : undefined,
-        };
+        const category = typeof req.query.category === 'string' && req.query.category ? req.query.category : undefined;
+        if (category && category.length > 100) throw new AppError(400, 'category is too long', 'VALIDATION_ERROR');
 
-        if (full) return res.json(await lookupPoiDetails(lookup));
+        const lookup = { name, lat, lng, placeId, category };
+
+        if (full) {
+            try {
+                return res.json(await lookupPoiDetails(lookup));
+            } catch (err) {
+                logger.warn('[photos/poi] details lookup failed', { err: errorMessage(err), name });
+                throw new AppError(502, 'Place details unavailable', 'UPSTREAM_ERROR');
+            }
+        }
 
         // Image mode always answers with a picture — the card has to show something — but one
         // drawn because something failed must not be kept by the browser.
         let photoReferenceFound: string | null;
         try {
             photoReferenceFound = (await lookupPoiDetails(lookup)).photoReference;
-        } catch {
+        } catch (err) {
+            logger.warn('[photos/poi] lookup failed', { err: errorMessage(err), name });
             return sendPlaceholder(res, name, lookup.category, 'no-store');
         }
         if (!photoReferenceFound) return sendPlaceholder(res, name, lookup.category, 'public, max-age=86400');
@@ -111,7 +125,8 @@ export async function poiPhotoOrDetails(req: Request, res: Response, next: NextF
             const photo = await fetchPlacePhoto(photoReferenceFound);
             res.set({ 'Content-Type': photo.contentType, 'Cache-Control': 'public, max-age=86400' });
             return res.send(photo.body);
-        } catch {
+        } catch (err) {
+            logger.warn('[photos/poi] photo fetch failed', { err: errorMessage(err), name });
             return sendPlaceholder(res, name, lookup.category, 'no-store');
         }
     } catch (err) {
@@ -120,7 +135,7 @@ export async function poiPhotoOrDetails(req: Request, res: Response, next: NextF
 }
 
 router.get('/place', proxyGooglePhoto);
-router.get('/poi',   poiPhotoOrDetails);
+router.get('/poi',   photosRateLimit, poiPhotoOrDetails);
 
 // ── Destination photo proxy ───────────────────────────────────────────────────
 // GET /api/v2/photos/destination?iata=SIN
