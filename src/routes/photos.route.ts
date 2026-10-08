@@ -9,9 +9,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { config } from '@/config';
 import { AppError } from '@/middleware/error.middleware';
+import { photosRateLimit } from '@/middleware/rate-limit.middleware';
 import { lookupPoiDetails, fetchPlacePhoto, placeholderSvg } from '@/lib/google/poi-details';
 
 const router = Router();
+
+router.use(photosRateLimit);
 
 async function proxyGooglePhoto(req: Request, res: Response, next: NextFunction) {
     try {
