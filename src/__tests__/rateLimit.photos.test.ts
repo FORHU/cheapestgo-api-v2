@@ -28,6 +28,33 @@ describe('isPoiPhotoRequest', () => {
     ])('is false for %s', (url) => expect(isPoiPhotoRequest(req(url))).toBe(false));
 });
 
+// These rebuild app.ts's mount order (defaultRateLimit, then the photos router) rather than
+// importing app.ts, because app.ts pulls in the whole server.
+describe('global limiter skips /poi', () => {
+    let server: Server;
+    let base: string;
+
+    beforeAll(async () => {
+        const app = express();
+        app.use(defaultRateLimit);
+        app.get('/api/v2/photos/poi', (_q, r) => { r.send('ok'); });
+        app.get('/api/v2/other', (_q, r) => { r.send('ok'); });
+        server = app.listen(0);
+        await new Promise((resolve) => server.once('listening', resolve));
+        base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    });
+    afterAll(() => new Promise((resolve) => server.close(resolve)));
+
+    it('sets no rate-limit headers on /poi, and does on other routes', async () => {
+        const poi = await fetch(`${base}/api/v2/photos/poi?name=x&lat=1&lng=2`);
+        const other = await fetch(`${base}/api/v2/other`);
+
+        expect(poi.headers.get('ratelimit-policy')).toBeNull();
+        expect(other.headers.get('ratelimit-policy')).toContain('w=900');
+    });
+});
+
+// Same mount order as above.
 describe('limiter wiring', () => {
     let server: Server;
     let base: string;
