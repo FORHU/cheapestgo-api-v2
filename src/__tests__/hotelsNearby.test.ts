@@ -12,6 +12,7 @@ vi.mock('@/lib/hotels/search', () => ({ getInstantHotelCatalog: vi.fn(), runTgxS
 vi.mock('@/lib/google/places', () => ({ getPlaceDetails: vi.fn(), geocode: vi.fn() }));
 
 import { HotelsController } from '@/controllers/hotels.controller';
+import { ZodError } from 'zod';
 import { AppError } from '@/middleware/error.middleware';
 import { logger } from '@/lib/logger';
 
@@ -21,12 +22,18 @@ const place = (id: string, rating = 4.5) => ({
     geometry: { location: { lat: 1, lng: 2 } },
 });
 
-async function call() {
+async function call(query: Record<string, string> = { lat: '1', lng: '2', category: 'cafe' }) {
     const res = { json: vi.fn() };
     const next = vi.fn();
-    const req = { query: { lat: '1', lng: '2', category: 'cafe' } };
+    const req = { query };
     await new HotelsController().nearbyPlaces(req as any, res as any, next);
     return { res, next };
+}
+
+function expectNoKeyLeak(next: ReturnType<typeof vi.fn>) {
+    const logged = [logger.error, logger.warn, logger.info, logger.debug].flatMap((fn) => (fn as any).mock.calls);
+    expect(JSON.stringify(logged)).not.toContain('test-key');
+    expect(JSON.stringify(next.mock.calls.map((c) => [(c[0] as Error).message, (c[0] as AppError).code]))).not.toContain('test-key');
 }
 
 describe('GET /hotels/nearby failure reporting', () => {
@@ -59,7 +66,8 @@ describe('GET /hotels/nearby failure reporting', () => {
         expect(err.statusCode).toBe(502);
         expect(err.code).toBe('UPSTREAM_ERROR');
         expect(err.message).not.toMatch(/OVER_QUERY_LIMIT|secret|quota/i);
-        expect(logger.warn).toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith('[hotels/nearby] upstream failure', { message: 'Google Places status OVER_QUERY_LIMIT' });
+        expectNoKeyLeak(next);
     });
 
     it('logs REQUEST_DENIED as an error and answers 502', async () => {
@@ -67,12 +75,31 @@ describe('GET /hotels/nearby failure reporting', () => {
         const { next } = await call();
         expect(logger.error).toHaveBeenCalledWith('[hotels/nearby] Google REQUEST_DENIED', { status: 'REQUEST_DENIED', error_message: 'bad key' });
         expect((next.mock.calls[0][0] as AppError).statusCode).toBe(502);
+        expectNoKeyLeak(next);
     });
 
     it('answers 502 when fetch itself fails', async () => {
         vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('timeout')));
         const { next } = await call();
         expect((next.mock.calls[0][0] as AppError).statusCode).toBe(502);
+    });
+
+    it('answers 502 when Google returns an HTTP error', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response('boom', { status: 500 })));
+        const { next } = await call();
+        const err = next.mock.calls[0][0] as AppError;
+        expect(err).toBeInstanceOf(AppError);
+        expect(err.statusCode).toBe(502);
+        expect(logger.warn).toHaveBeenCalledWith('[hotels/nearby] upstream failure', { message: 'Google Places HTTP 500' });
+        expectNoKeyLeak(next);
+    });
+
+    it('passes a ZodError to next for an invalid query', async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+        const { next } = await call({ lng: '2' });
+        expect(next.mock.calls[0][0]).toBeInstanceOf(ZodError);
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('answers 503 when the API key is missing', async () => {

@@ -145,34 +145,35 @@ export class HotelsController {
 
             let results: any[][];
             try {
-              results = await Promise.all(
-                types.map(async (type) => {
-                    const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=${type}&key=${key}&language=en`;
-                    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
-                    const d = await r.json() as { status: string; error_message?: string; results?: any[] };
-                    if (d.status === 'ZERO_RESULTS') return [];
-                    if (d.status !== 'OK') {
-                        if (d.status === 'REQUEST_DENIED') {
-                            logger.error('[hotels/nearby] Google REQUEST_DENIED', { status: d.status, error_message: d.error_message });
+                results = await Promise.all(
+                    types.map(async (type) => {
+                        const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=${type}&key=${key}&language=en`;
+                        const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+                        if (!r.ok) throw new Error(`Google Places HTTP ${r.status}`);
+                        const d = await r.json() as { status: string; error_message?: string; results?: any[] };
+                        if (d.status === 'ZERO_RESULTS') return [];
+                        if (d.status !== 'OK') {
+                            if (d.status === 'REQUEST_DENIED') {
+                                logger.error('[hotels/nearby] Google REQUEST_DENIED', { status: d.status, error_message: d.error_message });
+                            }
+                            throw new Error(`Google Places status ${d.status}`);
                         }
-                        throw new Error(`Google Places status ${d.status}`);
-                    }
-                    return (d.results ?? []).map((place: any) => ({
-                        type: 'Feature',
-                        geometry: { type: 'Point', coordinates: [place.geometry.location.lng, place.geometry.location.lat] },
-                        properties: {
-                            name:            place.name,
-                            place_id:        place.place_id,
-                            category:        place.types?.[0] || type,
-                            rating:          place.rating,
-                            userRatingsTotal: place.user_ratings_total,
-                            vicinity:        place.vicinity,
-                            photoReference:  place.photos?.[0]?.photo_reference ?? null,
-                            source:          'google',
-                        },
-                    }));
-                })
-              );
+                        return (d.results ?? []).map((place: any) => ({
+                            type: 'Feature',
+                            geometry: { type: 'Point', coordinates: [place.geometry.location.lng, place.geometry.location.lat] },
+                            properties: {
+                                name:            place.name,
+                                place_id:        place.place_id,
+                                category:        place.types?.[0] || type,
+                                rating:          place.rating,
+                                userRatingsTotal: place.user_ratings_total,
+                                vicinity:        place.vicinity,
+                                photoReference:  place.photos?.[0]?.photo_reference ?? null,
+                                source:          'google',
+                            },
+                        }));
+                    })
+                );
             } catch (e) {
                 logger.warn('[hotels/nearby] upstream failure', { message: e instanceof Error ? e.message : String(e) });
                 return next(new AppError(502, 'Nearby places unavailable', 'UPSTREAM_ERROR'));
