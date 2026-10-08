@@ -12,6 +12,7 @@ import { resolveStayDates } from '@/lib/hotels/property';
 import { prisma } from '@/lib/prisma';
 import { CITY_ALIASES } from '@/lib/cityAliases';
 import { DestinationsService } from '@/services/destinations.service';
+import { logger } from '@/lib/logger';
 
 /**
  * How long a first pass must take before it is worth asking again.
@@ -126,7 +127,10 @@ export class HotelsController {
             }).parse(req.query);
 
             const key = config.GOOGLE_PLACES_API_KEY;
-            if (!key) return res.json({ features: [] });
+            if (!key) {
+                logger.error('[hotels/nearby] GOOGLE_PLACES_API_KEY is not configured');
+                return next(new AppError(503, 'Nearby places unavailable', 'UPSTREAM_UNAVAILABLE'));
+            }
 
             const TYPE_MAP: Record<string, string[]> = {
                 all:        ['tourist_attraction', 'restaurant', 'park', 'museum'],
@@ -139,12 +143,20 @@ export class HotelsController {
             };
             const types = TYPE_MAP[category] ?? TYPE_MAP['all'];
 
-            const results = await Promise.all(
+            let results: any[][];
+            try {
+              results = await Promise.all(
                 types.map(async (type) => {
                     const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=${type}&key=${key}&language=en`;
                     const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
-                    const d = await r.json() as { status: string; results?: any[] };
-                    if (d.status !== 'OK') return [];
+                    const d = await r.json() as { status: string; error_message?: string; results?: any[] };
+                    if (d.status === 'ZERO_RESULTS') return [];
+                    if (d.status !== 'OK') {
+                        if (d.status === 'REQUEST_DENIED') {
+                            logger.error('[hotels/nearby] Google REQUEST_DENIED', { status: d.status, error_message: d.error_message });
+                        }
+                        throw new Error(`Google Places status ${d.status}`);
+                    }
                     return (d.results ?? []).map((place: any) => ({
                         type: 'Feature',
                         geometry: { type: 'Point', coordinates: [place.geometry.location.lng, place.geometry.location.lat] },
@@ -160,7 +172,11 @@ export class HotelsController {
                         },
                     }));
                 })
-            );
+              );
+            } catch (e) {
+                logger.warn('[hotels/nearby] upstream failure', { message: e instanceof Error ? e.message : String(e) });
+                return next(new AppError(502, 'Nearby places unavailable', 'UPSTREAM_ERROR'));
+            }
 
             const unique = new Map<string, any>();
             results.flat().forEach((f) => {
