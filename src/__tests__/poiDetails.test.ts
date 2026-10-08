@@ -196,6 +196,32 @@ describe('lookupPoiDetails', () => {
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
+    it('looks up afresh when the cached entry parses but is not a cached place', async () => {
+        store.set(poiCacheKey({ ...AT, placeId: 'g-cafe' }), '{"rating":4}');
+        const fetchMock = google([['place_id=g-cafe', { status: 'OK', result: CAFE }]]);
+
+        const d = await lookupPoiDetails({ ...AT, placeId: 'g-cafe' });
+
+        expect(d.placeId).toBe('g-cafe');
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives a place with the app\'s "transit" category and no hours "Open 24 hours"', async () => {
+        google([['place_id=g-bus', { status: 'OK', result: { place_id: 'g-bus', name: 'Stop' } }]]);
+
+        const d = await lookupPoiDetails({ name: 'Stop', lat: 1, lng: 2, placeId: 'g-bus', category: 'transit' });
+
+        expect(d.openingHours).toEqual({ open_now: true, weekday_text: ['Open 24 hours'] });
+    });
+
+    it('reports no opening hours, not an empty object, when Google sends neither text nor periods', async () => {
+        google([['place_id=g-empty', { status: 'OK', result: { place_id: 'g-empty', name: 'Shop', types: ['store'], opening_hours: {} } }]]);
+
+        const d = await lookupPoiDetails({ name: 'Shop', lat: 1, lng: 2, placeId: 'g-empty' });
+
+        expect(d.openingHours).toBeNull();
+    });
+
     it('still answers when Redis rejects', async () => {
         vi.mocked(redis.get).mockRejectedValueOnce(new Error('down'));
         vi.mocked(redis.setex).mockRejectedValueOnce(new Error('down'));

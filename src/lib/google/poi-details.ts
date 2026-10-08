@@ -111,7 +111,7 @@ const SEARCH_EMPTY = new Set(['ZERO_RESULTS']);
 
 /** Place types that are never shut, used only when Google sends no hours. Exact matches only. */
 const ALWAYS_OPEN = new Set([
-    'park', 'national_park', 'train_station', 'subway_station', 'bus_station', 'transit_station', 'light_rail_station',
+    'park', 'national_park', 'transit', 'train_station', 'subway_station', 'bus_station', 'transit_station', 'light_rail_station',
 ]);
 
 const MINUTES_PER_WEEK = 7 * 1440;
@@ -236,10 +236,12 @@ function isAlwaysOpen(c: CachedPoi, q: PoiLookup): boolean {
 function present(c: CachedPoi, q: PoiLookup, now = Date.now()): PoiDetails {
     let openingHours: PoiOpeningHours | null = null;
     if (c.hours) {
-        openingHours = {};
+        const hours: PoiOpeningHours = {};
         const open = isOpenNow(c.hours.periods, c.hours.utcOffsetMinutes, now);
-        if (open !== undefined) openingHours.open_now = open;
-        if (c.hours.weekday_text) openingHours.weekday_text = c.hours.weekday_text;
+        if (open !== undefined) hours.open_now = open;
+        if (c.hours.weekday_text) hours.weekday_text = c.hours.weekday_text;
+        // An empty object would show an empty "hours" section in the popup.
+        if (Object.keys(hours).length > 0) openingHours = hours;
     } else if (isAlwaysOpen(c, q)) {
         openingHours = { open_now: true, weekday_text: ['Open 24 hours'] };
     }
@@ -265,7 +267,8 @@ async function readCache(cacheKey: string): Promise<CachedPoi | null> {
         const raw = await redis.get(cacheKey);
         if (!raw) return null;
         const parsed: unknown = JSON.parse(raw);
-        return parsed && typeof parsed === 'object' ? parsed as CachedPoi : null;
+        const valid = parsed !== null && typeof parsed === 'object' && Array.isArray((parsed as CachedPoi).types);
+        return valid ? parsed as CachedPoi : null;
     } catch {
         return null; // Redis down or a corrupt entry: look it up again
     }
