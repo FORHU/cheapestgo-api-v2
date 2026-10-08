@@ -72,7 +72,7 @@ interface GooglePlace {
     reviews?: Partial<PoiReview>[];
     formatted_phone_number?: string;
     website?: string;
-    utc_offset_minutes?: number;
+    utc_offset?: number;
     opening_hours?: { weekday_text?: string[]; periods?: Period[] };
     photos?: { photo_reference?: string }[];
 }
@@ -101,12 +101,12 @@ const CALL_TIMEOUT_MS = 6000;
 const LOOKUP_TIMEOUT_MS = 10_000;
 const DETAILS_FIELDS = [
     'place_id', 'name', 'types', 'vicinity', 'formatted_address', 'rating', 'user_ratings_total',
-    'reviews', 'formatted_phone_number', 'website', 'opening_hours', 'utc_offset_minutes', 'photos',
+    'reviews', 'formatted_phone_number', 'website', 'opening_hours', 'utc_offset', 'photos',
 ].join(',');
 
 /** Statuses meaning "there is nothing here", as opposed to "something went wrong". */
-const DETAILS_EMPTY = new Set(['ZERO_RESULTS', 'NOT_FOUND', 'INVALID_REQUEST']);
-/** For a name search INVALID_REQUEST means our own parameters are bad, so it is an error. */
+const DETAILS_EMPTY = new Set(['ZERO_RESULTS', 'NOT_FOUND']);
+/** INVALID_REQUEST is never "empty": callers only send ids and parameters Google issued, so it is our bug. */
 const SEARCH_EMPTY = new Set(['ZERO_RESULTS']);
 
 /** Place types that are never shut, used only when Google sends no hours. Exact matches only. */
@@ -143,6 +143,12 @@ async function callGoogle<T>(
     const body = await res.json() as T & { status: string; error_message?: string };
     if (body.status === 'REQUEST_DENIED') {
         logger.error('[poi-details] Google REQUEST_DENIED — check the Places API key and billing', {
+            status: body.status,
+            error_message: body.error_message,
+        });
+    }
+    if (body.status === 'INVALID_REQUEST') {
+        logger.warn('[poi-details] Google INVALID_REQUEST — a parameter we sent is wrong', {
             status: body.status,
             error_message: body.error_message,
         });
@@ -200,7 +206,7 @@ function toCached(p: GooglePlace): CachedPoi {
             ? {
                 weekday_text: p.opening_hours.weekday_text,
                 periods: p.opening_hours.periods,
-                utcOffsetMinutes: p.utc_offset_minutes,
+                utcOffsetMinutes: p.utc_offset,
             }
             : null,
         photoReference: p.photos?.[0]?.photo_reference ?? null,

@@ -62,6 +62,9 @@ describe('lookupPoiDetails', () => {
         expect(d.reviews).toHaveLength(1);
         expect(fetchMock).toHaveBeenCalledTimes(1);
         expect(String(fetchMock.mock.calls[0][0])).not.toContain('nearbysearch');
+        const fields = new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('fields')!.split(',');
+        expect(fields).toContain('utc_offset');
+        expect(fields).not.toContain('utc_offset_minutes');
     });
 
     it('tries name-search candidates in order and stops at the first with a photo or reviews', async () => {
@@ -91,7 +94,7 @@ describe('lookupPoiDetails', () => {
 
     it('falls back to a name search when the id is not a Google place id, caching only under the name', async () => {
         google([
-            ['place_id=dXJuOm1ieHBvaQ', { status: 'INVALID_REQUEST' }],
+            ['place_id=dXJuOm1ieHBvaQ', { status: 'NOT_FOUND' }],
             ['nearbysearch', { status: 'OK', results: [{ place_id: 'g-cafe' }] }],
             ['place_id=g-cafe', { status: 'OK', result: CAFE }],
         ]);
@@ -261,6 +264,16 @@ describe('lookupPoiDetails', () => {
         expect(redis.setex).not.toHaveBeenCalled();
     });
 
+    it('treats INVALID_REQUEST from Place Details as our own bug: throws, is not cached, is logged', async () => {
+        google([['details/json', { status: 'INVALID_REQUEST', error_message: "Unsupported field name 'x'" }]]);
+
+        await expect(lookupPoiDetails({ ...AT, placeId: 'g-cafe' })).rejects.toThrow('INVALID_REQUEST');
+        expect(redis.setex).not.toHaveBeenCalled();
+        const logged = JSON.stringify(vi.mocked(logger.warn).mock.calls);
+        expect(logged).toContain('Unsupported field name');
+        expect(logged).not.toContain('test-key');
+    });
+
     it('logs a denied key loudly, with Google\'s reason and without the key', async () => {
         google([['nearbysearch', { status: 'REQUEST_DENIED', error_message: 'API key invalid' }]]);
 
@@ -277,7 +290,7 @@ describe('open_now', () => {
     const MON = {
         status: 'OK',
         result: {
-            place_id: 'g-mon', name: 'Shop', types: ['store'], utc_offset_minutes: 540,
+            place_id: 'g-mon', name: 'Shop', types: ['store'], utc_offset: 540,
             opening_hours: {
                 open_now: false,
                 weekday_text: ['Monday: 9-5'],
@@ -313,7 +326,7 @@ describe('open_now', () => {
     });
 
     it('is left out when Google gave no utc offset', async () => {
-        google([['place_id=g-mon', { status: 'OK', result: { ...MON.result, utc_offset_minutes: undefined } }]]);
+        google([['place_id=g-mon', { status: 'OK', result: { ...MON.result, utc_offset: undefined } }]]);
 
         const d = await lookupPoiDetails(Q);
 
