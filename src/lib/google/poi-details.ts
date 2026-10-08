@@ -7,6 +7,10 @@
  *
  * "Nothing found" is an answer and is cached; a Google error is not, so a passing outage does not
  * stick to a place for a day.
+ *
+ * Redis holds what Google said (`CachedPoi`) and nothing that depends on the moment or the caller:
+ * `open_now`, the caller's label and the "Open 24 hours" default are applied when an answer is
+ * handed out (`present`).
  */
 
 import { config } from '@/config';
@@ -19,6 +23,7 @@ export interface PoiReview {
     text: string;
     relative_time_description?: string;
     profile_photo_url?: string;
+    author_url?: string;
 }
 
 export interface PoiOpeningHours {
@@ -51,6 +56,11 @@ export interface PoiLookup {
     category?: string;
 }
 
+interface Period {
+    open: { day: number; time: string };
+    close?: { day: number; time: string };
+}
+
 interface GooglePlace {
     place_id?: string;
     name?: string;
@@ -59,34 +69,61 @@ interface GooglePlace {
     formatted_address?: string;
     rating?: number;
     user_ratings_total?: number;
-    reviews?: PoiReview[];
+    reviews?: Partial<PoiReview>[];
     formatted_phone_number?: string;
     website?: string;
-    opening_hours?: PoiOpeningHours;
+    utc_offset_minutes?: number;
+    opening_hours?: { weekday_text?: string[]; periods?: Period[] };
     photos?: { photo_reference?: string }[];
+}
+
+/** What goes into Redis: Google's answer, free of anything tied to the caller or the clock. */
+interface CachedPoi {
+    nameEn: string | null;
+    placeId: string | null;
+    types: string[];
+    vicinity: string | null;
+    rating: number | null;
+    userRatingsTotal: number | null;
+    reviews: PoiReview[];
+    phone: string | null;
+    website: string | null;
+    hours: { weekday_text?: string[]; periods?: Period[]; utcOffsetMinutes?: number } | null;
+    photoReference: string | null;
+    source: 'google' | 'none';
 }
 
 const GOOGLE = 'https://maps.googleapis.com/maps/api/place';
 const TTL_SECONDS = 86_400;
 const MAX_REVIEWS = 5;
 const CANDIDATES = 3;
+const CALL_TIMEOUT_MS = 6000;
+const LOOKUP_TIMEOUT_MS = 10_000;
 const DETAILS_FIELDS = [
     'place_id', 'name', 'types', 'vicinity', 'formatted_address', 'rating', 'user_ratings_total',
-    'reviews', 'formatted_phone_number', 'website', 'opening_hours', 'photos',
+    'reviews', 'formatted_phone_number', 'website', 'opening_hours', 'utc_offset_minutes', 'photos',
 ].join(',');
 
 /** Statuses meaning "there is nothing here", as opposed to "something went wrong". */
-const EMPTY_STATUSES = new Set(['ZERO_RESULTS', 'NOT_FOUND', 'INVALID_REQUEST']);
+const DETAILS_EMPTY = new Set(['ZERO_RESULTS', 'NOT_FOUND', 'INVALID_REQUEST']);
+/** For a name search INVALID_REQUEST means our own parameters are bad, so it is an error. */
+const SEARCH_EMPTY = new Set(['ZERO_RESULTS']);
 
-/** Places that are never shut, when Google sends no hours for them. Word-bounded so "parking" is not a park. */
-const ALWAYS_OPEN = /\b(transit|station|park|nature)\b/;
+/** Place types that are never shut, used only when Google sends no hours. Exact matches only. */
+const ALWAYS_OPEN = new Set([
+    'park', 'national_park', 'train_station', 'subway_station', 'bus_station', 'transit_station', 'light_rail_station',
+]);
 
-const inFlight = new Map<string, Promise<PoiDetails>>();
+const MINUTES_PER_WEEK = 7 * 1440;
+
+const inFlight = new Map<string, Promise<CachedPoi>>();
+
+const idKey = (placeId: string) => `poi:v1|${placeId}`;
 
 export function poiCacheKey(q: PoiLookup): string {
     return q.placeId
-        ? `poi|${q.placeId}`
-        : `poi|${q.name.toLowerCase()}|${q.lat.toFixed(4)}|${q.lng.toFixed(4)}`;
+        ? idKey(q.placeId)
+        : `poi:v1|${q.name.toLowerCase()}|${q.lat.toFixed(4)}|${q.lng.toFixed(4)}`;
 }
 
 function apiKey(): string {
@@ -95,105 +132,199 @@ function apiKey(): string {
     return key;
 }
 
-async function callGoogle<T>(url: string): Promise<{ status: string; body: T }> {
-    const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+async function callGoogle<T>(
+    url: string,
+    overall: AbortSignal,
+    emptyStatuses: ReadonlySet<string>,
+): Promise<{ status: string; body: T }> {
+    const signal = AbortSignal.any([AbortSignal.timeout(CALL_TIMEOUT_MS), overall]);
+    const res = await fetch(url, { signal });
     if (!res.ok) throw new Error(`Google Places HTTP ${res.status}`);
-    const body = await res.json() as T & { status: string };
+    const body = await res.json() as T & { status: string; error_message?: string };
     if (body.status === 'REQUEST_DENIED') {
-        logger.error('[poi-details] Google REQUEST_DENIED — check the Places API key and billing');
+        logger.error('[poi-details] Google REQUEST_DENIED — check the Places API key and billing', {
+            status: body.status,
+            error_message: body.error_message,
+        });
     }
-    if (body.status !== 'OK' && !EMPTY_STATUSES.has(body.status)) {
+    if (body.status !== 'OK' && !emptyStatuses.has(body.status)) {
         throw new Error(`Google Places status ${body.status}`);
     }
     return { status: body.status, body };
 }
 
-async function placeDetails(placeId: string, key: string): Promise<GooglePlace | null> {
+async function placeDetails(placeId: string, key: string, overall: AbortSignal): Promise<GooglePlace | null> {
     const { status, body } = await callGoogle<{ result?: GooglePlace }>(
         `${GOOGLE}/details/json?place_id=${encodeURIComponent(placeId)}&fields=${DETAILS_FIELDS}&language=en&key=${key}`,
+        overall,
+        DETAILS_EMPTY,
     );
     return status === 'OK' ? body.result ?? null : null;
 }
 
-async function candidatesNear(q: PoiLookup, key: string): Promise<GooglePlace[]> {
+async function candidatesNear(q: PoiLookup, key: string, overall: AbortSignal): Promise<GooglePlace[]> {
     const { status, body } = await callGoogle<{ results?: GooglePlace[] }>(
         `${GOOGLE}/nearbysearch/json?location=${q.lat},${q.lng}&radius=500&keyword=${encodeURIComponent(q.name)}&language=en&key=${key}`,
+        overall,
+        SEARCH_EMPTY,
     );
     return status === 'OK' ? (body.results ?? []).slice(0, CANDIDATES) : [];
 }
 
-function emptyDetails(q: PoiLookup): PoiDetails {
+function emptyCached(): CachedPoi {
     return {
-        name: q.name, nameEn: null, placeId: null, category: null, vicinity: null, rating: null,
-        userRatingsTotal: null, reviews: [], phone: null, website: null, openingHours: null,
-        photoReference: null, source: 'none',
+        nameEn: null, placeId: null, types: [], vicinity: null, rating: null, userRatingsTotal: null,
+        reviews: [], phone: null, website: null, hours: null, photoReference: null, source: 'none',
     };
 }
 
-function withDefaultHours(d: PoiDetails, q: PoiLookup): PoiDetails {
-    if (d.openingHours) return d;
-    const category = `${q.category ?? ''} ${d.category ?? ''}`.replace(/_/g, ' ').toLowerCase();
-    const alwaysOpen = ALWAYS_OPEN.test(category) || /\bstation\b/i.test(q.name);
-    return alwaysOpen ? { ...d, openingHours: { open_now: true, weekday_text: ['Open 24 hours'] } } : d;
-}
-
-function toDetails(p: GooglePlace, q: PoiLookup): PoiDetails {
-    return withDefaultHours({
-        name: q.name,
+function toCached(p: GooglePlace): CachedPoi {
+    return {
         nameEn: p.name ?? null,
         placeId: p.place_id ?? null,
-        category: p.types?.[0]?.replace(/_/g, ' ') ?? null,
+        types: p.types ?? [],
         vicinity: p.vicinity ?? p.formatted_address ?? null,
         rating: typeof p.rating === 'number' ? p.rating : null,
         userRatingsTotal: typeof p.user_ratings_total === 'number' ? p.user_ratings_total : null,
-        reviews: (p.reviews ?? []).slice(0, MAX_REVIEWS),
+        reviews: (p.reviews ?? []).slice(0, MAX_REVIEWS).map((r) => ({
+            author_name: r.author_name ?? '',
+            rating: r.rating ?? 0,
+            text: r.text ?? '',
+            relative_time_description: r.relative_time_description,
+            profile_photo_url: r.profile_photo_url,
+            author_url: r.author_url,
+        })),
         phone: p.formatted_phone_number ?? null,
         website: p.website ?? null,
-        openingHours: p.opening_hours
-            ? { open_now: p.opening_hours.open_now, weekday_text: p.opening_hours.weekday_text }
+        hours: p.opening_hours
+            ? {
+                weekday_text: p.opening_hours.weekday_text,
+                periods: p.opening_hours.periods,
+                utcOffsetMinutes: p.utc_offset_minutes,
+            }
             : null,
         photoReference: p.photos?.[0]?.photo_reference ?? null,
         source: 'google',
-    }, q);
+    };
 }
 
-async function resolve(q: PoiLookup): Promise<PoiDetails> {
-    const key = apiKey();
-    if (q.placeId) {
-        const place = await placeDetails(q.placeId, key);
-        if (place) return toDetails(place, q);
+const weekMinute = (t: { day: number; time: string }) =>
+    t.day * 1440 + Number(t.time.slice(0, 2)) * 60 + Number(t.time.slice(2, 4));
+
+/** Whether the place is open at `now`, from its weekly periods; undefined when that cannot be told. */
+function isOpenNow(periods: Period[] | undefined, utcOffsetMinutes: number | undefined, now: number): boolean | undefined {
+    if (!periods?.length || typeof utcOffsetMinutes !== 'number') return undefined;
+    if (periods.some((p) => p.open && !p.close)) return true;
+
+    const local = new Date(now + utcOffsetMinutes * 60_000);
+    const t = local.getUTCDay() * 1440 + local.getUTCHours() * 60 + local.getUTCMinutes();
+    return periods.some((p) => {
+        if (!p.open || !p.close) return false;
+        const open = weekMinute(p.open);
+        let close = weekMinute(p.close);
+        if (close <= open) close += MINUTES_PER_WEEK;
+        return (t >= open && t < close) || (t + MINUTES_PER_WEEK >= open && t + MINUTES_PER_WEEK < close);
+    });
+}
+
+function isAlwaysOpen(c: CachedPoi, q: PoiLookup): boolean {
+    const category = q.category?.toLowerCase().replace(/\s+/g, '_');
+    return [...c.types, ...(category ? [category] : [])].some((t) => ALWAYS_OPEN.has(t));
+}
+
+/** Turns what Redis (or Google) gave into the answer for this caller at this moment. */
+function present(c: CachedPoi, q: PoiLookup, now = Date.now()): PoiDetails {
+    let openingHours: PoiOpeningHours | null = null;
+    if (c.hours) {
+        openingHours = {};
+        const open = isOpenNow(c.hours.periods, c.hours.utcOffsetMinutes, now);
+        if (open !== undefined) openingHours.open_now = open;
+        if (c.hours.weekday_text) openingHours.weekday_text = c.hours.weekday_text;
+    } else if (isAlwaysOpen(c, q)) {
+        openingHours = { open_now: true, weekday_text: ['Open 24 hours'] };
     }
-    // One candidate at a time: the first with a photo or reviews wins, so a good match costs one
-    // Details call rather than three fired in parallel and two thrown away.
-    for (const candidate of await candidatesNear(q, key)) {
+    return {
+        name: q.name,
+        nameEn: c.nameEn,
+        placeId: c.placeId,
+        category: c.types[0]?.replace(/_/g, ' ') ?? null,
+        vicinity: c.vicinity,
+        rating: c.rating,
+        userRatingsTotal: c.userRatingsTotal,
+        reviews: c.reviews,
+        phone: c.phone,
+        website: c.website,
+        openingHours,
+        photoReference: c.photoReference,
+        source: c.source,
+    };
+}
+
+async function readCache(cacheKey: string): Promise<CachedPoi | null> {
+    try {
+        const raw = await redis.get(cacheKey);
+        if (!raw) return null;
+        const parsed: unknown = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed as CachedPoi : null;
+    } catch {
+        return null; // Redis down or a corrupt entry: look it up again
+    }
+}
+
+async function writeCache(cacheKey: string, value: CachedPoi): Promise<void> {
+    try {
+        await redis.setex(cacheKey, TTL_SECONDS, JSON.stringify(value));
+    } catch {
+        // a cache that cannot be written only costs the next caller a lookup
+    }
+}
+
+/** First name-search candidate with a photo or reviews wins, so a good match costs one Details call. */
+async function resolveByName(q: PoiLookup, key: string, overall: AbortSignal): Promise<CachedPoi> {
+    for (const candidate of await candidatesNear(q, key, overall)) {
         if (!candidate.place_id) continue;
-        const place = await placeDetails(candidate.place_id, key);
-        if (place && (place.photos?.length || place.reviews?.length)) return toDetails(place, q);
+        const place = await placeDetails(candidate.place_id, key, overall);
+        if (place && (place.photos?.length || place.reviews?.length)) return toCached(place);
     }
-    return withDefaultHours(emptyDetails(q), q);
+    return emptyCached();
 }
 
-export function lookupPoiDetails(q: PoiLookup): Promise<PoiDetails> {
+function resolveCached(q: PoiLookup): Promise<CachedPoi> {
     const cacheKey = poiCacheKey(q);
     const pending = inFlight.get(cacheKey);
     if (pending) return pending;
 
     const lookup = (async () => {
-        const cached = await redis.get(cacheKey).catch(() => null);
-        if (cached) {
-            try { return JSON.parse(cached) as PoiDetails; } catch { /* corrupt entry: look it up again */ }
+        const cached = await readCache(cacheKey);
+        if (cached) return cached;
+
+        const key = apiKey();
+        const overall = AbortSignal.timeout(LOOKUP_TIMEOUT_MS);
+
+        if (q.placeId) {
+            const place = await placeDetails(q.placeId, key, overall);
+            if (place) {
+                const fromId = toCached(place);
+                await writeCache(cacheKey, fromId);
+                return fromId;
+            }
+            // Not a Google id (a Mapbox one, or a stale one): the id key only ever holds Details
+            // answers for that id, so the name search is cached under the name.
+            return resolveCached({ ...q, placeId: undefined });
         }
-        const details = await resolve(q);
-        const value = JSON.stringify(details);
-        await redis.setex(cacheKey, TTL_SECONDS, value).catch(() => {});
-        if (details.placeId && details.placeId !== q.placeId) {
-            await redis.setex(`poi|${details.placeId}`, TTL_SECONDS, value).catch(() => {});
-        }
-        return details;
+
+        const found = await resolveByName(q, key, overall);
+        await writeCache(cacheKey, found);
+        if (found.placeId) await writeCache(idKey(found.placeId), found);
+        return found;
     })().finally(() => inFlight.delete(cacheKey));
 
     inFlight.set(cacheKey, lookup);
     return lookup;
+}
+
+export async function lookupPoiDetails(q: PoiLookup): Promise<PoiDetails> {
+    return present(await resolveCached(q), q);
 }
 
 export async function fetchPlacePhoto(photoReference: string, maxWidth = 800): Promise<{ body: Buffer; contentType: string }> {
@@ -202,8 +333,11 @@ export async function fetchPlacePhoto(photoReference: string, maxWidth = 800): P
         `${GOOGLE}/photo?maxwidth=${maxWidth}&photo_reference=${encodeURIComponent(photoReference)}&key=${key}`,
         { signal: AbortSignal.timeout(8000) },
     );
+    if (!res.ok) throw new Error(`Google photo HTTP ${res.status}`);
     const contentType = res.headers.get('content-type') ?? '';
-    if (!res.ok || !contentType.startsWith('image/')) throw new Error(`Google photo HTTP ${res.status}`);
+    if (!contentType.startsWith('image/')) {
+        throw new Error(`Google photo was not an image (content-type: ${contentType || 'none'})`);
+    }
     return { body: Buffer.from(await res.arrayBuffer()), contentType };
 }
 
