@@ -227,7 +227,15 @@ export async function processDump(
 
             stats.linesRead++;
             if (stats.linesRead % 50_000 === 0) {
-                console.log(`[etg-dump] ${stats.linesRead} lines | matched=${stats.matched} written=${stats.written}`);
+                // `skipped` is here because without it a resumed run looks like a dead
+                // one: it re-reads the whole dump to reach hotels it has not seeded yet,
+                // so `written` sits at 0 for an hour and more while `matched` climbs. On
+                // 2026-10-02 that was read as a hang twice over, once by a person and
+                // once by me, and the run was killed the first time.
+                console.log(
+                    `[etg-dump] ${stats.linesRead} lines | matched=${stats.matched} `
+                    + `skipped=${stats.skipped} written=${stats.written}`,
+                );
             }
 
             let hotel: Record<string, unknown>;

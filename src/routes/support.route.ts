@@ -177,4 +177,67 @@ router.post('/conversation/:id/messages', async (req: Request, res: Response, ne
     } catch (err) { next(err); }
 });
 
+/**
+ * Ask for a person.
+ *
+ * Not gated by Support Hours — they decide what the customer is promised, not whether the
+ * queue takes the chat. Pressing twice returns the same state rather than an error.
+ */
+router.post('/conversation/escalate', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        return res.json({ success: true, data: await svc.escalate(req.user!.sub) });
+    } catch (err) { next(err); }
+});
+
+// ── Chat Reference: reading back a finished chat ───────────────────────────────
+
+router.get('/conversation/history', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        return res.json({ success: true, data: await svc.pastConversations(req.user!.sub) });
+    } catch (err) { next(err); }
+});
+
+/**
+ * One finished chat by its Chat Reference.
+ *
+ * Declared after `/conversation/history` so the literal wins; Express would otherwise let
+ * `:reference` swallow it. The reference grants nothing — see the service.
+ */
+router.get('/conversation/history/:reference', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { reference } = z.object({ reference: z.string().min(1).max(64) }).parse(req.params);
+        return res.json({ success: true, data: await svc.pastConversation(req.user!.sub, reference) });
+    } catch (err) { next(err); }
+});
+
+// ── Linked Bookings ────────────────────────────────────────────────────────────
+
+/**
+ * The customer choosing which of their trips this chat is about.
+ *
+ * Only their own, enforced in the service: the point of attaching a trip is that an Agent
+ * can trust it without asking, and a reference somebody typed from memory is exactly what
+ * that trust must not rest on.
+ */
+router.get('/conversation/bookings', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        return res.json({ success: true, data: await svc.customerTrips(req.user!.sub) });
+    } catch (err) { next(err); }
+});
+
+router.post('/conversation/bookings', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { bookingReference } = z.object({ bookingReference: z.string().min(1).max(64) }).parse(req.body ?? {});
+        const data = await svc.linkOwnBooking(req.user!.sub, bookingReference);
+        return res.status(201).json({ success: true, data });
+    } catch (err) { next(err); }
+});
+
+router.delete('/conversation/bookings/:reference', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { reference } = z.object({ reference: z.string().min(1).max(64) }).parse(req.params);
+        return res.json({ success: true, data: await svc.unlinkOwnBooking(req.user!.sub, reference) });
+    } catch (err) { next(err); }
+});
+
 export default router;

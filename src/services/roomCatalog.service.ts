@@ -216,11 +216,36 @@ export class RoomCatalogService {
         descMap: Map<string, string>,
         out: Map<string, RoomCatalogEntry>,
     ): void {
+        const missed: string[] = [];
+
         for (const [code, description] of descMap) {
             const match = matchEtgRoomGroup(description, groups as EtgGroup[]);
             if (match.images.length || match.amenities.length) {
                 out.set(code, { photos: match.images, amenities: match.amenities });
+            } else {
+                missed.push(description);
             }
+        }
+
+        /*
+         * The rooms ETG had nothing for, named rather than counted.
+         *
+         * v1 has a third photo source this does not: when ETG matches nothing it falls
+         * through to TGX's own `hotelX.rooms` static catalog. Whether that is worth
+         * porting depends on what lands here — a name the matcher *should* have caught is
+         * a matcher bug and a second supplier call would paper over it, while a room ETG
+         * genuinely does not carry is exactly what the fallback is for. Measured at
+         * Roynet 67/70 and Swiss-Bel 37/48, so it is a real share either way.
+         *
+         * Logged, not stored: this is a question being answered over a few days of normal
+         * traffic, not a metric worth a column.
+         */
+        if (missed.length) {
+            console.log(
+                `[room-match] ${missed.length}/${descMap.size} unmatched across ${groups.length} groups: `
+                + missed.slice(0, 5).map(d => JSON.stringify(d)).join(', ')
+                + (missed.length > 5 ? ` …and ${missed.length - 5} more` : ''),
+            );
         }
     }
 }

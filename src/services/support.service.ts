@@ -12,8 +12,16 @@ import {
     type SupportMessageRow,
     type InboxFilter,
 } from '@/repositories/support.repository';
-import { urgencyFromRank } from '@/lib/support/urgency';
+import { urgencyFromRank, isUrgency } from '@/lib/support/urgency';
+
+/**
+ * A Note is written in the same box an Agent answers in, so it gets the same room — the
+ * 4,000 the message routes cap at.
+ */
+const MAX_NOTE_LENGTH = 4000;
 import { publish } from '@/lib/support/events';
+import { getSupportAvailability } from '@/lib/support/availability';
+import { nextOpening } from '@/lib/support/hours';
 import { translateInBackground } from '@/lib/support/translateInBackground';
 import type { SupportLang } from '@/lib/support/translation';
 
@@ -485,6 +493,274 @@ export class SupportService {
         }
         await this.repo.setStatus(conversationId, 'resolved');
         await publish({ conversationId, messageId: null });
+    }
+
+    // ── Assignment support: who, how many, how urgent (ADR-0041) ────────────────
+
+    /**
+     * Who a chat can be given to, and what each of them is carrying.
+     *
+     * Admins only. ADR-0041 has a chat *given* by an admin and never taken, so the list of
+     * people it could be given to is an admin's view — an Agent offered it would be looking
+     * at a control they are not allowed to use.
+     *
+     * The month is the calendar month in UTC, the same clock the resolutions are recorded
+     * on, because `handled` is the figure pay is worked out from.
+     */
+    async assignableAgents(actor: SupportActor) {
+        if (actor.role !== 'admin') {
+            throw new AppError(403, 'Only an admin can see who a chat can be given to.', 'SUPPORT_ADMIN_ONLY');
+        }
+        const now = new Date();
+        const since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+        const [agents, tally] = await Promise.all([
+            this.repo.listAssignableAgents(),
+            this.repo.handledTally(since),
+        ]);
+        return { agents, tally, since: since.toISOString() };
+    }
+
+    /**
+     * The sidebar badge's two numbers.
+     *
+     * `waiting` is what the badge shows, and it means a different thing per role on
+     * purpose: an admin is waiting on the unassigned queue, because handing chats out is
+     * their job, while an Agent is waiting on their own chats, because nobody else will
+     * answer them.
+     */
+    async counts(actor: SupportActor) {
+        await this.assertCanAnswer(actor);
+        const { unassigned, mine, mineWaiting } = await this.repo.inboxCounts(actor.id);
+        return { unassigned, mine, waiting: actor.role === 'admin' ? unassigned : mineWaiting };
+    }
+
+    /**
+     * Overrule computed **Urgency**, or hand it back to the rule.
+     *
+     * A Support Agent re-ranks only their own chats; an admin, any (ADR-0041).
+     *
+     * `null` restores the computed value and is a real argument, not a missing one:
+     * clearing an override hands the chat back to a rule that keeps climbing as a
+     * departure nears, whereas setting `normal` freezes it at ordinary however close the
+     * flight gets. The caller has to be able to say which it meant.
+     */
+    async setPriority(actor: SupportActor, conversationId: string, priority: string | null) {
+        await this.assertCanAnswer(actor);
+        const row = await this.repo.findById(conversationId);
+        if (!row) throw new AppError(404, 'Conversation not found.', 'NOT_FOUND');
+        if (!canWriteIn(actor, row.assigned_admin_id)) {
+            throw new AppError(403, 'Only whoever holds this chat can re-rank it.', 'SUPPORT_NOT_YOURS');
+        }
+        if (priority !== null && !isUrgency(priority)) {
+            throw new AppError(400, 'priority must be low, normal, high, critical, or null.', 'VALIDATION_ERROR');
+        }
+        await this.repo.setPriority(conversationId, priority);
+        // The queue's order changed, not its content — the inbox refetches on this.
+        await publish({ conversationId, messageId: null });
+        return { priority };
+    }
+
+    // ── Internal Notes ───────────────────────────────────────────────────────────
+
+    /** Staff only, and never part of the transcript — see the repository's note. */
+    async listNotes(actor: SupportActor, conversationId: string) {
+        await this.assertCanAnswer(actor);
+        return { notes: await this.repo.listNotes(conversationId) };
+    }
+
+    /**
+     * Write a Note.
+     *
+     * The author is the signed-in Agent and never anything the client sent: a note nobody
+     * can be asked about is worse than no note. Nothing is published — a Note is not a
+     * message, and waking the customer's stream for one would be the bug this table exists
+     * to prevent.
+     */
+    async addNote(actor: SupportActor, conversationId: string, body: string) {
+        await this.assertCanAnswer(actor);
+        const text = body.trim();
+        if (!text) throw new AppError(400, 'A note cannot be empty.', 'VALIDATION_ERROR');
+        if (text.length > MAX_NOTE_LENGTH) {
+            throw new AppError(400, `A note cannot exceed ${MAX_NOTE_LENGTH} characters.`, 'VALIDATION_ERROR');
+        }
+        const note = await this.repo.addNote(conversationId, actor.id, text);
+        if (!note) throw new AppError(404, 'Conversation not found.', 'NOT_FOUND');
+        return { note };
+    }
+
+    /**
+     * Remove one of your own.
+     *
+     * A note that was never yours reads as 404 rather than 403: the distinction would
+     * confirm that a note exists, which is the thing you are not entitled to act on.
+     */
+    async deleteNote(actor: SupportActor, noteId: string) {
+        await this.assertCanAnswer(actor);
+        if (!await this.repo.deleteNote(noteId, actor.id)) {
+            throw new AppError(404, 'Note not found.', 'NOT_FOUND');
+        }
+        return { deleted: true };
+    }
+
+    // ── Asking for a person ──────────────────────────────────────────────────────
+
+    /**
+     * Ask for a person.
+     *
+     * Support Hours do not gate this. They decide what the customer is *promised*, not
+     * whether the queue accepts the conversation — a question asked at 3am is queued at
+     * 3am and waits for the morning, rather than being refused and lost. The reply carries
+     * the availability and the next opening so the widget can say which of the two it is.
+     *
+     * v1's branch for collecting a guest's name and email is deliberately not ported:
+     * ADR-0032 requires an account from the first message, so there is no caller here
+     * without one and that branch was already unreachable.
+     *
+     * Pressing twice is not an error. An already-queued chat returns its current state,
+     * because the second tap should show the same thing as the first rather than a
+     * failure — and must not reset a chat an Agent has since picked up.
+     */
+    async escalate(userId: string) {
+        const row = await this.repo.findLatestByUser(userId);
+        if (!row) throw new AppError(404, 'No conversation.', 'NOT_FOUND');
+
+        const { humanAvailable, hours } = await getSupportAvailability();
+        const opening = nextOpening(hours, new Date());
+
+        const moved = await this.repo.requestHuman(row.id);
+        if (!moved) {
+            // Already queued, already being answered, or something else moved it between
+            // the read and the write. Report where it actually is.
+            const current = await this.repo.findById(row.id);
+            return {
+                conversation: current ? toPublicConversation(current) : null,
+                humanAvailable,
+                nextOpening: opening,
+                alreadyQueued: true,
+            };
+        }
+
+        // A row in the transcript, so the Agent who picks this up sees where the handover
+        // happened rather than guessing which half the model wrote — and so the customer
+        // sees an acknowledgement rather than the panel going quiet.
+        await this.repo.appendMessage({
+            conversationId: moved.id,
+            sender:         'system',
+            body:           humanAvailable
+                ? 'You asked for a person. Someone will be with you shortly.'
+                : 'You asked for a person. The desk is closed, so someone will reply when it opens.',
+            noticeCode:     humanAvailable ? 'asked_for_person' : 'asked_for_person_out_of_hours',
+        });
+        await publish({ conversationId: moved.id, messageId: null });
+
+        return {
+            conversation: toPublicConversation(moved),
+            humanAvailable,
+            nextOpening: opening,
+            alreadyQueued: false,
+        };
+    }
+
+    // ── Chat Reference: reading back a finished chat ────────────────────────────
+
+    /** The caller's resolved chats, newest first — the widget's "Previous conversation". */
+    async pastConversations(userId: string) {
+        return { conversations: await this.repo.listPastConversations(userId) };
+    }
+
+    /**
+     * One finished chat, read-only, named by its **Chat Reference**.
+     *
+     * The reference grants nothing (ADR-0038). What allows the read is that the chat
+     * belongs to the signed-in caller; anything else is a 404 indistinguishable from a
+     * reference that never existed, so the endpoint cannot be used to discover whether
+     * someone else's reference is real.
+     */
+    async pastConversation(userId: string, reference: string) {
+        const row = await this.repo.findPastByReference(userId, reference.trim().toUpperCase());
+        if (!row) throw new AppError(404, 'Not found.', 'NOT_FOUND');
+        const messages = await this.repo.listMessages(row.id);
+        return { conversation: toPublicConversation(row), messages: await this.withAttachments(messages) };
+    }
+
+    // ── Linked Bookings ──────────────────────────────────────────────────────────
+
+    /** The customer's own trips, and whatever is already attached to their chat. */
+    async customerTrips(userId: string) {
+        const conversation = await this.repo.findLatestByUser(userId);
+        const [trips, linked] = await Promise.all([
+            this.repo.listCustomerTrips(userId),
+            conversation ? this.repo.listLinkedBookings(conversation.id) : Promise.resolve([]),
+        ]);
+        return { trips, linked };
+    }
+
+    /**
+     * The customer saying which of their trips the chat is about.
+     *
+     * Ownership is enforced here and deliberately *not* on the Agent's path below. A
+     * customer may attach only their own booking, because the point of attaching one is
+     * that an Agent can then trust it without asking. An Agent may attach any reference,
+     * because investigating a travelling companion's flight is their job.
+     */
+    async linkOwnBooking(userId: string, bookingReference: string) {
+        const conversation = await this.repo.findLatestByUser(userId);
+        if (!conversation) throw new AppError(404, 'No conversation.', 'NOT_FOUND');
+
+        const reference = bookingReference.trim().toUpperCase();
+        if (!reference) throw new AppError(400, 'A booking reference is required.', 'VALIDATION_ERROR');
+        if (!await this.repo.bookingBelongsTo(reference, userId)) {
+            throw new AppError(400, 'That booking does not belong to this customer.', 'VALIDATION_ERROR');
+        }
+
+        await this.repo.linkBooking(conversation.id, reference, null);
+        return { linked: await this.repo.listLinkedBookings(conversation.id) };
+    }
+
+    /** Undo a choice, on one's own conversation only. */
+    async unlinkOwnBooking(userId: string, bookingReference: string) {
+        const conversation = await this.repo.findLatestByUser(userId);
+        if (!conversation) throw new AppError(404, 'No conversation.', 'NOT_FOUND');
+        await this.repo.unlinkBooking(conversation.id, bookingReference.trim().toUpperCase());
+        return { linked: await this.repo.listLinkedBookings(conversation.id) };
+    }
+
+    /** What an Agent sees attached to a chat they are reading. */
+    async linkedBookings(actor: SupportActor, conversationId: string) {
+        await this.assertCanAnswer(actor);
+        return { linked: await this.repo.listLinkedBookings(conversationId) };
+    }
+
+    /**
+     * An Agent attaching a trip.
+     *
+     * No ownership check, by design — see `linkOwnBooking`. The attachment records who
+     * made it, which is what lets the screen show an Agent's guess differently from a
+     * customer's own choice.
+     */
+    async linkBookingAsAgent(actor: SupportActor, conversationId: string, bookingReference: string) {
+        await this.assertCanAnswer(actor);
+        const row = await this.repo.findById(conversationId);
+        if (!row) throw new AppError(404, 'Conversation not found.', 'NOT_FOUND');
+        if (!canWriteIn(actor, row.assigned_admin_id)) {
+            throw new AppError(403, 'Only whoever holds this chat can attach a trip.', 'SUPPORT_NOT_YOURS');
+        }
+        const reference = bookingReference.trim().toUpperCase();
+        if (!reference) throw new AppError(400, 'A booking reference is required.', 'VALIDATION_ERROR');
+
+        await this.repo.linkBooking(conversationId, reference, actor.id);
+        return { linked: await this.repo.listLinkedBookings(conversationId) };
+    }
+
+    async unlinkBookingAsAgent(actor: SupportActor, conversationId: string, bookingReference: string) {
+        await this.assertCanAnswer(actor);
+        const row = await this.repo.findById(conversationId);
+        if (!row) throw new AppError(404, 'Conversation not found.', 'NOT_FOUND');
+        if (!canWriteIn(actor, row.assigned_admin_id)) {
+            throw new AppError(403, 'Only whoever holds this chat can detach a trip.', 'SUPPORT_NOT_YOURS');
+        }
+        await this.repo.unlinkBooking(conversationId, bookingReference.trim().toUpperCase());
+        return { linked: await this.repo.listLinkedBookings(conversationId) };
     }
 
     private async assertCanAnswer(actor: SupportActor): Promise<void> {
