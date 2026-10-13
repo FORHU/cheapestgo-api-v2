@@ -1,0 +1,243 @@
+name: Deploy Dev
+
+# FORHU/cheapest-go-app → the shared dev host (ap-southeast-1).
+#
+# One EC2 instance runs every project's dev environment. This workflow owns
+# only its own container; it cannot touch another project's, and the deploy
+# role cannot reach any host but this one.
+#
+# BEFORE THE FIRST RUN
+#   1. Repository variable:
+#        AWS_DEV_DEPLOY_ROLE_ARN = arn:aws:iam::617163942417:role/forhu-deploy
+#      A new name on purpose: AWS_DEPLOY_ROLE_ARN already points at production
+#      in several repos, and in gate-closes-api it switches the deploy target.
+#   2. Check APP_PORT against this repo's Dockerfile — it is the port the
+#      process listens on inside the container. HOST_PORT is allocated per
+#      project and must not change; see /etc/caddy/sites/00-PORTS.md.
+#   3. Put this project's own secrets in the `dev` environment, and list them
+#      in the "Publish project env" step. DATABASE_URL, REDIS_URL and
+#      RABBITMQ_URL come from the host — do NOT set them here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        # No default: this project deploys from `staging`, not the default branch,
+        # and a hardcoded value fetches a branch that may not exist, failing in
+        # checkout before anything is built. Blank falls back to github.ref_name.
+        description: "Branch, tag or SHA to deploy (use: staging)"
+        required: false
+  # Uncomment once a dev branch exists and the team wants push-to-deploy.
+  # push:
+  #   branches: [dev]
+
+concurrency:
+  group: forhu-dev-cheapestgo
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-southeast-1
+  ACCOUNT_ID: "617163942417"
+  INSTANCE_ID: i-0f95a93145ea25e7a
+  ECR_REPOSITORY: cheapestgo-v2-api
+  CONTAINER: cheapestgo-v2-api
+  NETWORK: forhu-dev
+  HOST_PORT: "4041"
+  APP_PORT: "4000"
+  ENV_PARAM: /forhu-dev/cheapestgo-v2-api/env
+  SHARED_ENV: /opt/forhu-dev/credentials/cheapestgo.env
+  MERGED_ENV: /opt/forhu-dev/cheapestgo-v2-api.env
+
+jobs:
+  deploy:
+    name: Build and deploy (cheapestgo dev)
+    # Native arm64: the host is Graviton. An image built on ubuntu-latest is
+    # amd64, pulls cleanly, then dies with "exec format error". Do not
+    # cross-build under QEMU — Node and Prisma builds take hours and look hung.
+    runs-on: ubuntu-24.04-arm
+    environment: staging
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref_name }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEV_DEPLOY_ROLE_ARN || 'arn:aws:iam::617163942417:role/forhu-deploy' }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          # dev- prefix so a dev image can never be mistaken for, or overwrite,
+          # a production tag in the same ECR repository.
+          echo "tag=dev-$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "registry=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> "$GITHUB_OUTPUT"
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
+            | docker login --username AWS --password-stdin "${{ steps.tag.outputs.registry }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/arm64
+          provenance: false
+          tags: ${{ steps.tag.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+
+      # This project's own secrets only. Anything unset is omitted rather than
+      # written empty: an empty value looks configured and silently disables
+      # whatever reads it, which is how three features were found dead on the
+      # UK stack.
+      - name: Publish project env to Parameter Store
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          DUFFEL_ACCESS_TOKEN: ${{ secrets.DUFFEL_ACCESS_TOKEN }}
+          DUFFEL_TOKEN: ${{ secrets.DUFFEL_TOKEN }}
+          EXCHANGE_RATES_API_KEY: ${{ secrets.EXCHANGE_RATES_API_KEY }}
+          FUNCTIONS_SECRET: ${{ secrets.FUNCTIONS_SECRET }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          MOBILE_API_KEY: ${{ secrets.MOBILE_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          BRAND_EMAIL: ${{ vars.BRAND_EMAIL }}
+          BRAND_NAME: ${{ vars.BRAND_NAME }}
+          CHAT_WONDER_API_URL: ${{ vars.CHAT_WONDER_API_URL }}
+          DUFFEL_BALANCE_ALERT_THRESHOLD: ${{ vars.DUFFEL_BALANCE_ALERT_THRESHOLD }}
+          DUFFEL_BALANCE_CHECK: ${{ vars.DUFFEL_BALANCE_CHECK }}
+          FLIGHT_PRICE_TOLERANCE: ${{ vars.FLIGHT_PRICE_TOLERANCE }}
+          INTERNAL_API_URL: ${{ vars.INTERNAL_API_URL }}
+          MOBILE_GUEST_USER_ID: ${{ vars.MOBILE_GUEST_USER_ID }}
+          NEXT_PUBLIC_BRAND_EMAIL: ${{ vars.NEXT_PUBLIC_BRAND_EMAIL }}
+          NEXT_PUBLIC_BRAND_NAME: ${{ vars.NEXT_PUBLIC_BRAND_NAME }}
+          SITE_URL: ${{ vars.SITE_URL }}
+          STRIPE_EXPECTED_ACCOUNT: ${{ vars.STRIPE_EXPECTED_ACCOUNT }}
+          SUPPORT_ATTACHMENTS_BUCKET: ${{ vars.SUPPORT_ATTACHMENTS_BUCKET }}
+          TRANSLATION_BASE_URL: ${{ vars.TRANSLATION_BASE_URL }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          # NODE_ENV=production because the image runs a built bundle. PORT must
+          # match APP_PORT above and the Dockerfile's EXPOSE, or Caddy proxies to
+          # a port nothing listens on.
+          printf 'NODE_ENV=production\n'            > env.tmp
+          printf 'PORT=%s\n' '${{ env.APP_PORT }}' >> env.tmp
+          printf 'AWS_REGION=%s\n' '${{ env.AWS_REGION }}' >> env.tmp
+
+          # Hotel suppliers are deliberately absent: TRAVELGATE*, TGX_*, ETG_*,
+          # RATEHAWK_*, ONDA_* and OTV_*. Unlike Duffel and Mystifly they have no
+          # sandbox, and this codebase has no dry-run flag — the only mode
+          # switches anywhere are MYSTIFLY_ENV and NODE_ENV. Live keys here would
+          # mean a dev tester can create a real reservation at a real hotel, with
+          # nothing but their restraint in the way. Hotel search and booking are
+          # therefore inert on dev until someone adds a booking guard to the
+          # commit path.
+          #
+          # Written only when set. `add` returns 0 on purpose: under `set -e` a
+          # bare `[ -n "$x" ] && printf ...` aborts the step on the first empty
+          # value, which with this many optional keys is a certainty.
+          add() { [ -n "${2:-}" ] && printf '%s=%s\n' "$1" "$2" >> env.tmp; return 0; }
+
+          add BRAND_EMAIL                        "${BRAND_EMAIL:-}"
+          add BRAND_NAME                         "${BRAND_NAME:-}"
+          add CHAT_WONDER_API_URL                "${CHAT_WONDER_API_URL:-}"
+          add CRON_SECRET                        "${CRON_SECRET:-}"
+          add DUFFEL_ACCESS_TOKEN                "${DUFFEL_ACCESS_TOKEN:-}"
+          add DUFFEL_BALANCE_ALERT_THRESHOLD     "${DUFFEL_BALANCE_ALERT_THRESHOLD:-}"
+          add DUFFEL_BALANCE_CHECK               "${DUFFEL_BALANCE_CHECK:-}"
+          add DUFFEL_TOKEN                       "${DUFFEL_TOKEN:-}"
+          add EXCHANGE_RATES_API_KEY             "${EXCHANGE_RATES_API_KEY:-}"
+          add FLIGHT_PRICE_TOLERANCE             "${FLIGHT_PRICE_TOLERANCE:-}"
+          add FUNCTIONS_SECRET                   "${FUNCTIONS_SECRET:-}"
+          add GOOGLE_PLACES_API_KEY              "${GOOGLE_PLACES_API_KEY:-}"
+          add INTERNAL_API_URL                   "${INTERNAL_API_URL:-}"
+          add MOBILE_API_KEY                     "${MOBILE_API_KEY:-}"
+          add MOBILE_GUEST_USER_ID               "${MOBILE_GUEST_USER_ID:-}"
+          add NEXT_PUBLIC_BRAND_EMAIL            "${NEXT_PUBLIC_BRAND_EMAIL:-}"
+          add NEXT_PUBLIC_BRAND_NAME             "${NEXT_PUBLIC_BRAND_NAME:-}"
+          add RESEND_API_KEY                     "${RESEND_API_KEY:-}"
+          add SITE_URL                           "${SITE_URL:-}"
+          add STRIPE_EXPECTED_ACCOUNT            "${STRIPE_EXPECTED_ACCOUNT:-}"
+          add SUPPORT_ATTACHMENTS_BUCKET         "${SUPPORT_ATTACHMENTS_BUCKET:-}"
+          add TRANSLATION_BASE_URL               "${TRANSLATION_BASE_URL:-}"
+
+          aws ssm put-parameter \
+            --name "${{ env.ENV_PARAM }}" \
+            --type SecureString --overwrite \
+            --value "file://env.tmp" \
+            --region "${{ env.AWS_REGION }}" > /dev/null
+          rm -f env.tmp
+
+      - name: Deploy via SSM
+        id: send
+        env:
+          REGISTRY: ${{ steps.tag.outputs.registry }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          IMAGE="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${TAG}"
+
+          COMMANDS=(
+            "set -euo pipefail"
+            "cat ${{ env.SHARED_ENV }} > ${{ env.MERGED_ENV }}"
+            "aws ssm get-parameter --name ${{ env.ENV_PARAM }} --with-decryption --region ${{ env.AWS_REGION }} --query Parameter.Value --output text >> ${{ env.MERGED_ENV }}"
+            "chmod 600 ${{ env.MERGED_ENV }}"
+            "aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${REGISTRY}"
+            "docker container prune -f || true"
+            "docker image prune -af || true"
+            "docker pull --platform linux/arm64 ${IMAGE}"
+            "docker rm -f ${{ env.CONTAINER }} 2>/dev/null || true"
+            "docker run -d --name ${{ env.CONTAINER }} --restart unless-stopped --platform linux/arm64 --network ${{ env.NETWORK }} --env-file ${{ env.MERGED_ENV }} -p 127.0.0.1:${{ env.HOST_PORT }}:${{ env.APP_PORT }} ${IMAGE}"
+          )
+
+          # jq builds the JSON, so a quote inside any command cannot break it.
+          PARAMS=$(printf '%s\n' "${COMMANDS[@]}" | jq -R . | jq -sc '{commands: .}')
+
+          CMD_ID=$(aws ssm send-command \
+            --region "${{ env.AWS_REGION }}" \
+            --instance-ids "${{ env.INSTANCE_ID }}" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy ${{ env.CONTAINER }} ${TAG}" \
+            --timeout-seconds 900 \
+            --parameters "${PARAMS}" \
+            --query Command.CommandId --output text)
+
+          echo "command_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+          echo "SSM command: $CMD_ID"
+
+      - name: Wait for the deploy
+        run: |
+          set -uo pipefail
+          STATUS=Pending
+          for i in $(seq 1 90); do
+            STATUS=$(aws ssm get-command-invocation \
+              --region "${{ env.AWS_REGION }}" \
+              --command-id "${{ steps.send.outputs.command_id }}" \
+              --instance-id "${{ env.INSTANCE_ID }}" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            echo "status: $STATUS"
+            case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            sleep 10
+          done
+
+          aws ssm get-command-invocation \
+            --region "${{ env.AWS_REGION }}" \
+            --command-id "${{ steps.send.outputs.command_id }}" \
+            --instance-id "${{ env.INSTANCE_ID }}" \
+            --query '[StandardOutputContent,StandardErrorContent]' --output text
+
+          [ "$STATUS" = "Success" ] || { echo "::error::deploy $STATUS"; exit 1; }
