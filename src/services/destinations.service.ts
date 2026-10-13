@@ -109,7 +109,7 @@ function matchCountries(query: string): AutocompleteResult[] {
 
 /** Title-case an alias key for display: 'clark freeport' -> 'Clark Freeport'. */
 function titleCaseAlias(alias: string): string {
-    return alias.replace(/(^|[\s\-])([a-z])/g, (_m, sep, ch) => sep + ch.toUpperCase());
+    return alias.replace(/(^|[\s-])([a-z])/g, (_m, sep, ch) => sep + ch.toUpperCase());
 }
 
 /**
