@@ -121,6 +121,7 @@ jobs:
           FLIGHT_PRICE_TOLERANCE: ${{ vars.FLIGHT_PRICE_TOLERANCE }}
           INTERNAL_API_URL: ${{ vars.INTERNAL_API_URL }}
           MOBILE_GUEST_USER_ID: ${{ vars.MOBILE_GUEST_USER_ID }}
+          API_URL: ${{ vars.API_URL }}
           NEXT_PUBLIC_BRAND_EMAIL: ${{ vars.NEXT_PUBLIC_BRAND_EMAIL }}
           NEXT_PUBLIC_BRAND_NAME: ${{ vars.NEXT_PUBLIC_BRAND_NAME }}
           SITE_URL: ${{ vars.SITE_URL }}
@@ -152,6 +153,12 @@ jobs:
           # value, which with this many optional keys is a certainty.
           add() { [ -n "${2:-}" ] && printf '%s=%s\n' "$1" "$2" >> env.tmp; return 0; }
 
+          # config.ts defaults API_URL to http://localhost:4000, and the Google OAuth
+          # redirect_uri is built from it — unset, Google is told to send the browser
+          # back to the container's own localhost and sign-in dies there. The dev host
+          # serves the app and the API from one origin, /api/v2 proxied to this
+          # container, so SITE_URL is the right fallback when no API_URL var is set.
+          add API_URL                            "${API_URL:-${SITE_URL:-}}"
           add BRAND_EMAIL                        "${BRAND_EMAIL:-}"
           add BRAND_NAME                         "${BRAND_NAME:-}"
           add CHAT_WONDER_API_URL                "${CHAT_WONDER_API_URL:-}"
