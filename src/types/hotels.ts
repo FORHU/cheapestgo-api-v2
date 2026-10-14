@@ -1,5 +1,7 @@
 // ─── Hotel search types ───────────────────────────────────────────────────────
 
+export type DestinationRung = 'city' | 'district' | 'poi' | 'province' | 'country';
+
 export interface HotelSearchParams {
     checkin: string;
     checkout: string;
@@ -13,12 +15,37 @@ export interface HotelSearchParams {
     countryCode?: string;
     hotelCode?: string;
     rooms?: number;
+    rung?: DestinationRung;
+    lat?: number;
+    lng?: number;
+    bbox?: [number, number, number, number];
+    /**
+     * The rung the traveller actually picked, kept after `rung` is downgraded to 'city'.
+     *
+     * A sub-area — a London borough, a Paris arrondissement, a Tokyo ku — has to be *searched*
+     * as its parent city, because OTV serves only the City rung (ADR-0006). Without a second
+     * field the downgrade erases the fact that the traveller asked for somewhere smaller, and
+     * the answer comes back as the whole city. 'city' is never a sub-area: a city's own box is
+     * tighter than its real hotel spread (Jeju's excludes Seogwipo, 27km out), which is what
+     * the radius is for.
+     */
+    areaRung?: DestinationRung;
 }
 
 export interface HotelSearchResult {
-    data: HotelListing[];
-    allMappable: HotelListing[];
+    data: any[];
+    allMappable: any[];
     totalCount: number;
+    /**
+     * The supplier did not finish: it timed out mid-answer, or some of the hotel-code
+     * batches never came back. The results are real but incomplete, and asking again may
+     * collect the rest.
+     *
+     * Absent or false means the answer is whole. A slow answer is not a truncated one —
+     * a destination search that takes 17s and returns 264 hotels finished, and re-asking it
+     * returns the same 264 for a second round of supplier requests.
+     */
+    truncated?: boolean;
 }
 
 export interface HotelListing {
@@ -122,7 +149,9 @@ export interface BookingPolicySnapshot {
     earlyDepartureFee: number;
     freeCancelDeadline: string | null;
     tiers: PolicyTier[];
-    rawLiteapiResponse: Record<string, unknown>;
+    // The row also has `raw_liteapi_response`, a second audit blob left behind by the
+    // retired LiteAPI supplier. We write `raw_provider_response` and read neither — a
+    // cancellation is computed from the tiers, never from the blob. See CONTEXT.md.
     capturedAt: string;
 }
 
@@ -211,38 +240,10 @@ export interface AutocompleteResult {
     code?: string;
 }
 
-// ─── Pricing ─────────────────────────────────────────────────────────────────
-
-export const HOTEL_MARKUP  = 0.15;
-export const BUNDLE_MARKUP = 0.12;
-
-export interface MarkupResult {
-    originalPrice: number;
-    chargedPrice: number;
-    markupAmount: number;
-}
-
-export function applyMarkup(amount: number, rate: number): MarkupResult {
-    const chargedPrice = Math.round(amount * (1 + rate) * 100) / 100;
-    return {
-        originalPrice: amount,
-        chargedPrice,
-        markupAmount: chargedPrice - amount,
-    };
-}
-
-/**
- * Convert a decimal price to Stripe's integer unit for a given currency.
- * Zero-decimal currencies (JPY, KRW, etc.) pass through as-is.
- */
-const ZERO_DECIMAL_CURRENCIES = new Set([
-    'jpy', 'krw', 'vnd', 'idr', 'clp', 'gnf', 'mga', 'pyg', 'rwf', 'ugx',
-    'xaf', 'xof', 'bif', 'djf', 'kmf',
-]);
-
-export function toStripeAmount(amount: number, currency: string): number {
-    if (ZERO_DECIMAL_CURRENCIES.has(currency.toLowerCase())) {
-        return Math.round(amount);
-    }
-    return Math.round(amount * 100);
-}
+// Pricing lives in @/lib/pricing, not here.
+//
+// This file used to carry a second HOTEL_MARKUP, BUNDLE_MARKUP, applyMarkup and
+// toStripeAmount — all unimported, both rates hardcoded to 0 as "disabled", and a
+// zero-decimal currency list that disagreed with the real one. Nothing read them, so
+// nothing was broken; what they were was a trap for whoever reached for a markup helper
+// and found this one first.

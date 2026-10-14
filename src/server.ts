@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import './config'; // validates env vars on startup
 import app from './app';
 import { config } from './config';
@@ -6,10 +7,13 @@ import { prisma } from './lib/prisma';
 import { redis } from './lib/redis';
 
 async function main() {
-    await prisma.$connect();
-    logger.info('[db] connected');
+    await prisma.$connect()
+        .then(() => logger.info('[db] connected'))
+        .catch((err: any) => logger.warn('[db] unavailable — DB-dependent routes will fail', { err: err.message }));
 
-    await redis.connect();
+    await redis.connect().catch((err) => {
+        logger.warn('[redis] unavailable — caching disabled', { err: err.message });
+    });
 
     app.listen(config.PORT, () => {
         logger.info(`[server] running on port ${config.PORT} (${config.NODE_ENV})`);

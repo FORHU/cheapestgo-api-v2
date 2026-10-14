@@ -1,22 +1,39 @@
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
 import { FlightsController } from '@/controllers/flights.controller';
 import { requireAuth } from '@/middleware/auth.middleware';
 
 const router = Router();
 const ctrl   = new FlightsController();
 
-router.post('/search',          ctrl.search);
-router.post('/bags',            ctrl.bags);
-router.post('/seat-map',        ctrl.seatMap);
-router.post('/fare-rules',      ctrl.fareRules);
-router.post('/offer-refresh',   ctrl.offerRefresh);
-router.get( '/price-calendar',  ctrl.priceCalendar);
+router.post('/search',               ctrl.search);
+router.post('/bags',                 ctrl.bags);
+router.post('/seat-map',             ctrl.seatMap);
+router.post('/fare-rules',           ctrl.fareRules);
+router.post('/offer-refresh',        ctrl.offerRefresh);
+router.post('/revalidate',           ctrl.revalidate);
+router.get( '/price-calendar',       ctrl.priceCalendar);
+router.post('/price-calendar-live',  ctrl.priceCalendarLive);
+
+// Mystifly stubs — Supabase edge functions not available in v2 Express
+router.post('/trip-details',         ctrl.tripDetails);
+router.post('/ticket-display',       ctrl.ticketDisplay);
+router.post('/booking-note',         ctrl.bookingNote);
+router.post('/booking-notes',        ctrl.bookingNote);
 
 // Auth-protected
-router.post('/book',            requireAuth, ctrl.book);
-router.post('/confirm',         requireAuth, ctrl.confirm);
-router.get( '/booking-status',  requireAuth, ctrl.bookingStatus);
-router.post('/cancel-quote',    requireAuth, ctrl.cancelQuote);
-router.post('/cancel-booking',  requireAuth, ctrl.cancelBooking);
+router.post('/book',                 requireAuth, ctrl.book);
+router.post('/confirm',              requireAuth, ctrl.confirm);
+router.get( '/booking-status',       requireAuth, ctrl.bookingStatus);
+router.post('/cancel-quote',         requireAuth, ctrl.cancelQuote);
+router.post('/cancel-booking',       requireAuth, ctrl.cancelBooking);
+
+// ── Mystifly-only actions (stubs until live Mystifly key is active) ───────────
+const mystiflyNotLive = (_req: Request, res: Response) =>
+    res.status(503).json({ error: 'Mystifly operations not yet available', code: 'MYSTIFLY_NOT_LIVE' });
+
+router.post('/mystifly/void-quote',  requireAuth, mystiflyNotLive);
+router.post('/mystifly/void',        requireAuth, mystiflyNotLive);
+router.post('/mystifly/reissue',     requireAuth, mystiflyNotLive);
+router.post('/mystifly/refund',      requireAuth, mystiflyNotLive);
 
 export default router;

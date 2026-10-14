@@ -4,8 +4,10 @@ import { logger } from '@/lib/logger';
 
 export const redis = new Redis(config.REDIS_URL, {
     lazyConnect: true,
-    retryStrategy: (times) => Math.min(times * 50, 2000),
+    enableOfflineQueue: false,
+    retryStrategy: () => null, // no retries — fail fast, server.ts logs the result
 });
 
-redis.on('error', (err) => logger.error('[redis] connection error', { err }));
-redis.on('connect', () => logger.info('[redis] connected'));
+// Must listen to suppress Node's unhandled-error crash; server.ts owns the log.
+redis.on('error', () => {});
+redis.on('connect', () => { logger.info('[redis] connected'); });

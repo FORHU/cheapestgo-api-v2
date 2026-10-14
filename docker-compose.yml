@@ -1,0 +1,63 @@
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "4001:4000"
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      # Override .env so the API container reaches postgres/redis via Docker network names
+      # rather than localhost (which resolves to the container itself inside Docker).
+      DATABASE_URL: postgresql://cheapestgo:cheapestgo@postgres:5432/cheapestgo
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cheapestgo
+      POSTGRES_PASSWORD: cheapestgo
+      POSTGRES_DB: cheapestgo
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cheapestgo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  cron:
+    build: ./docker/cron
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      APP_URL: ${APP_URL:-http://api:4000}
+      CRON_SECRET: ${CRON_SECRET}
+      FUNCTIONS_SECRET: ${FUNCTIONS_SECRET}
+
+volumes:
+  postgres_data:
+  redis_data:

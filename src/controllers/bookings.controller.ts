@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { AppError } from '@/middleware/error.middleware';
 import { z } from 'zod';
 import { BookingsService } from '@/services/bookings.service';
 
@@ -11,20 +12,35 @@ export class BookingsController {
             const { type } = z.object({
                 type: z.enum(['flight', 'hotel']).optional(),
             }).parse(req.query as any);
-            const bookings = await svc.list(req.user!.sub, type);
-            res.json({ bookings });
+            const result = await svc.list(req.user!.sub, type);
+            res.json(result);
         } catch (err) { next(err); }
     };
 
     details = async (req: Request, res: Response, next: NextFunction) => {
         try {
             const { id } = z.object({ id: z.string() }).parse(req.params);
-            const booking = await svc.getDetails(id, req.user!.sub);
-            res.json({ booking });
+            const result = await svc.getDetails(id, req.user!.sub);
+            res.json(result);
         } catch (err) { next(err); }
     };
 
     // ── Saved trips ───────────────────────────────────────────────────────────
+
+    amend = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const body = req.body ?? {};
+            if (!body.bookingId) throw new AppError(400, 'bookingId is required', 'VALIDATION_ERROR');
+            res.json(await svc.amend(req.user!.sub, body));
+        } catch (err) { next(err); }
+    };
+
+    share = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { email } = z.object({ email: z.string().email() }).parse(req.body ?? {});
+            res.json(await svc.share(req.user!.sub, req.params.id, email));
+        } catch (err) { next(err); }
+    };
 
     getSavedTrips = async (req: Request, res: Response, next: NextFunction) => {
         try {

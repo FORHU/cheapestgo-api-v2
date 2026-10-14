@@ -27,13 +27,10 @@ export interface BookingPolicySnapshot {
     earlyDepartureFee: number;
     freeCancelDeadline: string | null;
     tiers: PolicyTier[];
-    rawLiteapiResponse: Record<string, unknown>;
+    // The row also has `raw_liteapi_response`, a second audit blob left behind by the
+    // retired LiteAPI supplier. We write `raw_provider_response` and read neither — a
+    // cancellation is computed from the tiers, never from the blob. See CONTEXT.md.
     capturedAt: string;
-}
-
-export interface NormalizedPolicy {
-    snapshot: Omit<BookingPolicySnapshot, 'id' | 'tiers' | 'capturedAt'>;
-    tiers: Omit<PolicyTier, 'id'>[];
 }
 
 export interface CancellationFeeResult {
@@ -243,37 +240,6 @@ export function buildPolicySummary(
     if (noShowPenalty > 0)   parts.push(`No-show penalty: ${noShowPenalty} ${currency}`);
     if (earlyDepartureFee > 0) parts.push(`Early departure fee: ${earlyDepartureFee} ${currency}`);
     return parts.join('. ');
-}
-
-// ─── Public: normalizeLiteApiPolicy ──────────────────────────────────────────
-
-export function normalizeLiteApiPolicy(
-    bookingId: string,
-    cancellationPolicies: RawPolicy,
-    rawResponse: Record<string, unknown>,
-    currency = 'PHP',
-): NormalizedPolicy {
-    const policyType        = classifyPolicyType(cancellationPolicies);
-    const tiers             = extractTiers(cancellationPolicies, currency);
-    const freeCancelDeadline = findFreeCancelDeadline(tiers);
-    const noShowPenalty     = detectNoShowPenalty(cancellationPolicies);
-    const earlyDepartureFee = detectEarlyDepartureFee(cancellationPolicies);
-    const summary           = buildPolicySummary(policyType, tiers, freeCancelDeadline, noShowPenalty, earlyDepartureFee, currency);
-
-    return {
-        snapshot: {
-            bookingId,
-            policyType,
-            summary,
-            refundableTag:       safeRefundableTag(cancellationPolicies),
-            hotelRemarks:        safeHotelRemarks(cancellationPolicies),
-            noShowPenalty,
-            earlyDepartureFee,
-            freeCancelDeadline,
-            rawLiteapiResponse:  rawResponse,
-        },
-        tiers,
-    };
 }
 
 // ─── Public: calculateCancellationFee ────────────────────────────────────────

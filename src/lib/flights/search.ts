@@ -8,7 +8,8 @@
  */
 
 import { prisma } from '@/lib/prisma';
-import { FlightSearchParams, FlightResult, FlightOffer } from '@/types/flights';
+import { FlightSearchParams, FlightOffer, FlightResult } from '@/types/flights';
+import { PROVIDER_CEILING_MS } from '@/lib/flights/searchBudget';
 import { searchDuffel, normalizedToFlightOffer } from './duffel';
 // import { searchMystiflyV2 } from './mystifly'; // re-enable when live Mystifly key available
 
@@ -21,29 +22,41 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, name: string): Pr
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
+export interface FlightSearchOutcome {
+    offers: FlightOffer[];
+    /**
+     * Providers that tried and could not answer. An empty `offers` with a name in here is
+     * a broken search; an empty `offers` with nothing in here is a route nobody flies.
+     * Presented identically, an outage reads to the traveller as "there are no flights",
+     * with nothing to retry.
+     */
+    failedProviders: string[];
+}
+
+/**
+ * Every search goes straight to the providers. Offers are never served from the database.
+ *
+ * A stored result carries the provider's offer id, and those ids are quotes with an expiry —
+ * a Duffel offer dies roughly 20–30 minutes after it is issued. Replaying a stored row hands
+ * the traveller a price whose offer no longer exists at the supplier: the booking gets as far
+ * as order placement, fails with `offer_no_longer_available`, and the refresh re-quotes from
+ * scratch onto a different price. A cache hit bought a faster search at the cost of an
+ * unbookable one.
+ *
+ * `flight_results_cache` is still written below — the price calendar reads it as price
+ * history — it just never answers a search.
+ */
 export async function searchFlights(params: FlightSearchParams): Promise<FlightOffer[]> {
-    const TIMEOUT_MS = 12_000;
-    // Cache TTL: 10 minutes in production, 0 (disabled) in development by default.
-    // Override via env: FLIGHT_CACHE_TTL_MINUTES
-    const TTL_MINUTES = parseInt(
-        process.env.FLIGHT_CACHE_TTL_MINUTES ?? (process.env.NODE_ENV === 'production' ? '10' : '0'),
-        10,
-    );
+    return (await searchFlightsWithStatus(params)).offers;
+}
 
-    // 1. Check cache first
-    const cachedResults = await getExistingCachedResults(params, TTL_MINUTES);
-    if (cachedResults && cachedResults.length > 0) {
-        // Strip inactive providers (Mystifly disabled at launch)
-        const bookable = cachedResults.filter(r =>
-            r.provider !== 'mystifly' && r.provider !== 'mystifly_v2',
-        );
-        console.log(`[Cache] Hit for ${params.origin}->${params.destination}: ${cachedResults.length} total, ${bookable.length} bookable`);
-        if (bookable.length > 0) {
-            return bookable.map(r => normalizedToFlightOffer(r as any, params.returnDate ? 'round-trip' : 'one-way'));
-        }
-    }
+export async function searchFlightsWithStatus(params: FlightSearchParams): Promise<FlightSearchOutcome> {
+    // A circuit breaker for an adapter that ignores its own deadline, derived from the retry
+    // ladder so it can never again land ON one attempt's timeout and cut the retries off
+    // before they can deliver — which is what made a slow first attempt read as no flights.
+    const TIMEOUT_MS = PROVIDER_CEILING_MS;
 
-    // 2. Cache miss — create search record
+    // Create the search record
     let searchId = params.searchId;
     if (!searchId) {
         const saved = await saveSearch(params).catch(() => null);
@@ -64,8 +77,10 @@ export async function searchFlights(params: FlightSearchParams): Promise<FlightO
         .filter((r): r is PromiseFulfilledResult<FlightResult[]> => r.status === 'fulfilled')
         .flatMap(r => r.value);
 
+    const failedProviders: string[] = [];
     settlement.forEach((r, i) => {
         if (r.status === 'rejected') {
+            failedProviders.push(providers[i].name);
             console.error(`[Search] ${providers[i].name} failed:`, r.reason?.message ?? r.reason);
         }
     });
@@ -80,54 +95,16 @@ export async function searchFlights(params: FlightSearchParams): Promise<FlightO
         );
     }
 
-    return allResults.map(r => normalizedToFlightOffer(r as any, params.returnDate ? 'round-trip' : 'one-way'));
+    return {
+        offers: allResults.map(r => normalizedToFlightOffer(r as any, params.returnDate ? 'round-trip' : 'one-way')),
+        failedProviders,
+    };
 }
 
 // ─── Cache helpers ────────────────────────────────────────────────────────────
 
-async function getExistingCachedResults(params: FlightSearchParams, ttlMinutes: number): Promise<any[] | null> {
-    if (ttlMinutes === 0) return null;
-
-    const cutoff = new Date(Date.now() - ttlMinutes * 60 * 1000);
-
-    const recentSearch = await prisma.flight_searches.findFirst({
-        where: {
-            origin: params.origin,
-            destination: params.destination,
-            departure_date: new Date(params.departureDate),
-            cabin_class: params.cabinClass,
-            adults: params.adults,
-            children: params.children,
-            infants: params.infants,
-            return_date: params.returnDate ? new Date(params.returnDate) : null,
-            created_at: { gte: cutoff },
-        },
-        orderBy: { created_at: 'desc' },
-    });
-
-    if (!recentSearch) return null;
-
-    const results = await prisma.flight_results_cache.findMany({
-        where: { search_id: recentSearch.id },
-    });
-
-    if (!results.length) return null;
-
-    return results.map(r => ({
-        provider: r.provider,
-        offer_id: r.offer_id,
-        price: Number(r.price),
-        currency: r.currency,
-        airline: r.airline,
-        departure_time: r.departure_time.toISOString(),
-        arrival_time: r.arrival_time.toISOString(),
-        duration: r.duration,
-        stops: r.stops,
-        remaining_seats: r.remaining_seats,
-        refundable: r.refundable,
-        raw: r.raw,
-    }));
-}
+// The cache *reader* was removed: `flight_results_cache` is written below for the price
+// calendar's history and never answers a search — see searchFlightsWithStatus for why.
 
 export async function saveSearch(params: FlightSearchParams) {
     return prisma.flight_searches.create({

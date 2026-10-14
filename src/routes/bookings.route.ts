@@ -3,13 +3,21 @@ import { BookingsController } from '@/controllers/bookings.controller';
 import { requireAuth } from '@/middleware/auth.middleware';
 
 const router = Router();
-const ctrl   = new BookingsController();
+const ctrl = new BookingsController();
 
 // All booking routes require auth
 router.use(requireAuth);
 
-router.get( '/',                    ctrl.list);
-router.get( '/:id',                 ctrl.details);
+router.get('/', ctrl.list);
+router.get('/:id', ctrl.details);
+
+// ── POST /amend ───────────────────────────────────────────────────────────────
+// Contact details and special requests on a hotel booking. Local only — see
+// BookingsService.amend.
+router.post('/amend', ctrl.amend);
+
+// A traveller forwarding their own confirmation to whoever they are travelling with.
+router.post('/:id/share', ctrl.share);
 
 // Saved trips
 router.get( '/saved-trips',         ctrl.getSavedTrips);

@@ -49,12 +49,27 @@ async function createSession(): Promise<string> {
 
 function clearSessionCache() { sessionCache = null; }
 
+/** The demo host. Also the default, so an unconfigured environment cannot reach live. */
+const MYSTIFLY_DEMO_HOST = 'https://restapidemo.myfarebox.com';
+
 function getMystiflyBaseUrl(): string {
-    return (config as any).MYSTIFLY_BASE_URL || 'https://restapidemo.myfarebox.com';
+    return (config as any).MYSTIFLY_BASE_URL || MYSTIFLY_DEMO_HOST;
 }
 
-function getMystiflyTarget(): 'Production' | 'Test' {
-    return ((config as any).MYSTIFLY_ENV || '').toLowerCase() === 'test' ? 'Test' : 'Production';
+/**
+ * The `Target` Mystifly is told to run the request against.
+ *
+ * Derived from the host unless `MYSTIFLY_ENV` says otherwise. It used to default to
+ * `Production` on its own, so an environment with no `MYSTIFLY_ENV` set — which is every
+ * environment here — sent `Target: Production` to the *demo* host. Harmless while the
+ * host stays the demo one, and a live booking the first time `MYSTIFLY_BASE_URL` was
+ * pointed anywhere else. The two settings describe one decision, so one of them derives.
+ */
+export function getMystiflyTarget(): 'Production' | 'Test' {
+    const declared = ((config as any).MYSTIFLY_ENV || '').toLowerCase();
+    if (declared === 'test') return 'Test';
+    if (declared === 'production') return 'Production';
+    return getMystiflyBaseUrl() === MYSTIFLY_DEMO_HOST ? 'Test' : 'Production';
 }
 
 // ─── Core request ─────────────────────────────────────────────────────────────
