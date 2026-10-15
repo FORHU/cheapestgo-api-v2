@@ -354,6 +354,21 @@ export class HotelBookingLifecycleService {
         }
     }
 
+    /** The supplier refused: the booking is exactly what it was, and so is the guest's money. */
+    cancelRefused(reference: string, message: string, actor: LifecycleActor) {
+        return this.repo.transition(reference, 'CANCEL_REQUESTED', 'CONFIRMED', {
+            actor, reason: `supplier refused the cancellation: ${message.slice(0, 200)}`,
+        });
+    }
+
+    /** The supplier did not say, and could not be asked: a person finds out before money moves. */
+    cancelUnconfirmed(reference: string, message: string, actor: LifecycleActor) {
+        return this.repo.transition(reference, 'CANCEL_REQUESTED', 'NEEDS_REVIEW', {
+            actor, reason: 'supplier outcome unknown for the cancellation; nothing refunded',
+            patch: { failureCode: 'CANCEL_UNCONFIRMED', failureMessage: message },
+        });
+    }
+
     async recordCancelEnd(reference: string, legacyStatus: string, actor: LifecycleActor): Promise<void> {
         const from: HotelBookingStatus[] = ['CANCEL_REQUESTED'];
         switch (legacyStatus) {

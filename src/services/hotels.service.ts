@@ -3,6 +3,7 @@ import { hotelCountry } from '@/lib/geo/territories';
 import { fetchAmenitiesByDestination } from '@/lib/hotels/travelgatex';
 import { getHotelProvider, getHotelProviderById, isKnownProviderId } from '@/lib/hotels/providers/factory';
 import { toPrebookPolicyWire, toStoredPolicyWire } from '@/lib/hotels/providers/cancellationPolicy';
+import { isHotelProviderError } from '@/lib/hotels/providers/types';
 import type {
     BookGuest, HotelContent as ProviderHotelContent, HotelProvider, PrebookResult, ProviderBooking,
 } from '@/lib/hotels/providers/types';
@@ -1215,14 +1216,37 @@ export class HotelsService {
             const meta = booking.provider_metadata as any;
             const cancelHotelCode: string | undefined = meta?.hotelCode ||
                 (/^\d+$/.test(booking.property_name) ? booking.property_name : undefined);
+            const supplier = this.providerFor(booking.provider);
             try {
-                await this.providerFor(booking.provider).cancelBooking({
+                await supplier.cancelBooking({
                     clientRef:   bookingRef,
                     supplierRef: meta?.supplierRef,
                     hotelCode:   cancelHotelCode,
                 });
-            } catch (tgxErr: any) {
-                console.warn('[hotels.cancelBooking] TGX cancel failed (proceeding):', tgxErr.message?.slice(0, 200));
+            } catch (supplierErr: any) {
+                // This used to log "proceeding" and refund regardless, which refunds a guest whose
+                // room the supplier still holds — and bills us for. Only a supplier that says the
+                // reservation is gone lets the money move (ADR-0023: refusing is the safe direction).
+                const settled = await this.settleFailedSupplierCancel(supplier, supplierErr, bookingRef, meta?.supplierRef);
+                if (settled === 'refused') {
+                    console.warn('[hotels.cancelBooking] supplier refused:', supplierErr?.message?.slice(0, 200));
+                    await this.lifecycle.cancelRefused(bookingRef, supplierErr?.message ?? 'refused', 'browser');
+                    throw new AppError(
+                        409,
+                        'The hotel did not accept the cancellation, so your booking has not changed and you have not been refunded. Please contact support.',
+                        'CANCEL_REFUSED',
+                    );
+                }
+                if (settled === 'unknown') {
+                    console.error('[hotels.cancelBooking] supplier outcome unknown:', supplierErr?.message?.slice(0, 200));
+                    await this.lifecycle.cancelUnconfirmed(bookingRef, supplierErr?.message ?? 'unknown', 'browser');
+                    throw new AppError(
+                        502,
+                        'We could not confirm the cancellation with the hotel. Nothing has been refunded and your booking has not been changed — please check again shortly or contact support.',
+                        'CANCEL_UNCONFIRMED',
+                    );
+                }
+                // 'gone': the supplier no longer holds it, so the cancellation stands.
             }
         }
 
@@ -1411,6 +1435,43 @@ export class HotelsService {
                 history:       [],
             },
         };
+    }
+
+    /**
+     * What a failed supplier cancellation means for the booking.
+     *
+     *  - `gone`     the supplier no longer holds it, so the cancellation stands and money may move;
+     *  - `refused`  it said no, and the reservation is still there;
+     *  - `unknown`  it did not say, and could not be asked.
+     *
+     * Only evidence that the reservation is gone is enough to say `gone`: a read-back that finds
+     * it cancelled, or a refusal that says it was already cancelled. OTV's own `alreadyCancelled`
+     * flag is a substring test for "cancel", which "cancellation is not permitted" satisfies, so it
+     * is trusted only alongside the words.
+     */
+    private async settleFailedSupplierCancel(
+        supplier: HotelProvider,
+        err: any,
+        bookingRef: string,
+        supplierRef?: string,
+    ): Promise<'gone' | 'refused' | 'unknown'> {
+        const message: string = err?.message ?? '';
+        const flagged = (err?.details?.cause ?? err)?.alreadyCancelled === true;
+        if (flagged && /already\s+(been\s+)?cancel/i.test(message)) return 'gone';
+
+        const ambiguous = !isHotelProviderError(err) || err.code === 'UNKNOWN_OUTCOME' || err.code === 'TIMEOUT'
+            || err.code === 'UNAVAILABLE';
+
+        if (ambiguous && supplier.capabilities.bookingRead && supplier.getBooking) {
+            try {
+                const found = await supplier.getBooking({ clientRef: bookingRef, supplierRef });
+                if (found?.status === 'CANCELLED') return 'gone';
+            } catch (readErr: any) {
+                console.warn('[hotels.cancelBooking] read-back failed:', readErr?.message);
+            }
+        }
+
+        return isHotelProviderError(err) && err.code === 'REJECTED' ? 'refused' : 'unknown';
     }
 
     // ── Cancel preview ──────────────────────────────────────────────────────

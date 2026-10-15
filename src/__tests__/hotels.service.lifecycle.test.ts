@@ -42,6 +42,7 @@ import { prisma } from '@/lib/prisma';
 import { HotelsService } from '@/services/hotels.service';
 import { HotelBookingLifecycleService } from '@/services/hotelBookingLifecycle.service';
 import { MockHotelProvider } from '@/lib/hotels/providers/mock/MockHotelProvider';
+import { HotelProviderError } from '@/lib/hotels/providers/types';
 import { InMemoryLifecycleRepo } from './helpers/inMemoryLifecycleRepo';
 
 const NOW  = Date.parse('2026-10-14T00:00:00Z');
@@ -413,6 +414,13 @@ describe('cancel preview', () => {
     });
 
     it('is the figure the real cancellation then refunds', async () => {
+        // A real cancellation is of a booking the supplier holds: book it first.
+        vi.mocked(prisma.bookings.findFirst).mockResolvedValueOnce(null);
+        await service.confirmBooking(params(await quote()));
+        vi.clearAllMocks();
+        vi.mocked(prisma.bookings.findFirst).mockResolvedValue(row as never);
+        vi.mocked(prisma.bookings.update).mockResolvedValue({} as never);
+
         vi.useFakeTimers({ now: BOOKED_AT, toFake: ['Date'] });
         try {
             const preview: any = await service.getCancelPreview(REF, USER);
@@ -489,5 +497,107 @@ describe('what the traveller supplied reaches the booking', () => {
 
         const booked = mock.calls.find((c) => c.method === 'book')!.input as { guests: Array<{ age: number; type: string }> };
         expect(booked.guests.at(-1)).toMatchObject({ type: 'child', age: 0 });
+    });
+});
+
+describe('a supplier that will not cancel', () => {
+    // A confirmed booking, with the money already taken, that the guest now wants to cancel.
+    const row = () => ({
+        booking_id: REF, user_id: USER, payment_intent_id: PI, status: 'confirmed', provider: 'mock',
+        provider_metadata: { hotelCode: 'MOCK-MNL-001', supplierRef: 'MOCKSUP-000001' },
+        property_name: 'Bayside Grand Manila', total_price: 264, currency: 'USD',
+        check_in: new Date('2026-11-20T00:00:00Z'),
+    });
+
+    /** Books, then sets the world up for a cancellation and forgets what the booking touched. */
+    async function booked(status = 'confirmed') {
+        await service.confirmBooking(params(await quote()));
+        vi.clearAllMocks();
+        repo.log.length = 0;
+
+        vi.mocked(prisma.bookings.findFirst).mockResolvedValue({ ...row(), status } as never);
+        vi.mocked(prisma.bookings.update).mockResolvedValue({} as never);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 26400 } as never);
+        vi.mocked(stripe.refunds.create).mockResolvedValue({ id: 're_1', status: 'succeeded' } as never);
+        // Freshly booked, so the policy is free and a refund is owed if the cancellation goes through.
+        (service as any).repo.findPolicySnapshot.mockResolvedValue({
+            policyType: 'free_cancellation', freeCancelDeadline: new Date('2099-01-01T00:00:00Z'), tiers: [],
+        });
+    }
+
+    const cancel = () => service.cancelBooking({ bookingRef: REF, userId: USER, paymentIntentId: PI });
+    const nothingMoved = () => {
+        expect(stripe.refunds.create).not.toHaveBeenCalled();
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+        expect(prisma.bookings.update).not.toHaveBeenCalled();
+    };
+
+    it('does not refund a guest whose room the supplier still holds', async () => {
+        await booked();
+        mock.setScenario('cancel_rejected');
+
+        await expect(cancel()).rejects.toMatchObject({ status: 409, code: 'CANCEL_REFUSED' });
+
+        nothingMoved();
+        // Back where it was: still confirmed, still theirs.
+        expect(repo.status(REF)).toBe('CONFIRMED');
+        expect(repo.path(REF)).toEqual(['CANCEL_REQUESTED', 'CONFIRMED']);
+    });
+
+    it('finishes the cancellation when an unanswered request is found to have gone through', async () => {
+        await booked();
+        mock.setScenario('cancel_timeout');   // the mock applies it, then loses the answer
+
+        const out: any = await cancel();
+
+        expect(out.success).toBe(true);
+        expect(stripe.refunds.create).toHaveBeenCalledTimes(1);
+        expect(repo.status(REF)).toBe('REFUNDED');
+    });
+
+    it('keeps the booking and the money, and asks for review, when it cannot be found out', async () => {
+        await booked();
+        (mock as any).capabilities = { bookingRead: false, providesContent: true };
+        mock.setScenario('cancel_timeout');
+
+        await expect(cancel()).rejects.toMatchObject({ status: 502, code: 'CANCEL_UNCONFIRMED' });
+
+        nothingMoved();
+        expect(repo.status(REF)).toBe('NEEDS_REVIEW');
+        expect(repo.records.get(REF)?.failureCode).toBe('CANCEL_UNCONFIRMED');
+    });
+
+    it('proceeds when the supplier says the booking is already cancelled', async () => {
+        await booked();
+        vi.spyOn(mock, 'cancelBooking').mockRejectedValue(
+            new HotelProviderError('REJECTED', 'Booking already cancelled', { provider: 'mock', cause: { alreadyCancelled: true } }),
+        );
+
+        const out: any = await cancel();
+
+        expect(out.success).toBe(true);
+        expect(stripe.refunds.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not read "cancellation not permitted" as "already cancelled"', async () => {
+        await booked();
+        // OTV's own flag is a substring test on "cancel", which this message satisfies.
+        vi.spyOn(mock, 'cancelBooking').mockRejectedValue(
+            new HotelProviderError('REJECTED', 'Cancellation is not permitted for this rate', { provider: 'mock', cause: { alreadyCancelled: true } }),
+        );
+
+        await expect(cancel()).rejects.toMatchObject({ code: 'CANCEL_REFUSED' });
+        nothingMoved();
+    });
+
+    it('does not ask the supplier again when only the refund is being retried', async () => {
+        await booked('cancelled_refund_failed');
+        const spy = vi.spyOn(mock, 'cancelBooking');
+
+        const out: any = await cancel();
+
+        expect(out.success).toBe(true);
+        expect(spy).not.toHaveBeenCalled();
+        expect(stripe.refunds.create).toHaveBeenCalledTimes(1);
     });
 });
