@@ -839,6 +839,8 @@ export class HotelsService {
             data: {
                 clientSecret:    paymentIntent.client_secret!,
                 paymentIntentId: paymentIntent.id,
+                // How a browser that loses the confirm response asks what became of it.
+                bookingReference,
                 // What the intent is for, so the payment step renders the figure it is about
                 // to confirm rather than one the browser worked out.
                 chargedTotal:    pricing.chargedPrice,

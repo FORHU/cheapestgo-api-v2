@@ -622,3 +622,20 @@ describe('HotelsService.cancelBooking()', () => {
         }));
     });
 });
+
+describe('HotelsService.createPayment() — the reference the browser can ask about', () => {
+    it('returns the booking reference, so a lost confirm response can still be followed up', async () => {
+        vi.mocked((service as any).repo.findPrebookQuote).mockResolvedValue({
+            gross: 300, currency: 'USD', expires_at: new Date(Date.now() + 600_000),
+        });
+        vi.mocked(stripe.paymentIntents.create).mockResolvedValue({ id: 'pi_new', client_secret: 'cs_new' } as any);
+
+        const out: any = await service.createPayment({
+            userId: USER_ID, prebookId: 'TGX:b260901!~|c260905!~|d10000352!~|hUS', amount: 300, currency: 'USD',
+        });
+
+        expect(out.data.bookingReference).toMatch(/^(CG|GG)-[0-9A-HJKMNP-TV-Z]{6}$/);
+        const metadata = vi.mocked(stripe.paymentIntents.create).mock.calls[0][0].metadata as Record<string, string>;
+        expect(out.data.bookingReference).toBe(metadata.bookingReference);
+    });
+});
