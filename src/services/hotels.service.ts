@@ -1,7 +1,12 @@
 import { HotelsRepository } from '@/repositories/hotels.repository';
 import { hotelCountry } from '@/lib/geo/territories';
-import { runTgxSearch as searchHotels } from '@/lib/hotels/search';
-import { quoteTgx, bookTgx, cancelTgx, fetchAmenitiesByDestination } from '@/lib/hotels/travelgatex';
+import { fetchAmenitiesByDestination } from '@/lib/hotels/travelgatex';
+import { getHotelProvider, getHotelProviderById, isKnownProviderId } from '@/lib/hotels/providers/factory';
+import { toPrebookPolicyWire, toStoredPolicyWire } from '@/lib/hotels/providers/cancellationPolicy';
+import type {
+    BookGuest, HotelContent as ProviderHotelContent, HotelProvider, PrebookResult, ProviderBooking,
+} from '@/lib/hotels/providers/types';
+import { toAppError } from '@/services/hotelProviderErrors';
 import { groupByRoomName } from '@/lib/hotels/property';
 import { ensureEtgContent } from '@/lib/hotels/etgContent';
 import { buildRoomContent, buildPolicySections, buildAdditionalInfo } from '@/lib/hotels/roomContent';
@@ -26,46 +31,6 @@ import { lockFx } from '@/lib/payments/fxLock';
 import { calculateCancellation } from '@/lib/policies/cancellationEngine';
 import { ExchangeRatesService } from '@/services/exchange-rates.service';
 import { createHash } from 'crypto';
-
-// âââ TGX prebook helpers âââââââââââââââââââââââââââââââââââââââââââââââââââââ
-
-function parseTgxOptionToken(token: string): { hotelCode: string | null; checkIn: string | null; checkOut: string | null; nationality: string } {
-    const segs: Record<string, string> = {};
-    const separator = token.includes('!~|') ? '!~|' : '[';
-    for (const seg of token.split(separator)) {
-        if (seg.length > 1) segs[seg[0]] = seg.slice(1);
-    }
-    const parseYYMMDD = (v?: string): string | null => {
-        if (!v || v.length !== 6) return null;
-        return `20${v.slice(0, 2)}-${v.slice(2, 4)}-${v.slice(4, 6)}`;
-    };
-    return { hotelCode: segs['d'] || null, checkIn: parseYYMMDD(segs['b']), checkOut: parseYYMMDD(segs['c']), nationality: segs['h'] || 'US' };
-}
-
-function roomNamesMatch(a: string, b: string): boolean {
-    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
-    const na = normalize(a); const nb = normalize(b);
-    if (!na || !nb) return false;
-    if (na === nb || na.includes(nb) || nb.includes(na)) return true;
-    const stopWords = new Set(['room', 'type', 'bed', 'with', 'and', 'the', 'for']);
-    const wordsA = na.split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
-    const wordsB = new Set(nb.split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w)));
-    return wordsA.filter(w => wordsB.has(w)).length >= 2;
-}
-
-function normalizeTgxCancelPolicy(tgxPolicy: any): object {
-    if (!tgxPolicy) return {};
-    const penalties: any[] = tgxPolicy.cancelPenalties || [];
-    const refundable: boolean = tgxPolicy.refundable ?? false;
-    const cancelPolicyInfos: object[] = [];
-    if (refundable && penalties.length > 0) {
-        cancelPolicyInfos.push({ cancelTime: penalties[0].deadline, amount: 0, currency: penalties[0].currency || 'USD', type: 'AMOUNT' });
-    }
-    for (const p of penalties) {
-        cancelPolicyInfos.push({ cancelTime: p.deadline, amount: p.value ?? 0, currency: p.currency || 'USD', type: p.penaltyType || 'AMOUNT' });
-    }
-    return { refundableTag: refundable ? 'RFN' : 'NRFN', cancelPolicyInfos };
-}
 
 // âââ ETG hotel/info helpers âââââââââââââââââââââââââââââââââââââââââââââââââââ
 
@@ -187,8 +152,45 @@ async function enrichHotelRating(content: {
     }
 }
 
+/**
+ * A provider's content in the shape a catalog row has, so the property response is built one way
+ * whichever source the hotel came from. Only the fields the property page reads are filled.
+ */
+function toContentRow(c: ProviderHotelContent) {
+    return {
+        hotel_id:       c.hotelId,
+        name:           c.name,
+        address:        c.address,
+        city:           c.city,
+        country:        c.country,
+        lat:            c.lat,
+        lng:            c.lng,
+        star_rating:    c.starRating,
+        description:    c.description,
+        images:         c.images,
+        amenities:      c.amenities,
+        check_in_time:  c.checkInTime,
+        check_out_time: c.checkOutTime,
+        room_groups: null, amenity_groups: null, metapolicy_struct: null, metapolicy_extra_info: null,
+        important_information: null, ratehawk_hid: null, content_source: 'provider', last_attempt_at: null,
+    } as any;
+}
+
 export class HotelsService {
     private repo = new HotelsRepository();
+
+    /** Injected in tests; otherwise whichever provider the environment selects, resolved on use. */
+    constructor(private readonly injectedProvider?: HotelProvider) {}
+
+    private get provider(): HotelProvider {
+        return this.injectedProvider ?? getHotelProvider();
+    }
+
+    /** The provider a booking was made through — which may not be the one configured now. */
+    private providerFor(recorded: unknown): HotelProvider {
+        if (this.injectedProvider) return this.injectedProvider;
+        return isKnownProviderId(recorded) ? getHotelProviderById(recorded) : getHotelProvider();
+    }
 
     // ── Catalog counts ─────────────────────────────────────────
 
@@ -214,7 +216,7 @@ export class HotelsService {
         occupancies?: any[];
         filters?:     any;
     }) {
-        const results = await searchHotels({
+        const results = await this.provider.searchHotels({
             cityName:    params.destination,
             checkin:     params.checkIn,
             checkout:    params.checkOut,
@@ -223,7 +225,7 @@ export class HotelsService {
             countryCode: params.countryCode,
             currency:    params.currency,
             rooms:       params.rooms,
-        } as any);
+        });
         await this.repo.recordSearchDemand(
             params.destination.toLowerCase().replace(/\s+/g, '-'),
             params.countryCode ?? 'XX',
@@ -338,25 +340,31 @@ export class HotelsService {
     // ââ Property detail âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
     async getProperty(hotelId: string, stay: { checkIn: string; checkOut: string; adults?: number; children?: number }) {
-        const [content, reviews, reviewItems, tgxResult] = await Promise.all([
-            this.repo.findHotelContent(hotelId),
+        const provider = this.provider;
+        const providerOwnsContent = provider.capabilities.providesContent;
+
+        const [dbContent, reviews, reviewItems, rawTypesOrNull] = await Promise.all([
+            providerOwnsContent ? Promise.resolve(null) : this.repo.findHotelContent(hotelId),
             this.repo.findHotelReviews(hotelId),
             this.repo.findHotelReviewItems(hotelId, 20),
-            searchHotels({
-                hotelCode:         hotelId,
-                checkin:           stay.checkIn,
-                checkout:          stay.checkOut,
-                adults:            stay.adults ?? 2,
-                children:          stay.children ?? 0,
-                currency:          'USD',
-                guest_nationality: 'US',
+            provider.getRates(hotelId, {
+                checkIn:     stay.checkIn,
+                checkOut:    stay.checkOut,
+                adults:      stay.adults ?? 2,
+                children:    stay.children ?? 0,
+                currency:    'USD',
+                nationality: 'US',
             }).catch(() => null),
         ]);
+
+        const providerContent = providerOwnsContent ? await provider.getHotelDetails(hotelId) : null;
+        const content = dbContent ?? (providerContent ? toContentRow(providerContent) : null);
         if (!content) throw new AppError(404, 'Property not found', 'NOT_FOUND');
 
         // ââ Rating enrichment from Google Places (cached in hotel_content) ââââââ
         let effectiveReviews: typeof reviews = reviews;
-        if (!effectiveReviews) {
+        // Provider content has no Google enrichment cache to read or fill.
+        if (!effectiveReviews && !providerContent) {
             const c = content as any;
             if (c.review_rating !== null && c.review_rating !== undefined) {
                 // Already cached from a previous Google fetch â use it directly
@@ -385,14 +393,14 @@ export class HotelsService {
         // on this side of the wire — app-v2's checkout multiplies it back up by the
         // nights, so a stay total sent here is billed nights times over.
         const nights   = nightsBetween(stay.checkIn, stay.checkOut);
-        const rawTypes = tgxResult?.data?.[0]?.roomTypes ?? [];
+        const rawTypes = rawTypesOrNull ?? [];
         let rooms = groupByRoomName(rawTypes).map((room) => ({
             ...room,
             price: room.price / nights,
             rates: room.rates.map((rate) => ({ ...rate, price: rate.price / nights })),
         }));
 
-        const etg = await withTimeout(ensureEtgContent(hotelId, content), 8_000);
+        const etg = providerContent ? null : await withTimeout(ensureEtgContent(hotelId, content), 8_000);
         if (etg) {
             rooms = rooms.map((room) => ({ ...room, content: buildRoomContent(room.name, etg) }));
 
@@ -455,123 +463,44 @@ export class HotelsService {
         adults?:   number;
         children?: number;
     }) {
-        if (!params.offerId?.startsWith('TGX:')) {
-            throw new AppError(400, 'This hotel is not available for instant online booking.', 'INVALID_OFFER');
-        }
-
-        const staleToken = params.offerId.slice(4);
         const adults   = params.adults   ?? 2;
         const children = params.children ?? 0;
         const currency = params.currency || 'USD';
 
-        const { hotelCode, checkIn, checkOut, nationality } = parseTgxOptionToken(staleToken);
-        if (!hotelCode || !checkIn || !checkOut) {
-            throw new AppError(400, 'Invalid TGX offer ID â could not decode hotel details', 'INVALID_OFFER');
+        let quote: PrebookResult;
+        try {
+            quote = await this.provider.prebook({
+                offerId: params.offerId, roomName: params.roomName, adults, children, currency,
+            });
+        } catch (err) {
+            throw toAppError(err);
         }
 
-        console.log(`[prebook/tgx] Fresh search: hotel=${hotelCode} ${checkIn}â${checkOut} adults=${adults}`);
-        const freshResult = await searchHotels({
-            hotelCode,
-            checkin:  checkIn,
-            checkout: checkOut,
-            adults,
-            children,
-            currency,
-            guest_nationality: nationality,
-        });
-
-        const freshRooms: any[] = freshResult?.data?.[0]?.roomTypes || [];
-        if (!freshRooms.length) {
-            throw new AppError(409, 'Room is no longer available for the selected dates', 'UNAVAILABLE');
-        }
-
-        const originalRoomName = params.roomName || '';
-        const matchedRooms = originalRoomName
-            ? freshRooms.filter(r => roomNamesMatch(r.roomName || r.roomType || '', originalRoomName))
-            : [];
-        const otherRooms = originalRoomName
-            ? freshRooms.filter(r => !roomNamesMatch(r.roomName || r.roomType || '', originalRoomName))
-            : freshRooms;
-        const candidates = [...matchedRooms, ...otherRooms].slice(0, 5);
-
-        if (!candidates.length) {
-            throw new AppError(409, 'Room is no longer available for the selected dates', 'UNAVAILABLE');
-        }
-
-        // OTV needs a moment to propagate the freshly-searched option into its valuation cache.
-        await new Promise(resolve => setTimeout(resolve, 3000));
-
-        let optionQuote: any = null;
-        let quotedToken = candidates[0]?.offerId?.slice(4) ?? staleToken;
-        let successfulRoom = candidates[0];
-
-        for (const room of candidates) {
-            const rOfferId: string = room?.offerId || '';
-            if (!rOfferId.startsWith('TGX:')) continue;
-            const rOptionId    = rOfferId.slice(4);
-            const rTgxId       = room?.rates?.[0]?._tgx?.id    || '';
-            const rNativeToken = room?.rates?.[0]?._tgx?.token  || '';
-            const tokensToTry  = [...new Set([rOptionId, rTgxId, rNativeToken].filter(Boolean))];
-
-            for (const tok of tokensToTry) {
-                console.log('[prebook/tgx] Quoting with token:', tok.substring(0, 80));
-                try {
-                    const q = await quoteTgx(tok);
-                    optionQuote    = q;
-                    quotedToken    = tok;
-                    successfulRoom = room;
-                    break;
-                } catch (e: any) {
-                    console.warn('[prebook/tgx] Quote failed:', tok.substring(0, 40), 'â', e.message?.substring(0, 100));
-                }
-            }
-            if (optionQuote) break;
-        }
-
-        if (!optionQuote) {
-            throw new AppError(409, 'This room is currently unavailable for booking. Please try a different hotel or check back later.', 'UNAVAILABLE');
-        }
-
-        if (optionQuote.paymentType && optionQuote.paymentType !== 'MERCHANT') {
-            throw new AppError(409, 'This room is not available for online payment. Please contact support.', 'NON_MERCHANT');
-        }
-
-        const bookToken       = optionQuote.optionRefId || quotedToken;
-        const bookedRoomName  = successfulRoom?.roomName || successfulRoom?.roomType || '';
-        const roomSubstituted = originalRoomName ? !roomNamesMatch(bookedRoomName, originalRoomName) : false;
-
-        console.log(`[prebook/tgx] Success | book token: ${bookToken.substring(0, 60)} | room: ${bookedRoomName} | price: ${optionQuote.price?.gross || optionQuote.price?.net} ${optionQuote.price?.currency}`);
-
-        // Record what TGX quoted. createPayment charges from this row rather than from
-        // the client's payload, so the Stripe base comes from the supplier instead of
-        // the browser. Failing to record must not fail the prebook: checkout rejects a
-        // prebookId it has no quote for, so the worst case is the customer retrying.
-        const prebookId = `TGX:${bookToken}`;
+        // Record what the supplier quoted. createPayment charges from this row rather than from
+        // the client's payload, so the Stripe base comes from the supplier instead of the
+        // browser. Failing to record must not fail the prebook: checkout rejects a prebookId it
+        // has no quote for, so the worst case is the customer retrying.
+        const prebookId = quote.prebookRef;
         try {
             await this.repo.savePrebookQuote({
                 prebookId,
-                net:       optionQuote.price?.net   || 0,
-                gross:     optionQuote.price?.gross || optionQuote.price?.net || 0,
-                currency:  optionQuote.price?.currency || currency,
-                roomName:  bookedRoomName || null,
-                checkIn,
-                checkOut,
+                net:       quote.price.net,
+                gross:     quote.price.gross,
+                currency:  quote.price.currency,
+                roomName:  quote.roomName || null,
+                checkIn:   quote.checkIn,
+                checkOut:  quote.checkOut,
                 expiresAt: new Date(Date.now() + PREBOOK_QUOTE_TTL_MS),
             });
         } catch (persistErr) {
-            console.error('[prebook/tgx] Failed to persist quote — checkout will reject this prebookId:', persistErr);
+            console.error('[prebook] Failed to persist quote — checkout will reject this prebookId:', persistErr);
         }
 
-        // ── What the customer is shown, produced here rather than in the browser ──
-        //
-        // The browser renders prices; it does not compute them. Converting and adding the
-        // service fee here means the figure on the checkout is made by the same code and the
-        // same rates createPayment charges from, so the two cannot drift. app-v2's checkout
-        // used to add a hardcoded 6% itself while the server charged 5.9%.
-        const quotedSubtotal = optionQuote.price?.net || 0;
-        const quotedTotal    = optionQuote.price?.gross || optionQuote.price?.net || 0;
-        const quotedTaxes    = (optionQuote.price?.gross || 0) - (optionQuote.price?.net || 0);
-        const quotedCurrency = String(optionQuote.price?.currency || currency).toUpperCase();
+        // What the customer is shown, produced here rather than in the browser (see ADR-0021).
+        const quotedSubtotal  = quote.price.net;
+        const quotedTotal     = quote.price.gross;
+        const quotedTaxes     = quote.price.gross - quote.price.net;
+        const quotedCurrency  = quote.price.currency.toUpperCase();
         const displayCurrency = String(params.currency || quotedCurrency).toUpperCase();
 
         let display: Record<string, unknown> | undefined;
@@ -595,26 +524,26 @@ export class HotelsService {
         } catch (fxErr: any) {
             // Left absent: the checkout says prices are still being confirmed rather than
             // showing a total the charge might not match.
-            console.warn('[prebook/tgx] display conversion unavailable:', fxErr?.message);
+            console.warn('[prebook] display conversion unavailable:', fxErr?.message);
         }
 
         return {
             success: true,
             data: {
                 prebookId,
-                provider:   'travelgatex',
+                provider: this.provider.id,
                 price: {
                     subtotal: quotedSubtotal,
                     taxes:    quotedTaxes,
                     total:    quotedTotal,
                 },
                 ...(display ? { display } : {}),
-                surcharges:           optionQuote.surcharges || [],
-                currency:             optionQuote.price?.currency || currency,
-                cancellationPolicies: normalizeTgxCancelPolicy(optionQuote.cancelPolicy),
-                boardCode:            optionQuote.boardCode || '',
-                rooms:                optionQuote.rooms || [],
-                ...(roomSubstituted && bookedRoomName && { roomSubstituted: true, substitutedRoomName: bookedRoomName }),
+                surcharges:           quote.surcharges,
+                currency:             quote.price.currency,
+                cancellationPolicies: toPrebookPolicyWire(quote.cancellation),
+                boardCode:            quote.boardCode,
+                rooms:                quote.rooms,
+                ...(quote.roomSubstituted && quote.roomName && { roomSubstituted: true, substitutedRoomName: quote.roomName }),
             },
         };
     }
@@ -864,86 +793,55 @@ export class HotelsService {
             return { success: true, data: { bookingId: existing.booking_id, status: existing.status, policyType: 'standard', policySummary: '' } };
         }
 
-        const quoteToken     = params.prebookId.startsWith('TGX:') ? params.prebookId.slice(4) : params.prebookId;
         const adults         = params.adults   ?? 2;
         const children       = params.children ?? 0;
         const currency       = params.currency || 'USD';
         const guests         = params.guests   || [];
-        // The reference OTV files the reservation under, and the one a cancellation has to
-        // quote — the supplier reference is rejected by OTV.
-        //
-        // Was `FORHU-<millis>-<rand>`. FORHU Inc owns the Stripe account every FORHU product
-        // settles into, so that prefix named the one thing all of them share and could never
-        // answer "which project did this money come from". It now comes from the
-        // PaymentIntent, so the booking and the charge carry the same reference; a booking
-        // taken before references existed falls back to a fresh one.
+        // The reference the supplier files the reservation under, and the one a cancellation has
+        // to quote. It comes from the PaymentIntent, so the booking and the charge carry the same
+        // reference; a booking taken before references existed falls back to a fresh one.
         const clientReference = paidReference
             ?? mintBookingReference(canonicalBrandName(process.env.BRAND_NAME ?? process.env.NEXT_PUBLIC_BRAND_NAME));
 
-        const adultPaxes = Array(adults).fill(null).map((_, i) => ({
-            name: guests[i]?.firstName || params.holder.firstName,
-            surname: guests[i]?.lastName || params.holder.lastName,
-            age: 30,
+        const adultGuests: BookGuest[] = Array(adults).fill(null).map((_, i) => ({
+            firstName: guests[i]?.firstName || params.holder.firstName,
+            lastName:  guests[i]?.lastName  || params.holder.lastName,
+            age:       30,
+            type:      'adult' as const,
         }));
-        const childPaxes = Array(children).fill(null).map((_, i) => ({
-            name: guests[adults + i]?.firstName || `Child${i + 1}`,
-            surname: guests[adults + i]?.lastName || params.holder.lastName,
-            age: (guests[adults + i] as any)?.age || 10,
+        const childGuests: BookGuest[] = Array(children).fill(null).map((_, i) => ({
+            firstName: guests[adults + i]?.firstName || `Child${i + 1}`,
+            lastName:  guests[adults + i]?.lastName  || params.holder.lastName,
+            age:       (guests[adults + i] as any)?.age || 10,
+            type:      'child' as const,
         }));
 
-        let tgxResult: any;
+        let booking: ProviderBooking;
         try {
-            tgxResult = await bookTgx({
-                quoteToken,
-                clientReference,
-                holder: params.holder,
-                rooms: [{ occupancyRefId: 1, paxes: [...adultPaxes, ...childPaxes] }],
-            } as any);
-        } catch (firstErr: any) {
-            const msg = firstErr?.message || '';
-            const isExpired = /option not found|not found in|expired|unavailable|301|wrong_field/i.test(msg);
-            if (!isExpired) {
-                console.error('[confirm] TGX book failed:', msg);
-                return { success: false, providerConfirmed: false, error: msg };
-            }
-            // Retry with fresh token
-            console.log('[confirm] Token expired, retrying with fresh search...');
-            const { hotelCode, checkIn, checkOut, nationality } = parseTgxOptionToken(quoteToken);
-            if (!hotelCode || !checkIn || !checkOut) return { success: false, error: 'Room is no longer available for these dates' };
-            const freshResult = await searchHotels({ hotelCode, checkin: checkIn, checkout: checkOut, adults, children, currency, guest_nationality: nationality }).catch(() => null);
-            const freshRoom = freshResult?.data?.[0]?.roomTypes?.[0];
-            const freshOfferId: string = freshRoom?.offerId || '';
-            if (!freshOfferId.startsWith('TGX:')) return { success: false, error: 'Room is no longer available for these dates' };
-            const freshOptionId  = freshOfferId.slice(4);
-            const freshNative    = freshRoom?.rates?.[0]?._tgx?.token || freshOptionId;
-            await new Promise(r => setTimeout(r, 1500));
-            let freshToken: string | null = null;
-            for (const tok of [...new Set([freshNative, freshOptionId])]) {
-                try {
-                    const q = await quoteTgx(tok);
-                    freshToken = q.optionRefId || tok;
-                    break;
-                } catch { /* try next */ }
-            }
-            if (!freshToken) return { success: false, error: 'Room is no longer available for these dates' };
-            try {
-                tgxResult = await bookTgx({ quoteToken: freshToken, clientReference, holder: params.holder, rooms: [{ occupancyRefId: 1, paxes: [...adultPaxes, ...childPaxes] }] } as any);
-            } catch (retryErr: any) {
-                return { success: false, error: retryErr.message || 'TravelgateX booking failed after retry' };
-            }
+            booking = await this.provider.book({
+                prebookRef: params.prebookId,
+                clientRef:  clientReference,
+                holder:     params.holder,
+                guests:     [...adultGuests, ...childGuests],
+                stay:       { adults, children, currency },
+            });
+        } catch (err: any) {
+            console.error('[confirm] supplier booking failed:', err?.code ?? '', err?.message);
+            return { success: false, providerConfirmed: false, error: err?.message || 'Booking failed' };
         }
 
-        const booking     = tgxResult;
-        const clientRef   = booking?.clientRef;
-        if (!clientRef) return { success: false, error: 'Booking failed â no reference returned from TravelgateX' };
+        const clientRef = booking.clientRef;
+        if (!clientRef) {
+            return { success: false, error: `Booking failed — no reference returned from ${this.provider.displayName}` };
+        }
 
-        const bookingId   = clientRef;
-        const supplierRef = booking?.supplierRef;
-        const hotelCode   = booking?.hotelCode   ?? null;
-        const rawStatus   = (booking.status || 'confirmed').toLowerCase();
+        const bookingId     = clientRef;
+        const supplierRef   = booking.supplierRef;
+        const hotelCode     = booking.hotelCode ?? null;
+        const rawStatus     = (booking.status || 'confirmed').toLowerCase();
         const bookingStatus = (['confirmed', 'pending'].includes(rawStatus) ? rawStatus : 'confirmed') as string;
 
-        const tgxPrice = booking.price?.gross || booking.price?.net || 0;
+        const tgxPrice = booking.price?.gross || booking.price?.net || 0; // supplier cost
 
         // Price change guard (>5%)
         if (params.quotedPrice && params.quotedPrice > 0 && tgxPrice > 0) {
@@ -971,13 +869,10 @@ export class HotelsService {
         const hasPrebookPolicy = prebookPolicy != null && typeof prebookPolicy === 'object' && Object.keys(prebookPolicy).length > 0;
         const isRefundable     = hasPrebookPolicy
             ? (prebookPolicy.refundableTag === 'RFN' || prebookPolicy.refundableTag === 'REFUNDABLE')
-            : booking.cancelPolicy?.refundable === true;
-        const storedCancelPolicy = hasPrebookPolicy ? prebookPolicy : (booking.cancelPolicy ? {
-            refundableTag: isRefundable ? 'RFN' : 'NRFN',
-            cancelPolicyInfos: (booking.cancelPolicy.cancelPenalties || []).map((p: any) => ({
-                cancelTime: p.deadline, amount: p.value ?? 0, currency: p.currency || storedCurrency, type: p.penaltyType || 'AMOUNT',
-            })),
-        } : null);
+            : booking.cancellation?.refundable === true;
+        const storedCancelPolicy = hasPrebookPolicy
+            ? prebookPolicy
+            : toStoredPolicyWire(booking.cancellation, storedCurrency);
 
         // The terms this booking is held to. Derived by the same function the backfill uses
         // for bookings taken before snapshots existed, so a backfilled booking and one
@@ -1024,7 +919,7 @@ export class HotelsService {
                     discount_amount:   params.discountAmount ?? 0,
                     policy_type:       policyType,
                     cancellation_policy: storedCancelPolicy ? storedCancelPolicy : undefined,
-                    provider:          'travelgatex',
+                    provider:          booking.provider,
                     // The recorded fee rides along rather than being threaded through a
                     // second write: a booking that exists must never be jeopardised by a
                     // reporting figure, and every field of it is optional for that reason.
@@ -1168,10 +1063,10 @@ export class HotelsService {
             const cancelHotelCode: string | undefined = meta?.hotelCode ||
                 (/^\d+$/.test(booking.property_name) ? booking.property_name : undefined);
             try {
-                await cancelTgx({
-                    clientReference:   bookingRef,
-                    supplierReference: meta?.supplierRef,
-                    hotelCode:         cancelHotelCode,
+                await this.providerFor(booking.provider).cancelBooking({
+                    clientRef:   bookingRef,
+                    supplierRef: meta?.supplierRef,
+                    hotelCode:   cancelHotelCode,
                 });
             } catch (tgxErr: any) {
                 console.warn('[hotels.cancelBooking] TGX cancel failed (proceeding):', tgxErr.message?.slice(0, 200));
