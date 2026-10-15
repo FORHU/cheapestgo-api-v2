@@ -103,13 +103,14 @@ export function holdsAuthorisation(status: HotelBookingStatus): boolean {
  * them on purpose — the sale is not established until the supplier and the capture agree.
  */
 export function projectLegacyStatus(status: HotelBookingStatus): string | null {
+    // CANCEL_REQUESTED is still a live booking until the supplier has agreed to cancel it, and
+    // the legacy column has no "refund in flight", so REFUND_PENDING reads cancelled until it
+    // resolves.
     switch (status) {
         case 'CONFIRMED':
-        // Still a live booking until the supplier has agreed to cancel it.
         case 'CANCEL_REQUESTED':
             return 'confirmed';
         case 'CANCELLED':
-        // The legacy column has no "refund in flight"; it reads cancelled until it resolves.
         case 'REFUND_PENDING':
             return 'cancelled';
         case 'REFUNDED':

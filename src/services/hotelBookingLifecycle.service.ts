@@ -62,6 +62,8 @@ export interface ConfirmFailure {
     pending?:           boolean;
     reference?:         string;
     error:              string;
+    /** Absent on a failure; declared so a caller can read `.data` across the whole union. */
+    data?:              undefined;
 }
 
 export interface ConfirmedAlready {

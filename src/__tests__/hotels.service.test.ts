@@ -374,6 +374,8 @@ describe('HotelsService.confirmBooking()', () => {
         expect(stripe.paymentIntents.capture).toHaveBeenCalledWith(
             PI_ID,
             expect.objectContaining({ expand: ['latest_charge.balance_transaction'] }),
+            // Keyed per booking, so a replayed capture returns the first rather than failing.
+            { idempotencyKey: `hotel-capture-${BOOKING_REF}` },
         );
     });
 

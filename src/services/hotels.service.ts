@@ -7,6 +7,9 @@ import type {
     BookGuest, HotelContent as ProviderHotelContent, HotelProvider, PrebookResult, ProviderBooking,
 } from '@/lib/hotels/providers/types';
 import { toAppError } from '@/services/hotelProviderErrors';
+import { HotelBookingLifecycleService } from '@/services/hotelBookingLifecycle.service';
+import { projectLegacyStatus, type LifecycleActor } from '@/lib/hotels/lifecycle/stateMachine';
+import type { LifecycleGuest } from '@/repositories/hotelBookingLifecycle.repository';
 import { groupByRoomName } from '@/lib/hotels/property';
 import { ensureEtgContent } from '@/lib/hotels/etgContent';
 import { buildRoomContent, buildPolicySections, buildAdditionalInfo } from '@/lib/hotels/roomContent';
@@ -180,7 +183,10 @@ export class HotelsService {
     private repo = new HotelsRepository();
 
     /** Injected in tests; otherwise whichever provider the environment selects, resolved on use. */
-    constructor(private readonly injectedProvider?: HotelProvider) {}
+    constructor(
+        private readonly injectedProvider?: HotelProvider,
+        private readonly lifecycle: HotelBookingLifecycleService = new HotelBookingLifecycleService(),
+    ) {}
 
     private get provider(): HotelProvider {
         return this.injectedProvider ?? getHotelProvider();
@@ -190,6 +196,36 @@ export class HotelsService {
     private providerFor(recorded: unknown): HotelProvider {
         if (this.injectedProvider) return this.injectedProvider;
         return isKnownProviderId(recorded) ? getHotelProviderById(recorded) : getHotelProvider();
+    }
+
+    /** The purchase options a confirmation needs that are not people. Undefined fields are left out. */
+    private lifecycleDraft(p: {
+        adults?: number; children?: number; propertyImage?: string; specialRequests?: string;
+        voucherCode?: string; discountAmount?: number; cancellationPolicies?: unknown;
+        quotedPrice?: number; board?: string;
+    }): Record<string, unknown> {
+        return Object.fromEntries(Object.entries({
+            adults: p.adults, children: p.children, propertyImage: p.propertyImage,
+            specialRequests: p.specialRequests, voucherCode: p.voucherCode,
+            discountAmount: p.discountAmount, cancellationPolicies: p.cancellationPolicies,
+            quotedPrice: p.quotedPrice, board: p.board,
+        }).filter(([, v]) => v !== undefined));
+    }
+
+    /**
+     * The holder, then the guests in the order the supplier was given them: the first `adults`
+     * are adults and the rest children, which is how `confirmBooking` has always read them.
+     */
+    private lifecycleGuests(
+        holder: { firstName: string; lastName: string; email: string },
+        guests: Array<{ firstName: string; lastName: string; age?: number }> | undefined,
+        adults: number,
+    ): LifecycleGuest[] {
+        const out: LifecycleGuest[] = [{ kind: 'holder', firstName: holder.firstName, lastName: holder.lastName, email: holder.email }];
+        (guests ?? []).forEach((g, i) => out.push({
+            kind: i < adults ? 'adult' : 'child', firstName: g.firstName, lastName: g.lastName, age: g.age ?? null,
+        }));
+        return out;
     }
 
     // ── Catalog counts ─────────────────────────────────────────
@@ -563,6 +599,20 @@ export class HotelsService {
         bundleFlightId?: string;
         /** The total the checkout showed, service fee included. Nothing is billed above it. */
         displayedTotal?: number;
+        // Optional, and additive: what the confirmation will need. When the traveller has
+        // already said who is staying, the booking can be completed from the payment event
+        // alone if the browser never comes back.
+        holder?:               { firstName: string; lastName: string; email: string };
+        guests?:               Array<{ firstName: string; lastName: string; age?: number }>;
+        adults?:               number;
+        children?:             number;
+        propertyImage?:        string;
+        specialRequests?:      string;
+        voucherCode?:          string;
+        discountAmount?:       number;
+        cancellationPolicies?: unknown;
+        quotedPrice?:          number;
+        board?:                string;
     }) {
         const SUPPORTED_CURRENCIES = new Set([
             'usd', 'eur', 'gbp', 'aud', 'cad', 'sgd', 'hkd', 'jpy', 'krw',
@@ -733,6 +783,30 @@ export class HotelsService {
             automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
         }, { idempotencyKey });
 
+        // The attempt, opened beside the sale it may become. Best-effort and never fatal:
+        // the charge exists either way, and a missing record is a gap, not a failed payment.
+        const attempt = await this.lifecycle.open({
+            reference:       bookingReference,
+            userId:          params.userId,
+            provider:        this.provider.id,
+            prebookRef:      params.prebookId,
+            paymentIntentId: paymentIntent.id,
+            currency:        params.currency,
+            amountMinor:     stripeAmount,
+            propertyName:    params.propertyName ?? null,
+            roomName:        params.roomName ?? null,
+            checkIn:         params.checkIn ?? null,
+            checkOut:        params.checkOut ?? null,
+            draft:           this.lifecycleDraft(params),
+        });
+        if (attempt && params.holder) {
+            await this.lifecycle.saveInputs(
+                bookingReference,
+                this.lifecycleDraft(params),
+                this.lifecycleGuests(params.holder, params.guests, params.adults ?? 2),
+            );
+        }
+
         return {
             success: true,
             data: {
@@ -771,7 +845,7 @@ export class HotelsService {
         /** The board the rate was quoted with, from prebook. Snapshotted: it is part of
          *  what was bought, not of what the property offers today. */
         board?:               string;
-    }) {
+    }, opts: { actor?: LifecycleActor } = {}) {
         const pi = await stripe.paymentIntents.retrieve(params.paymentIntentId);
         if (pi.metadata.userId !== params.userId) throw new AppError(403, 'Payment does not belong to this user', 'FORBIDDEN');
 
@@ -816,6 +890,31 @@ export class HotelsService {
             type:      'child' as const,
         }));
 
+        const actor: LifecycleActor = opts.actor ?? 'browser';
+
+        // Who this confirmation is for is recorded first, so a payment event can finish the
+        // booking if this request dies; then the right to ask the supplier is claimed. Of any
+        // number of callers racing for one payment — a double submit, the browser and the
+        // webhook — exactly one gets it, and a supplier is never asked twice.
+        let claimed = false;
+        if (paidReference) {
+            await this.lifecycle.saveInputs(
+                paidReference,
+                this.lifecycleDraft({ ...params, adults, children }),
+                this.lifecycleGuests(params.holder, params.guests, adults),
+            );
+            const claim = await this.lifecycle.claim(paidReference, params.paymentIntentId, actor);
+            if (claim.result === 'lost') {
+                const answer = await this.lifecycle.answerLostClaim(claim.record);
+                // Never carry on from a lost claim: someone else holds the right to book.
+                return answer ?? {
+                    success: false as const, pending: true, reference: paidReference,
+                    error: 'Your booking is already being processed. Please check your trips shortly.',
+                };
+            }
+            claimed = claim.result === 'claimed';
+        }
+
         let booking: ProviderBooking;
         try {
             booking = await this.provider.book({
@@ -827,7 +926,14 @@ export class HotelsService {
             });
         } catch (err: any) {
             console.error('[confirm] supplier booking failed:', err?.code ?? '', err?.message);
-            return { success: false, providerConfirmed: false, error: err?.message || 'Booking failed' };
+            // What this means for the money depends on whether the supplier may have booked.
+            const handled = await this.lifecycle.onBookFailure({
+                err, provider: this.provider, paymentIntentId: params.paymentIntentId,
+                reference: paidReference, clientReference, claimed, actor,
+            });
+            if (handled.kind === 'failed') return handled.response;
+            // The supplier did not answer but holds the reservation; carry on as if it had.
+            booking = handled.booking;
         }
 
         const clientRef = booking.clientRef;
@@ -847,6 +953,10 @@ export class HotelsService {
         if (params.quotedPrice && params.quotedPrice > 0 && tgxPrice > 0) {
             if (tgxPrice > params.quotedPrice * 1.05) {
                 console.warn(`[confirm] Price increased beyond threshold: quoted=${params.quotedPrice} booked=${tgxPrice}`);
+                // The supplier has already booked, so this is not a clean "no": it needs a person.
+                if (paidReference && claimed) {
+                    await this.lifecycle.flagPriceMoved(paidReference, params.quotedPrice, tgxPrice, actor);
+                }
                 return { success: false, errorCode: 'price_changed', oldPrice: params.quotedPrice, newPrice: tgxPrice };
             }
         }
@@ -888,10 +998,19 @@ export class HotelsService {
         // carried Stripe's 2.9% headline while every live charge on this account settles at
         // 4.4%. The balance transaction says the exact figure, for free, and only exists once
         // the payment is captured. See ADR-0036.
-        const captured = await stripe.paymentIntents.capture(params.paymentIntentId, {
-            expand: STRIPE_FEE_EXPAND,
-        });
-        const stripeFee = extractStripeFee(captured);
+        const capture = await this.lifecycle.capture(params.paymentIntentId, bookingId, STRIPE_FEE_EXPAND);
+        if (!capture.ok) {
+            console.error('[confirm] CRITICAL: supplier booked but capture failed:', bookingId, capture.error);
+            if (paidReference && claimed) await this.lifecycle.flagCaptureFailure(paidReference, capture.error, actor);
+            return {
+                success: false as const, providerConfirmed: true, needsReview: true, reference: bookingId,
+                error: 'Your room is booked but the payment could not be completed. Our team has been notified — please do not pay again.',
+            };
+        }
+        const stripeFee = extractStripeFee(capture.intent);
+        if (paidReference && claimed) {
+            await this.lifecycle.confirmed(paidReference, params.paymentIntentId, supplierRef, actor);
+        }
 
         // Save booking to DB (non-fatal â provider already confirmed)
         const providerConfirmed = true;
@@ -1056,6 +1175,8 @@ export class HotelsService {
             } catch { /* non-fatal */ }
         }
 
+        await this.lifecycle.recordCancelStart(bookingRef, 'browser');
+
         // 3. TGX cancellation (skip on refund-failed retry to avoid duplicate cancel)
         const isRefundRetry = booking.status === 'cancelled_refund_failed';
         if (!isRefundRetry) {
@@ -1154,6 +1275,8 @@ export class HotelsService {
             data:  { status: finalStatus, updated_at: new Date() },
         });
 
+        await this.lifecycle.recordCancelEnd(bookingRef, finalStatus, 'browser');
+
         return {
             success: true,
             data: {
@@ -1169,6 +1292,60 @@ export class HotelsService {
     }
 
     // ââ Deals âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+
+    // ── Booking status ──────────────────────────────────────────────────────
+
+    /**
+     * Where a booking is, for polling and for a confirmation page that survives a refresh.
+     * Read from the lifecycle when there is one; a booking made before it existed answers
+     * from the sale itself.
+     */
+    async getBookingStatus(reference: string, userId: string) {
+        const attempt = await this.lifecycle.repo.findByReference(reference);
+        if (attempt) {
+            if (attempt.userId !== userId) throw new AppError(404, 'Booking not found', 'BOOKING_NOT_FOUND');
+            const history = await this.lifecycle.repo.events(reference);
+            return {
+                success: true,
+                data: {
+                    reference,
+                    status:        attempt.status,
+                    bookingStatus: projectLegacyStatus(attempt.status),
+                    provider:      attempt.provider,
+                    currency:      attempt.currency,
+                    failure:       attempt.failureCode
+                        ? { code: attempt.failureCode, message: attempt.failureMessage }
+                        : null,
+                    updatedAt:     attempt.updatedAt,
+                    history,
+                },
+            };
+        }
+
+        const row = await prisma.bookings.findFirst({
+            where:  { booking_id: reference, user_id: userId },
+            select: { booking_id: true, status: true, updated_at: true, provider: true, currency: true },
+        }).catch(() => null);
+        if (!row) throw new AppError(404, 'Booking not found', 'BOOKING_NOT_FOUND');
+
+        const legacyToLifecycle: Record<string, string> = {
+            confirmed: 'CONFIRMED', cancelled: 'CANCELLED',
+            cancelled_refunded: 'REFUNDED', cancelled_refund_failed: 'REFUND_FAILED',
+        };
+        return {
+            success: true,
+            data: {
+                reference,
+                status:        legacyToLifecycle[row.status ?? ""] ?? null,
+                bookingStatus: row.status,
+                provider:      row.provider,
+                currency:      row.currency,
+                failure:       null,
+                updatedAt:     row.updated_at,
+                history:       [],
+            },
+        };
+    }
 
     async getDeals(limit = 12) {
         return this.repo.getHotelDeals(limit);

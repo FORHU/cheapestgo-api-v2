@@ -172,7 +172,10 @@ describe('HotelsService with the mock provider — confirm', () => {
         expect(out.data.bookingId).toBe('CG-M0CK01');
         expect(mock.calls.filter((c) => c.method === 'book')).toHaveLength(1);
         expect(mock.reservations[0]).toMatchObject({ clientRef: 'CG-M0CK01', status: 'OK' });
-        expect(stripe.paymentIntents.capture).toHaveBeenCalledWith(PI, expect.anything());
+        // One capture per booking, under a key that is the same for every replay of it.
+        expect(stripe.paymentIntents.capture).toHaveBeenCalledWith(
+            PI, expect.anything(), { idempotencyKey: 'hotel-capture-CG-M0CK01' },
+        );
         expect(prisma.bookings.create).toHaveBeenCalledWith({
             data: expect.objectContaining({ booking_id: 'CG-M0CK01', provider: 'mock', status: 'confirmed' }),
         });
