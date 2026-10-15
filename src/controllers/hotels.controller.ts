@@ -4,10 +4,10 @@ import { AppError } from '@/middleware/error.middleware';
 import { HotelsService } from '@/services/hotels.service';
 import { getPlaceDetails, geocode as geoCodePlace } from '@/lib/google/places';
 import { config } from '@/config';
-import { nightsBetween } from '@/lib/hotels/nights';
 import { fetchHotelContentPatches } from '@/lib/hotels/contentPatches';
 import { resolveTgxDestinationCode } from '@/lib/hotels/travelgatex';
-import { getInstantHotelCatalog, runTgxSearch } from '@/lib/hotels/search';
+import { getInstantHotelCatalog } from '@/lib/hotels/search';
+import { getHotelProvider } from '@/lib/hotels/providers/factory';
 import { resolveStayDates } from '@/lib/hotels/property';
 import { prisma } from '@/lib/prisma';
 import { CITY_ALIASES } from '@/lib/cityAliases';
@@ -457,6 +457,13 @@ export class HotelsController {
         let closed = false;
         req.on('close', () => { closed = true; });
 
+        // The provider decides where hotels and their content come from. A supplier with no
+        // content of its own (TravelgateX) is shown through the catalog first; one that is the
+        // authority (the mock) is not, because catalog rows it cannot price would only be
+        // removed again a moment later.
+        const provider   = getHotelProvider();
+        const useCatalog = !provider.capabilities.providesContent;
+
         try {
             // ── Phase 1: instant catalog ──────────────────────────────────────────
             const catalogParams: any = {
@@ -477,10 +484,12 @@ export class HotelsController {
                 lat:         body.lat,
                 lng:         body.lng,
             };
-            const catalogHotels = await Promise.race([
-                getInstantHotelCatalog(catalogParams),
-                new Promise<any[]>(resolve => setTimeout(() => resolve([]), 8000)),
-            ]);
+            const catalogHotels: any[] = useCatalog
+                ? await Promise.race([
+                    getInstantHotelCatalog(catalogParams),
+                    new Promise<any[]>(resolve => setTimeout(() => resolve([]), 8000)),
+                ])
+                : [];
 
             if (!closed && catalogHotels.length > 0) {
                 // `allMappable` used to ride along here as a filtered copy of `data` —
@@ -527,7 +536,7 @@ export class HotelsController {
                 bbox:        body.bbox,
             };
             const firstPassStarted = Date.now();
-            const tgxResult = await runTgxSearch({
+            const tgxResult = await provider.searchHotels({
                 cityName:    body.cityName ?? body.destination,
                 checkin:     body.checkin  ?? body.checkIn,
                 checkout:    body.checkout ?? body.checkOut,
@@ -550,20 +559,11 @@ export class HotelsController {
             const firstPassMs = Date.now() - firstPassStarted;
 
             /**
-             * Per night, because that is what a card says.
-             *
-             * TGX quotes the **whole stay**, and every price surface in the storefront prints
-             * "/ night" beside the number. Sending the stay total and trusting each of them to
-             * divide is what v1 stopped doing: the search card and the deals row never got the
-             * memo, so a three-night stay was advertised at three times its nightly rate.
-             *
-             * Done once, here, for the same reason v1 does it here — every list below is
-             * derived from this array, so dividing at the source is the only version that
-             * cannot be half-applied.
+             * Already per night — the provider's contract is that a listing carries the Nightly
+             * Rate (ADR-0020). Dividing here as well advertised `total / nights²` on every stay
+             * of more than one night, once `buildCityResults` began dividing at the source.
              */
-            const stayNights = nightsBetween(body.checkin ?? body.checkIn, body.checkout ?? body.checkOut);
-            const tgxHotels: any[]   = (Array.isArray(tgxResult.data) ? tgxResult.data : [])
-                .map((h: any) => ({ ...h, price: (h.price ?? 0) / stayNights }));
+            const tgxHotels: any[]   = Array.isArray(tgxResult.data) ? tgxResult.data : [];
             const tgxHotelIdSet      = new Set(tgxHotels.map((h: any) => h.hotelId || h.id));
             const newTgxHotels       = tgxHotels.filter((h: any) => !catalogIdSet.has(h.hotelId || h.id));
 
@@ -638,7 +638,7 @@ export class HotelsController {
              * catalog is complete makes no content call at all.
              */
             const needsImages = (h: any) => !(h.images?.length) && !h.image;
-            const missingNow  = [...catalogHotels, ...tgxHotels]
+            const missingNow  = (useCatalog ? [...catalogHotels, ...tgxHotels] : [])
                 .filter(needsImages)
                 .map((h: any) => String(h.hotelId || h.id))
                 .filter(Boolean);
@@ -667,7 +667,7 @@ export class HotelsController {
                 const t0 = Date.now();
                 // A plain repeat: the in-flight dedup entry for the first pass is gone by now,
                 // so this is a fresh call rather than a join onto the one that just finished.
-                const second = await runTgxSearch(searchArgs)
+                const second = await provider.searchHotels(searchArgs)
                     .catch((err: any) => {
                         // Nothing is owed here: the traveller already has the first answer.
                         console.warn(`[stream] Second pass failed for "${city}": ${err?.message}`);
@@ -699,7 +699,7 @@ export class HotelsController {
                     // Phase B: pictures for the ones the collecting pass just added. After
                     // their cards, never before — a card with no photo is worth more than no
                     // card, and this call must not hold the hotels up.
-                    const missingLate = extraHotels
+                    const missingLate = (useCatalog ? extraHotels : [])
                         .filter((h: any) => !(h.images?.length) && !h.image)
                         .map((h: any) => String(h.hotelId || h.id))
                         .filter(Boolean);
