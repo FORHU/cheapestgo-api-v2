@@ -453,3 +453,41 @@ describe('cancel preview', () => {
         expect(out.data).toMatchObject({ cancellable: false, reason: 'already_cancelled' });
     });
 });
+
+describe('what the traveller supplied reaches the booking', () => {
+    it('keeps the holder\'s phone with the booking', async () => {
+        await service.confirmBooking({ ...params(await quote()), holderPhone: '+63 917 123 4567' } as any);
+
+        expect(prisma.bookings.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                provider_metadata: expect.objectContaining({ holderPhone: '+63 917 123 4567' }),
+            }),
+        });
+    });
+
+    it('does not invent a phone when none was given', async () => {
+        await service.confirmBooking(params(await quote()));
+
+        const data = vi.mocked(prisma.bookings.create).mock.calls[0][0].data as any;
+        expect('holderPhone' in data.provider_metadata).toBe(false);
+    });
+
+    it('also keeps it for a booking that is finished from the payment event', async () => {
+        await service.confirmBooking({ ...params(await quote()), holderPhone: '+63 917 123 4567' } as any);
+        expect(repo.records.get(REF)?.draft).toMatchObject({ holderPhone: '+63 917 123 4567' });
+    });
+
+    it('sends an infant to the supplier as age 0, not as 10', async () => {
+        const prebookId = await quote();
+        await service.confirmBooking({
+            ...params(prebookId), children: 1,
+            guests: [
+                { firstName: 'Juan', lastName: 'dela Cruz' }, { firstName: 'Maria', lastName: 'dela Cruz' },
+                { firstName: 'Baby', lastName: 'dela Cruz', age: 0 },
+            ],
+        });
+
+        const booked = mock.calls.find((c) => c.method === 'book')!.input as { guests: Array<{ age: number; type: string }> };
+        expect(booked.guests.at(-1)).toMatchObject({ type: 'child', age: 0 });
+    });
+});

@@ -205,13 +205,13 @@ export class HotelsService {
     private lifecycleDraft(p: {
         adults?: number; children?: number; propertyImage?: string; specialRequests?: string;
         voucherCode?: string; discountAmount?: number; cancellationPolicies?: unknown;
-        quotedPrice?: number; board?: string;
+        quotedPrice?: number; board?: string; holderPhone?: string;
     }): Record<string, unknown> {
         return Object.fromEntries(Object.entries({
             adults: p.adults, children: p.children, propertyImage: p.propertyImage,
             specialRequests: p.specialRequests, voucherCode: p.voucherCode,
             discountAmount: p.discountAmount, cancellationPolicies: p.cancellationPolicies,
-            quotedPrice: p.quotedPrice, board: p.board,
+            quotedPrice: p.quotedPrice, board: p.board, holderPhone: p.holderPhone,
         }).filter(([, v]) => v !== undefined));
     }
 
@@ -639,6 +639,7 @@ export class HotelsService {
         cancellationPolicies?: unknown;
         quotedPrice?:          number;
         board?:                string;
+        holderPhone?:          string;
     }) {
         const SUPPORTED_CURRENCIES = new Set([
             'usd', 'eur', 'gbp', 'aud', 'cad', 'sgd', 'hkd', 'jpy', 'krw',
@@ -871,6 +872,8 @@ export class HotelsService {
         /** The board the rate was quoted with, from prebook. Snapshotted: it is part of
          *  what was bought, not of what the property offers today. */
         board?:               string;
+        /** The holder's number, dial code included. Kept with the booking, not sent to the supplier. */
+        holderPhone?:         string;
     }, opts: { actor?: LifecycleActor } = {}) {
         const pi = await stripe.paymentIntents.retrieve(params.paymentIntentId);
         if (pi.metadata.userId !== params.userId) throw new AppError(403, 'Payment does not belong to this user', 'FORBIDDEN');
@@ -912,7 +915,8 @@ export class HotelsService {
         const childGuests: BookGuest[] = Array(children).fill(null).map((_, i) => ({
             firstName: guests[adults + i]?.firstName || `Child${i + 1}`,
             lastName:  guests[adults + i]?.lastName  || params.holder.lastName,
-            age:       (guests[adults + i] as any)?.age || 10,
+            // ?? and not ||: an infant's age is 0, which is an answer, not an absence.
+            age:       (guests[adults + i] as any)?.age ?? 10,
             type:      'child' as const,
         }));
 
@@ -1068,7 +1072,7 @@ export class HotelsService {
                     // The recorded fee rides along rather than being threaded through a
                     // second write: a booking that exists must never be jeopardised by a
                     // reporting figure, and every field of it is optional for that reason.
-                    provider_metadata: { supplierRef, hotelCode, clientReference, ...stripeFee, ...(params.board ? { board: params.board } : {}) },
+                    provider_metadata: { supplierRef, hotelCode, clientReference, ...stripeFee, ...(params.board ? { board: params.board } : {}), ...(params.holderPhone ? { holderPhone: params.holderPhone } : {}) },
                     payment_intent_id: params.paymentIntentId,
                     supplier_cost:     tgxPrice,
                     charged_price:     totalPrice,
