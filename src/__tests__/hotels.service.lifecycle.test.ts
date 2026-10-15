@@ -365,3 +365,91 @@ describe('booking status', () => {
         await expect(service.getBookingStatus('CG-NOPE00', USER)).rejects.toMatchObject({ status: 404 });
     });
 });
+
+describe('cancel preview', () => {
+    // Fifty per cent back until the 5th, then nothing; the same terms the real cancel will read.
+    const POLICY = {
+        policyType: 'tiered' as const,
+        freeCancelDeadline: null,
+        tiers: [
+            { cancelDeadline: new Date('2026-11-05T10:00:00Z'), penaltyAmount: 50, penaltyType: 'percent', currency: 'USD', tierOrder: 1 },
+            { cancelDeadline: new Date('2026-11-18T10:00:00Z'), penaltyAmount: 100, penaltyType: 'percent', currency: 'USD', tierOrder: 2 },
+        ],
+    };
+    const BOOKED_AT = Date.parse('2026-11-01T00:00:00Z');
+
+    const row = {
+        booking_id: REF, user_id: USER, payment_intent_id: PI, status: 'confirmed', provider: 'mock',
+        provider_metadata: { hotelCode: 'MOCK-MNL-001', supplierRef: 'MOCKSUP-000001' },
+        property_name: 'Bayside Grand Manila', total_price: 264, currency: 'USD',
+        check_in: new Date('2026-11-20T00:00:00Z'),
+    };
+
+    beforeEach(() => {
+        vi.mocked(prisma.bookings.findFirst).mockResolvedValue(row as never);
+        (service as any).repo.findPolicySnapshot.mockResolvedValue(POLICY);
+    });
+
+    it('shows the owner what they would get back, and until when', async () => {
+        const out: any = await service.getCancelPreview(REF, USER, BOOKED_AT);
+
+        expect(out.data).toMatchObject({
+            reference: REF, cancellable: true,
+            refund:  { amount: 132, currency: 'USD', type: 'partial_refund' },
+            penalty: { amount: 132, currency: 'USD' },
+            paid:    { amount: 264, currency: 'USD' },
+            deadline: '2026-11-05T10:00:00.000Z',
+        });
+    });
+
+    it('cancels nothing and asks no supplier', async () => {
+        await service.getCancelPreview(REF, USER, BOOKED_AT);
+
+        expect(prisma.bookings.update).not.toHaveBeenCalled();
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+        expect(stripe.refunds.create).not.toHaveBeenCalled();
+        expect(mock.calls.filter((c) => c.method === 'cancelBooking')).toHaveLength(0);
+        expect(repo.log).toHaveLength(0);
+    });
+
+    it('is the figure the real cancellation then refunds', async () => {
+        vi.useFakeTimers({ now: BOOKED_AT, toFake: ['Date'] });
+        try {
+            const preview: any = await service.getCancelPreview(REF, USER);
+
+            vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 26400 } as never);
+            vi.mocked(stripe.refunds.create).mockResolvedValue({ id: 're_1', status: 'succeeded' } as never);
+            await service.cancelBooking({ bookingRef: REF, userId: USER, paymentIntentId: PI });
+
+            const refundedMinor = vi.mocked(stripe.refunds.create).mock.calls[0][0].amount as number;
+            expect(refundedMinor).toBe(Math.round(preview.data.refund.amount * 100));
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('is a 404 for someone else\'s booking', async () => {
+        await expect(service.getCancelPreview(REF, 'user-2', BOOKED_AT)).rejects.toMatchObject({ status: 404 });
+    });
+
+    it('is a 404 when there is no such booking', async () => {
+        vi.mocked(prisma.bookings.findFirst).mockResolvedValue(null);
+        await expect(service.getCancelPreview('CG-NOPE00', USER, BOOKED_AT)).rejects.toMatchObject({ status: 404 });
+    });
+
+    it('does not promise a refund when no terms were recorded', async () => {
+        (service as any).repo.findPolicySnapshot.mockResolvedValue(null);
+
+        const out: any = await service.getCancelPreview(REF, USER, BOOKED_AT);
+
+        expect(out.data.refund).toMatchObject({ amount: 0, type: 'no_refund' });
+    });
+
+    it('says a booking that is already cancelled cannot be cancelled again', async () => {
+        vi.mocked(prisma.bookings.findFirst).mockResolvedValue({ ...row, status: 'cancelled_refunded' } as never);
+
+        const out: any = await service.getCancelPreview(REF, USER, BOOKED_AT);
+
+        expect(out.data).toMatchObject({ cancellable: false, reason: 'already_cancelled' });
+    });
+});

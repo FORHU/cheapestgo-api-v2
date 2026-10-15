@@ -327,4 +327,8 @@ router.post('/cancel',          requireAuth, ctrl.cancelBooking);
 // a refresh. Scoped to the caller — another traveller's reference is a 404.
 router.get( '/bookings/:reference', requireAuth, ctrl.bookingStatus);
 
+// What cancelling would return, from the recorded terms and by the same engine that will
+// decide the cancellation. Read-only: nothing is cancelled and no supplier is asked.
+router.get( '/bookings/:reference/cancel-preview', requireAuth, ctrl.cancelPreview);
+
 export default router;

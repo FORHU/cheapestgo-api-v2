@@ -11,6 +11,7 @@ import { HotelBookingLifecycleService } from '@/services/hotelBookingLifecycle.s
 import { projectLegacyStatus, type LifecycleActor } from '@/lib/hotels/lifecycle/stateMachine';
 import { computePriceChange } from '@/lib/hotels/priceChange';
 import { attachStayTotals } from '@/lib/hotels/stayTotal';
+import { buildCancelPreview } from '@/lib/policies/cancelPreview';
 import type { LifecycleGuest } from '@/repositories/hotelBookingLifecycle.repository';
 import { groupByRoomName } from '@/lib/hotels/property';
 import { ensureEtgContent } from '@/lib/hotels/etgContent';
@@ -1403,6 +1404,35 @@ export class HotelsService {
                 updatedAt:     row.updated_at,
                 history:       [],
             },
+        };
+    }
+
+    // ── Cancel preview ──────────────────────────────────────────────────────
+
+    /**
+     * What cancelling this booking would return, before the guest commits to it.
+     *
+     * Read from the terms recorded at booking time and judged by the same engine, on the
+     * same inputs, as `cancelBooking` — so the figure shown is the figure refunded. Writes
+     * nothing and asks no supplier. Another traveller's reference is a 404, not a 403: that
+     * a booking exists is not theirs to learn.
+     */
+    async getCancelPreview(reference: string, userId: string, now?: number) {
+        const booking = await prisma.bookings.findFirst({ where: { booking_id: reference } });
+        if (!booking || booking.user_id !== userId) throw new AppError(404, 'Booking not found', 'BOOKING_NOT_FOUND');
+
+        const policy = await this.repo.findPolicySnapshot(reference);
+        return {
+            success: true,
+            data: buildCancelPreview({
+                reference,
+                status:     booking.status,
+                totalPrice: Number(booking.total_price),
+                currency:   booking.currency ?? 'PHP',
+                checkIn:    booking.check_in ?? new Date(),
+                policy,
+                now,
+            }),
         };
     }
 

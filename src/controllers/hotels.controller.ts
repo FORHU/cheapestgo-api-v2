@@ -305,6 +305,13 @@ export class HotelsController {
         } catch (err) { next(err); }
     };
 
+    cancelPreview = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { reference } = z.object({ reference: z.string().min(1).max(64) }).parse(req.params);
+            res.json(await svc.getCancelPreview(reference, req.user!.sub));
+        } catch (err) { next(err); }
+    };
+
     cancelBooking = async (req: Request, res: Response, next: NextFunction) => {
         try {
             const result = await svc.cancelBooking({ ...req.body, userId: req.user!.sub });
