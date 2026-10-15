@@ -1,3 +1,5 @@
+import Fuse from 'fuse.js';
+
 /** Map district/borough/neighbourhood names to the canonical city TGX can resolve.
  *  Keyed by ISO-2 countryCode → { subName (lowercase) → canonicalCity }.
  *  Used in both autocomplete (to remap district suggestions) and the stream route
@@ -12370,6 +12372,10 @@ function containsAtWordBoundary(hay: string, needle: string): boolean {
  * > query is a prefix of the key ("cla" → 'clark') > word-boundary substring.
  * Results are deduped by destination, so 'clark', 'clark freeport' and
  * 'clark pampanga' collapse into a single Angeles suggestion.
+ *
+ * A query that matches none of those tiers falls back to typo tolerance (fuzzyAliasMatches),
+ * so "Manhatan" still finds Manhattan. It is a last resort, never a reordering: an exact or
+ * prefix hit is always returned instead of a near miss.
  */
 export function matchAliasQuery(query: string, limit = 3): AliasMatch[] {
     const q = query.toLowerCase().trim();
@@ -12386,7 +12392,7 @@ export function matchAliasQuery(query: string, limit = 3): AliasMatch[] {
         else continue;
         scored.push({ entry, tier });
     }
-    if (!scored.length) return [];
+    if (!scored.length) return fuzzyAliasMatches(q, limit);
 
     scored.sort((a, b) =>
         a.tier - b.tier ||
@@ -12394,9 +12400,14 @@ export function matchAliasQuery(query: string, limit = 3): AliasMatch[] {
         a.entry.alias.localeCompare(b.entry.alias)
     );
 
+    return dedupeByDestination(scored.map((x) => x.entry), limit);
+}
+
+/** One suggestion per destination, in the order given. */
+function dedupeByDestination(entries: AliasIndexEntry[], limit: number): AliasMatch[] {
     const seenDestination = new Set<string>();
     const out: AliasMatch[] = [];
-    for (const { entry } of scored) {
+    for (const entry of entries) {
         const key = `${entry.canonicalCity.toLowerCase()}|${entry.countryCode}`;
         if (seenDestination.has(key)) continue;
         seenDestination.add(key);
@@ -12404,4 +12415,36 @@ export function matchAliasQuery(query: string, limit = 3): AliasMatch[] {
         if (out.length >= limit) break;
     }
     return out;
+}
+
+let _aliasFuse: Fuse<AliasIndexEntry> | null = null;
+
+/**
+ * Typo-tolerant lookup, for when every strict tier came up empty.
+ *
+ * Deliberately conservative, because a wrong suggestion is worse than none — it sends a
+ * traveller to a different city's hotels:
+ *  - four or more characters, below which a typo is indistinguishable from another word;
+ *  - the first letter must agree, which is where people almost never slip;
+ *  - a tight score threshold, so only a character or two off qualifies.
+ */
+function fuzzyAliasMatches(q: string, limit: number): AliasMatch[] {
+    if (q.length < 4) return [];
+
+    _aliasFuse ??= new Fuse(getAliasIndex(), {
+        keys:               ['alias'],
+        threshold:          0.3,
+        ignoreLocation:     true,
+        minMatchCharLength: 3,
+        includeScore:       true,
+    });
+
+    const hits = _aliasFuse.search(q, { limit: 25 })
+        .filter((h) => h.item.alias[0] === q[0])
+        .sort((a, b) =>
+            (a.score ?? 1) - (b.score ?? 1) ||
+            a.item.alias.length - b.item.alias.length ||
+            a.item.alias.localeCompare(b.item.alias));
+
+    return dedupeByDestination(hits.map((h) => h.item), limit);
 }
