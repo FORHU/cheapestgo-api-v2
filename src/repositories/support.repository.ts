@@ -490,4 +490,311 @@ export class SupportRepository {
         `);
         return rows.length > 0 && (rows[0].role === 'admin' || rows[0].role === 'support_agent');
     }
+
+    // ── Assignment: who a chat can be given to, and what each of them holds ──────
+
+    /** Everyone who may answer a chat. Admins first, then by name, as v1 orders them. */
+    async listAssignableAgents(): Promise<Array<{ id: string; name: string; role: string }>> {
+        return prisma.$queryRaw(Prisma.sql`
+            SELECT id,
+                   COALESCE(NULLIF(TRIM(CONCAT_WS(' ', first_name, last_name)), ''), email) AS name,
+                   role
+              FROM users
+             WHERE role IN ('support_agent', 'admin') AND banned_at IS NULL
+             ORDER BY role = 'admin', name
+        `);
+    }
+
+    /**
+     * Per person: what they hold now, and what they have handled since `since`.
+     *
+     * `handled` is read from the recorded resolutions in `support_assignment_events`, never
+     * from who holds a chat now — a chat reassigned after it was resolved would otherwise
+     * move the credit with it, and this is the figure pay is worked out from.
+     */
+    async handledTally(since: Date): Promise<Array<{
+        adminId: string; name: string; role: string; open: number; handled: number;
+    }>> {
+        return prisma.$queryRaw(Prisma.sql`
+            SELECT u.id AS "adminId",
+                   COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.email) AS name,
+                   u.role,
+                   (SELECT count(*)::int FROM support_conversations c
+                     WHERE c.assigned_admin_id = u.id AND c.status <> 'resolved') AS open,
+                   (SELECT count(*)::int FROM support_assignment_events e
+                     WHERE e.kind = 'resolved' AND e.to_admin_id = u.id AND e.created_at >= ${since}) AS handled
+              FROM users u
+             WHERE u.role IN ('support_agent', 'admin')
+             ORDER BY u.role = 'admin', handled DESC, name
+        `);
+    }
+
+    /**
+     * The two integers the sidebar badge polls for.
+     *
+     * Separate from the conversations query because the badge renders on every admin page:
+     * it wants counts, not a page of rows it will throw away.
+     *
+     * Unassigned counts only chats a customer has actually written in. A conversation that
+     * reached `waiting_human` without a guest message is a widget someone opened and left.
+     */
+    async inboxCounts(actorId: string): Promise<{ unassigned: number; mine: number; mineWaiting: number }> {
+        const rows = await prisma.$queryRaw<Array<{ unassigned: bigint; mine: bigint; mineWaiting: bigint }>>(Prisma.sql`
+            SELECT
+                count(*) FILTER (WHERE c.assigned_admin_id IS NULL
+                                   AND c.status IN ('waiting_human', 'human_active')
+                                   AND EXISTS (SELECT 1 FROM support_messages m
+                                                WHERE m.conversation_id = c.id AND m.sender_type = 'guest')) AS unassigned,
+                count(*) FILTER (WHERE c.assigned_admin_id = ${actorId}::uuid AND c.status <> 'resolved') AS mine,
+                count(*) FILTER (WHERE c.assigned_admin_id = ${actorId}::uuid AND c.status = 'waiting_human') AS "mineWaiting"
+              FROM support_conversations c
+        `);
+        const r = rows[0];
+        return {
+            unassigned:  Number(r?.unassigned ?? 0),
+            mine:        Number(r?.mine ?? 0),
+            mineWaiting: Number(r?.mineWaiting ?? 0),
+        };
+    }
+
+    /**
+     * Override computed **Urgency**, or hand it back.
+     *
+     * `null` is a value, not an absence: it restores the rule that keeps moving on its own
+     * as a departure approaches, which is a different thing from pinning the chat at
+     * `normal`. Returns whether the conversation existed.
+     */
+    async setPriority(conversationId: string, priority: string | null): Promise<boolean> {
+        const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+            UPDATE support_conversations
+               SET priority = ${priority}
+             WHERE id = ${conversationId}::uuid
+            RETURNING id
+        `);
+        return rows.length > 0;
+    }
+
+    // ── Internal Notes ───────────────────────────────────────────────────────────
+
+    /**
+     * Notes are read only here, and only by staff.
+     *
+     * They live in their own table rather than as a `sender_type` on `support_messages`,
+     * and that is a safety property rather than a taxonomy: the customer's read paths —
+     * including the live stream — cannot return a Note because they never query this
+     * table. The failure being designed out is a customer watching an Agent's private
+     * assessment of them arrive in real time.
+     */
+    async listNotes(conversationId: string): Promise<Array<{
+        id: string; conversationId: string; authorAdminId: string; authorName: string | null;
+        body: string; createdAt: Date;
+    }>> {
+        return prisma.$queryRaw(Prisma.sql`
+            SELECT n.id,
+                   n.conversation_id AS "conversationId",
+                   n.author_admin_id AS "authorAdminId",
+                   COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.email) AS "authorName",
+                   n.body,
+                   n.created_at AS "createdAt"
+              FROM support_notes n
+              LEFT JOIN users u ON u.id = n.author_admin_id
+             WHERE n.conversation_id = ${conversationId}::uuid
+             ORDER BY n.created_at
+        `);
+    }
+
+    /**
+     * Write a Note.
+     *
+     * Deliberately does not touch `last_message_at`. The Waiting queue sorts on it, so
+     * bumping it here would push a customer down the queue because an Agent wrote
+     * something *about* them — the chat would look freshly active while being no closer to
+     * an answer.
+     */
+    async addNote(conversationId: string, authorAdminId: string, body: string): Promise<{
+        id: string; conversationId: string; authorAdminId: string; body: string; createdAt: Date;
+    } | null> {
+        const rows = await prisma.$queryRaw<Array<{
+            id: string; conversationId: string; authorAdminId: string; body: string; createdAt: Date;
+        }>>(Prisma.sql`
+            INSERT INTO support_notes (conversation_id, author_admin_id, body)
+            SELECT ${conversationId}::uuid, ${authorAdminId}::uuid, ${body}
+             WHERE EXISTS (SELECT 1 FROM support_conversations WHERE id = ${conversationId}::uuid)
+            RETURNING id,
+                      conversation_id AS "conversationId",
+                      author_admin_id AS "authorAdminId",
+                      body,
+                      created_at AS "createdAt"
+        `);
+        return rows[0] ?? null;
+    }
+
+    // ── Asking for a person, and reading back a finished chat ───────────────────
+
+    /**
+     * Move a chat into the human queue, if it is not already there.
+     *
+     * Conditional in the statement rather than read-then-write: two taps on "talk to a
+     * person" arrive together often enough, and the second must not reset a chat an Agent
+     * has already picked up. Returns null when nothing moved, which the caller reads as
+     * "already queued" rather than as a failure.
+     */
+    async requestHuman(conversationId: string): Promise<SupportConversationRow | null> {
+        const rows = await prisma.$queryRaw<SupportConversationRow[]>(Prisma.sql`
+            UPDATE support_conversations
+               SET status = 'waiting_human'
+             WHERE id = ${conversationId}::uuid
+               AND status = 'ai_active'
+            RETURNING *
+        `);
+        return rows[0] ?? null;
+    }
+
+    /**
+     * The caller's finished chats, newest first.
+     *
+     * Resolved only. A resolved chat is never reopened, so this is how someone reads back
+     * an earlier answer without it mixing into the topic they are on now.
+     */
+    async listPastConversations(userId: string, limit = 10): Promise<Array<{
+        reference: string; createdAt: Date; lastMessageAt: Date | null;
+    }>> {
+        return prisma.$queryRaw(Prisma.sql`
+            SELECT reference, created_at AS "createdAt", last_message_at AS "lastMessageAt"
+              FROM support_conversations
+             WHERE user_id = ${userId}::uuid AND status = 'resolved'
+             ORDER BY last_message_at DESC
+             LIMIT ${limit}
+        `);
+    }
+
+    /**
+     * One of the caller's own finished chats, by its **Chat Reference**.
+     *
+     * The reference names a conversation and grants nothing (ADR-0038) — what grants the
+     * read is that the chat belongs to the signed-in caller. Someone else's reference, or
+     * one that is still open, is simply not found, and indistinguishable from a reference
+     * that never existed.
+     */
+    async findPastByReference(userId: string, reference: string): Promise<SupportConversationRow | null> {
+        const rows = await prisma.$queryRaw<SupportConversationRow[]>(Prisma.sql`
+            SELECT * FROM support_conversations
+             WHERE user_id = ${userId}::uuid
+               AND reference = ${reference}
+               AND status = 'resolved'
+             LIMIT 1
+        `);
+        return rows[0] ?? null;
+    }
+
+    // ── Linked Bookings ──────────────────────────────────────────────────────────
+
+    /**
+     * The caller's own trips, soonest first, for the picker to show.
+     *
+     * Four fields, not whole rows: a support widget is not a booking screen, and pulling
+     * the itinerary here would put it into a payload that exists to render a label and a
+     * date. Trips with no date sort last — the one someone is about to take is the one
+     * they are most likely writing about.
+     */
+    async listCustomerTrips(userId: string): Promise<Array<{
+        bookingReference: string; kind: string; label: string; startsAt: Date | null;
+    }>> {
+        return prisma.$queryRaw(Prisma.sql`
+            SELECT booking_reference AS "bookingReference",
+                   'stay'            AS kind,
+                   COALESCE(property_name, 'Hotel booking') AS label,
+                   check_in::timestamptz AS "startsAt"
+              FROM bookings
+             WHERE user_id = ${userId}::uuid AND booking_reference IS NOT NULL
+            UNION ALL
+            SELECT fb.booking_reference AS "bookingReference",
+                   'flight'             AS kind,
+                   COALESCE(MIN(fs.origin) || ' → ' || MAX(fs.destination), 'Flight booking') AS label,
+                   MIN(fs.departure) AS "startsAt"
+              FROM flight_bookings fb
+              LEFT JOIN flight_segments fs ON fs.booking_id = fb.id
+             WHERE fb.user_id = ${userId}::uuid AND fb.booking_reference IS NOT NULL
+             GROUP BY fb.booking_reference
+             ORDER BY "startsAt" ASC NULLS LAST
+             LIMIT 20
+        `);
+    }
+
+    /**
+     * Whether a reference is this person's own trip.
+     *
+     * The whole of the customer's link path rests on this: without it a customer could
+     * attach any reference they had seen or guessed, and an Agent would discuss a
+     * stranger's trip in good faith believing the system had vouched for it.
+     */
+    async bookingBelongsTo(bookingReference: string, userId: string): Promise<boolean> {
+        const rows = await prisma.$queryRaw<Array<{ ok: boolean }>>(Prisma.sql`
+            SELECT TRUE AS ok FROM bookings
+             WHERE booking_reference = ${bookingReference} AND user_id = ${userId}::uuid
+            UNION ALL
+            SELECT TRUE AS ok FROM flight_bookings
+             WHERE booking_reference = ${bookingReference} AND user_id = ${userId}::uuid
+            LIMIT 1
+        `);
+        return rows.length > 0;
+    }
+
+    /**
+     * The trips on one conversation, in the order they were attached.
+     *
+     * `known` is computed against the booking tables so the screen can mark a reference
+     * that resolves to nothing — an Agent typing one from a phone call gets it wrong
+     * sometimes, and a silent miss is worse than a visible one.
+     */
+    async listLinkedBookings(conversationId: string): Promise<Array<{
+        bookingReference: string; linkedBy: string | null; linkedAt: Date; known: boolean;
+    }>> {
+        return prisma.$queryRaw(Prisma.sql`
+            SELECT scb.booking_reference AS "bookingReference",
+                   scb.linked_by         AS "linkedBy",
+                   scb.linked_at         AS "linkedAt",
+                   EXISTS (
+                       SELECT 1 FROM bookings b  WHERE b.booking_reference  = scb.booking_reference
+                       UNION ALL
+                       SELECT 1 FROM flight_bookings fb WHERE fb.booking_reference = scb.booking_reference
+                   ) AS known
+              FROM support_conversation_bookings scb
+             WHERE scb.conversation_id = ${conversationId}::uuid
+             ORDER BY scb.linked_at ASC
+        `);
+    }
+
+    /** Idempotent: attaching a trip twice is the same end state as attaching it once. */
+    async linkBooking(conversationId: string, bookingReference: string, linkedBy: string | null): Promise<void> {
+        await prisma.$executeRaw(Prisma.sql`
+            INSERT INTO support_conversation_bookings (conversation_id, booking_reference, linked_by)
+            VALUES (${conversationId}::uuid, ${bookingReference}, ${linkedBy}::uuid)
+            ON CONFLICT (conversation_id, booking_reference) DO NOTHING
+        `);
+    }
+
+    /** Silent when it was not linked — the end state is what was asked for. */
+    async unlinkBooking(conversationId: string, bookingReference: string): Promise<void> {
+        await prisma.$executeRaw(Prisma.sql`
+            DELETE FROM support_conversation_bookings
+             WHERE conversation_id = ${conversationId}::uuid
+               AND booking_reference = ${bookingReference}
+        `);
+    }
+
+    /**
+     * Remove one of your own notes.
+     *
+     * Scoped to the author in the statement, so an Agent cannot tidy away a colleague's
+     * account of what they thought at the time.
+     */
+    async deleteNote(noteId: string, authorAdminId: string): Promise<boolean> {
+        const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+            DELETE FROM support_notes
+             WHERE id = ${noteId}::uuid AND author_admin_id = ${authorAdminId}::uuid
+            RETURNING id
+        `);
+        return rows.length > 0;
+    }
 }

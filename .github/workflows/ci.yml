@@ -5,15 +5,35 @@ name: CI
 # of checks. v1 runs type check and test only; this runs lint and build as well, so a
 # deploy workflow added later cannot fail on something CI never looked at.
 
+# Every branch and every pull request, rather than a named list. A list has to be edited
+# each time someone cuts a branch, and the branch nobody added is the one that reaches
+# staging unchecked. `pull_request` also covers the merge: it tests the merge result, not
+# the branch tip, so a change that only breaks once combined is caught before it lands.
 on:
   push:
-    branches: [main, staging, updates-api]
+    branches: ['**']
   pull_request:
-    branches: [main, staging, updates-api]
+    branches: ['**']
 
 jobs:
   check:
     runs-on: ubuntu-latest
+
+    # src/config.ts parses process.env with a zod schema at module load and calls
+    # process.exit(1) when it fails, which vitest reports as "process.exit unexpectedly
+    # called with 1". Four test files import it transitively, so without these the whole
+    # run dies in seconds — which is why this workflow had never once passed.
+    #
+    # Only the five the schema requires: everything else in that schema is optional or
+    # carries a default. Stubs, not secrets — no test opens a socket, and .env is
+    # gitignored so CI has none. DATABASE_URL is never connected to.
+    env:
+      DATABASE_URL:       postgresql://ci:ci@localhost:5432/ci
+      JWT_SECRET:         ci-stub-not-a-secret
+      JWT_REFRESH_SECRET: ci-stub-not-a-secret
+      COOKIE_SECRET:      ci-stub-not-a-secret
+      STRIPE_SECRET_KEY:  sk_test_stub
+
     steps:
       - uses: actions/checkout@v4
 

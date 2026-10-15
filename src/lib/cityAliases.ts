@@ -12325,7 +12325,7 @@ export interface AliasMatch {
     countryCode: string;
 }
 
-interface AliasIndexEntry extends AliasMatch { }
+type AliasIndexEntry = AliasMatch;
 
 let _aliasIndex: AliasIndexEntry[] | null = null;
 
@@ -12357,7 +12357,7 @@ function containsAtWordBoundary(hay: string, needle: string): boolean {
     for (;;) {
         const i = hay.indexOf(needle, from);
         if (i === -1) return false;
-        const before = i === 0 || /[\s\-]/.test(hay[i - 1]);
+        const before = i === 0 || /[\s-]/.test(hay[i - 1]);
         if (before) return true;
         from = i + 1;
     }

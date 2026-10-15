@@ -164,4 +164,95 @@ router.post('/conversations/:id/resolve', async (req: Request, res: Response, ne
     } catch (err) { next(err); }
 });
 
+// ── Assignment: who to give a chat to, how many are waiting, how urgent ─────────
+
+/** Admins only — see the service. A chat is given, never taken (ADR-0041). */
+router.get('/agents', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        return res.json({ success: true, data: await svc.assignableAgents(actorOf(req)) });
+    } catch (err) { next(err); }
+});
+
+/** Two integers for the sidebar badge, which renders on every admin page and polls. */
+router.get('/counts', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        return res.json({ success: true, data: await svc.counts(actorOf(req)) });
+    } catch (err) { next(err); }
+});
+
+/**
+ * Overrule computed Urgency, or restore it.
+ *
+ * `priority` must be *present* and may be `null`; `.nullable()` without `.optional()` is
+ * what makes an absent field a validation error rather than a silent "restore". The two
+ * mean different things to the queue, so the client has to say which it meant — see the
+ * service.
+ */
+router.patch('/conversations/:id/priority', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { id }       = z.object({ id: z.string().uuid() }).parse(req.params);
+        const { priority } = z.object({ priority: z.string().nullable() }).parse(req.body ?? {});
+        return res.json({ success: true, data: await svc.setPriority(actorOf(req), id, priority) });
+    } catch (err) { next(err); }
+});
+
+// ── Linked Bookings ────────────────────────────────────────────────────────────
+
+router.get('/conversations/:id/bookings', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+        return res.json({ success: true, data: await svc.linkedBookings(actorOf(req), id) });
+    } catch (err) { next(err); }
+});
+
+/**
+ * An Agent attaching a trip to a chat.
+ *
+ * No ownership check on the reference, unlike the customer's own route — investigating a
+ * travelling companion's flight is the job. See the service.
+ */
+router.post('/conversations/:id/bookings', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+        const { bookingReference } = z.object({ bookingReference: z.string().min(1).max(64) }).parse(req.body ?? {});
+        const data = await svc.linkBookingAsAgent(actorOf(req), id, bookingReference);
+        return res.status(201).json({ success: true, data });
+    } catch (err) { next(err); }
+});
+
+router.delete('/conversations/:id/bookings/:reference', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { id, reference } = z.object({
+            id: z.string().uuid(), reference: z.string().min(1).max(64),
+        }).parse(req.params);
+        return res.json({ success: true, data: await svc.unlinkBookingAsAgent(actorOf(req), id, reference) });
+    } catch (err) { next(err); }
+});
+
+// ── Internal Notes ─────────────────────────────────────────────────────────────
+
+router.get('/conversations/:id/notes', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+        return res.json({ success: true, data: await svc.listNotes(actorOf(req), id) });
+    } catch (err) { next(err); }
+});
+
+router.post('/conversations/:id/notes', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { id }   = z.object({ id: z.string().uuid() }).parse(req.params);
+        const { body } = z.object({ body: z.string().min(1).max(4000) }).parse(req.body ?? {});
+        const data = await svc.addNote(actorOf(req), id, body);
+        return res.status(201).json({ success: true, data });
+    } catch (err) { next(err); }
+});
+
+/** Your own only, and a stranger's reads 404 rather than 403 — see the service. */
+router.delete('/notes/:noteId', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { noteId } = z.object({ noteId: z.string().uuid() }).parse(req.params);
+        return res.json({ success: true, data: await svc.deleteNote(actorOf(req), noteId) });
+    } catch (err) { next(err); }
+});
+
 export default router;
