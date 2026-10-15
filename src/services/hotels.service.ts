@@ -9,6 +9,7 @@ import type {
 import { toAppError } from '@/services/hotelProviderErrors';
 import { HotelBookingLifecycleService } from '@/services/hotelBookingLifecycle.service';
 import { projectLegacyStatus, type LifecycleActor } from '@/lib/hotels/lifecycle/stateMachine';
+import { computePriceChange } from '@/lib/hotels/priceChange';
 import type { LifecycleGuest } from '@/repositories/hotelBookingLifecycle.repository';
 import { groupByRoomName } from '@/lib/hotels/property';
 import { ensureEtgContent } from '@/lib/hotels/etgContent';
@@ -498,6 +499,8 @@ export class HotelsService {
         roomName?: string;
         adults?:   number;
         children?: number;
+        /** The stay total the traveller was shown, in `currency`. Compared to what it is now. */
+        expectedTotal?: number;
     }) {
         const adults   = params.adults   ?? 2;
         const children = params.children ?? 0;
@@ -563,6 +566,15 @@ export class HotelsService {
             console.warn('[prebook] display conversion unavailable:', fxErr?.message);
         }
 
+        // Compared in the currency the traveller was shown, so the two figures are the same
+        // kind of number. Without a converted figure and a different currency there is nothing
+        // honest to compare against, and the answer is absent rather than a guess.
+        const priceChange = computePriceChange({
+            expected: params.expectedTotal,
+            current:  display ? Number(display.total) : (quotedCurrency === displayCurrency ? quotedTotal : Number.NaN),
+            currency: displayCurrency,
+        });
+
         return {
             success: true,
             data: {
@@ -574,6 +586,7 @@ export class HotelsService {
                     total:    quotedTotal,
                 },
                 ...(display ? { display } : {}),
+                ...(priceChange ? { priceChange } : {}),
                 surcharges:           quote.surcharges,
                 currency:             quote.price.currency,
                 cancellationPolicies: toPrebookPolicyWire(quote.cancellation),

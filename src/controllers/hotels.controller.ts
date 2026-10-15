@@ -228,6 +228,9 @@ export class HotelsController {
                 roomName: z.string().optional(),
                 adults:   z.coerce.number().int().min(1).optional(),
                 children: z.coerce.number().int().min(0).optional(),
+                // The room's stay total, in `currency`, as the traveller was last shown it. When it
+                // has moved the response carries `priceChange` so the checkout can say so.
+                expectedTotal: z.coerce.number().positive().optional(),
             }).parse(req.body);
             const result = await svc.preBook(body);
             res.json(result);

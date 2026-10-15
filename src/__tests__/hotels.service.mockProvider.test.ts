@@ -247,3 +247,40 @@ describe('HotelsService with the mock provider — cancel', () => {
         }));
     });
 });
+
+describe('HotelsService with the mock provider — price change since the traveller saw it', () => {
+    async function preBookExpecting(expectedTotal: number | undefined, hotelId = HOTEL) {
+        const rates = await mock.getRates(hotelId, { ...STAY, adults: 2, children: 0 });
+        const rate  = rates.find((r) => r.roomName === 'Standard Double Room' && r.boardCode === 'BB')!;
+        return service.preBook({
+            offerId: rate.offerId, roomName: rate.roomName, adults: 2, children: 0, currency: 'USD', expectedTotal,
+        }) as Promise<any>;
+    }
+
+    it('says nothing when the client did not say what it expected', async () => {
+        const out = await preBookExpecting(undefined);
+        expect(out.data.priceChange).toBeUndefined();
+    });
+
+    it('says nothing when the price is what was shown', async () => {
+        const out = await preBookExpecting(240);
+        expect(out.data.priceChange).toBeUndefined();
+    });
+
+    it('reports a rise, with both figures, when the supplier re-priced', async () => {
+        mock.setScenario('price_up');
+        const out = await preBookExpecting(240);
+
+        expect(out.data.priceChange).toEqual({
+            previous: 240, current: 259.2, direction: 'up', currency: 'USD', difference: 19.2,
+        });
+        // The new price is still the one quoted and recorded: this describes, it does not decide.
+        expect(out.data.price.total).toBeCloseTo(259.2, 2);
+    });
+
+    it('reports a drop', async () => {
+        mock.setScenario('price_down');
+        const out = await preBookExpecting(240);
+        expect(out.data.priceChange).toMatchObject({ direction: 'down', current: 228 });
+    });
+});
