@@ -9,7 +9,6 @@ const ctrl = new BookingsController();
 router.use(requireAuth);
 
 router.get('/', ctrl.list);
-router.get('/:id', ctrl.details);
 
 // ── POST /amend ───────────────────────────────────────────────────────────────
 // Contact details and special requests on a hotel booking. Local only — see
@@ -28,5 +27,10 @@ router.delete('/saved-trips/:id',   ctrl.deleteSavedTrip);
 router.get( '/price-alerts',        ctrl.getPriceAlerts);
 router.post('/price-alerts',        ctrl.createPriceAlert);
 router.delete('/price-alerts/:id',  ctrl.deletePriceAlert);
+
+// Last, and for a reason: `/:id` matches any single segment, so declared above the two blocks
+// before it, it answered `GET /saved-trips` and `GET /price-alerts` as a booking lookup for an
+// id of "saved-trips" — a 404 for every client that used them.
+router.get('/:id', ctrl.details);
 
 export default router;
