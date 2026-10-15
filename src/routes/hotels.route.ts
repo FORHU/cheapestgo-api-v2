@@ -323,4 +323,8 @@ router.post('/create-payment',  requireAuth, ctrl.createPayment);
 router.post('/confirm',         requireAuth, ctrl.confirmBooking);
 router.post('/cancel',          requireAuth, ctrl.cancelBooking);
 
+// Where a booking is: for polling after payment and for a confirmation page that survives
+// a refresh. Scoped to the caller — another traveller's reference is a 404.
+router.get( '/bookings/:reference', requireAuth, ctrl.bookingStatus);
+
 export default router;

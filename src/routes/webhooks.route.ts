@@ -322,6 +322,26 @@ router.post(
                     break;
                 }
 
+                // The authorisation landed. For a hotel booking whose traveller has already said who
+                // is staying, this is enough to finish it — the same routine, under the same claim, as
+                // the browser's confirm call, so whichever arrives first wins and the other is told.
+                case 'payment_intent.amount_capturable_updated': {
+                    const pi = event.data.object as Stripe.PaymentIntent;
+                    if (pi.metadata?.type !== 'hotel' && pi.metadata?.type !== 'hotel_bundle') break;
+                    try {
+                        const { HotelsService } = await import('@/services/hotels.service');
+                        const out = await new HotelsService().completeFromPayment(pi.id);
+                        logger.info('[webhooks/stripe] Hotel payment authorised', { paymentIntentId: pi.id, ...out });
+                    } catch (err: any) {
+                        // Not rethrown: the lifecycle and the browser both still stand, and a retry
+                        // of this event would only repeat the same attempt.
+                        logger.error('[webhooks/stripe] Could not complete hotel booking from payment', {
+                            paymentIntentId: pi.id, message: err?.message,
+                        });
+                    }
+                    break;
+                }
+
                 case 'payment_intent.payment_failed': {
                     const pi = event.data.object as Stripe.PaymentIntent;
                     await (prisma as any).bookings.updateMany({

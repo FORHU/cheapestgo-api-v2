@@ -20,6 +20,7 @@ import { RoomCatalogService } from '@/services/roomCatalog.service';
 import { getDumpUrl, processDump } from '@/lib/hotels/etgDump';
 import { findUnrecordedReservations, filterAlreadyNotified, UNRECORDED_NOTIFICATION_TITLE } from '@/lib/admin/reconciliation';
 import { reconcilePlatformCost } from '@/lib/admin/platformCost';
+import { HotelBookingLifecycleService } from '@/services/hotelBookingLifecycle.service';
 import { createNotification } from '@/lib/admin/notify';
 import { ticketNumbersFrom } from '@/lib/flights/duffelTickets';
 import { sendFlightConfirmationEmail } from '@/lib/email/flightConfirmation';
@@ -1434,6 +1435,59 @@ router.get('/hotel-reconciliation', async (_req: Request, res: Response, next: N
             unrecorded:    result.unrecorded.length,
             newlyNotified: fresh.length,
             references:    result.unrecorded.map((u) => u.bookingReference),
+        });
+    } catch (err) { next(err); }
+});
+
+// -----------------------------------------------------------------------------
+// GET /api/v2/cron/hotel-booking-sweep
+// Schedule: every 10 minutes  (*/10 * * * *)
+//
+// Releases payments nobody finished, and says out loud about bookings stuck with the
+// supplier. It never books and never calls a supplier: an authorisation that was held and
+// then abandoned is voided, and an attempt the supplier was asked about is only ever
+// *reported* — that one has a reservation behind it that a person has to look at
+// (ADR-0026). No search runs here, which TravelgateX forbids from a schedule.
+// -----------------------------------------------------------------------------
+
+const SWEEP_ATTENTION_TITLE = 'Hotel booking needs review';
+
+router.get('/hotel-booking-sweep', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+        const report = await new HotelBookingLifecycleService().sweep();
+
+        // One notification per reference, ever: the job runs every ten minutes and a stuck
+        // booking stays stuck until somebody acts, so repeating it would only train people
+        // to ignore it.
+        let announced = 0;
+        for (const item of report.attention) {
+            const seen = await prisma.notifications.findFirst({
+                where:  { title: SWEEP_ATTENTION_TITLE, description: { contains: item.reference } },
+                select: { id: true },
+            }).catch(() => null);
+            if (seen) continue;
+
+            await createNotification(
+                SWEEP_ATTENTION_TITLE,
+                `${item.reference} has been ${item.status} for ${item.ageMinutes} minutes`
+                + `${item.failureCode ? ` (${item.failureCode})` : ''}. The supplier may hold a reservation `
+                + "the platform has not confirmed, and the guest's payment is being kept. Check the supplier "
+                + 'dashboard before releasing or capturing anything.',
+            );
+            announced++;
+        }
+
+        for (const a of report.anomalies) {
+            console.warn(`[hotel-booking-sweep] ${a.reference}: ${a.reason}`);
+        }
+
+        res.json({
+            success:   true,
+            scanned:   report.scanned,
+            expired:   report.expired.length,
+            anomalies: report.anomalies,
+            attention: report.attention.length,
+            announced,
         });
     } catch (err) { next(err); }
 });

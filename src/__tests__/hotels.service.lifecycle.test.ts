@@ -259,3 +259,109 @@ describe('cancellation', () => {
         expect(repo.path(REF)).toEqual(['CANCEL_REQUESTED', 'REFUND_PENDING', 'REFUNDED']);
     });
 });
+
+describe('completing from the payment event', () => {
+    /** The traveller said who is staying at payment time, so nothing is waiting on the browser. */
+    async function paidWithDetails() {
+        const prebookId = await quote();
+        Object.assign(repo.records.get(REF)!, {
+            prebookRef: prebookId, checkIn: STAY.checkIn, checkOut: STAY.checkOut,
+            propertyName: 'Bayside Grand Manila', roomName: 'Standard Double Room', currency: 'USD',
+            draft: { adults: 2, children: 0 },
+        });
+        repo.guests.set(REF, [
+            { kind: 'holder', firstName: 'Juan', lastName: 'dela Cruz', email: 'juan@example.com' },
+            { kind: 'adult', firstName: 'Juan', lastName: 'dela Cruz' },
+            { kind: 'adult', firstName: 'Maria', lastName: 'dela Cruz' },
+        ]);
+        return prebookId;
+    }
+
+    it('books and confirms without the browser, as the webhook', async () => {
+        await paidWithDetails();
+
+        const out = await service.completeFromPayment(PI);
+
+        expect(out).toMatchObject({ handled: true, completed: true, reference: REF });
+        expect(bookCalls()).toBe(1);
+        expect(repo.status(REF)).toBe('CONFIRMED');
+        expect(repo.log.every((e) => e.actor === 'webhook')).toBe(true);
+    });
+
+    it('does nothing for a payment that is not a hotel attempt', async () => {
+        expect(await service.completeFromPayment('pi_flight')).toMatchObject({ handled: false, completed: false });
+        expect(bookCalls()).toBe(0);
+    });
+
+    it('only records the authorisation when the traveller has not said who is staying', async () => {
+        await quote();
+
+        const out = await service.completeFromPayment(PI);
+
+        expect(out).toMatchObject({ handled: true, completed: false, reason: expect.stringMatching(/details/) });
+        expect(repo.status(REF)).toBe('PAYMENT_AUTHORIZED');
+        expect(bookCalls()).toBe(0);
+    });
+
+    it('leaves a booking the browser is already completing alone', async () => {
+        await paidWithDetails();
+        repo.records.get(REF)!.status = 'SUPPLIER_BOOKING';
+
+        const out = await service.completeFromPayment(PI);
+
+        expect(out).toMatchObject({ handled: true, completed: false, reason: 'already SUPPLIER_BOOKING' });
+        expect(bookCalls()).toBe(0);
+    });
+
+    it('asks the supplier once when the webhook and the browser arrive together', async () => {
+        const prebookId = await paidWithDetails();
+
+        const [viaWebhook, viaBrowser]: any[] = await Promise.all([
+            service.completeFromPayment(PI),
+            service.confirmBooking(params(prebookId)),
+        ]);
+
+        expect(bookCalls()).toBe(1);
+        expect(stripe.paymentIntents.capture).toHaveBeenCalledTimes(1);
+        expect(viaBrowser.success).toBe(true);
+        expect(viaWebhook.handled).toBe(true);
+        expect(repo.status(REF)).toBe('CONFIRMED');
+    });
+});
+
+describe('booking status', () => {
+    it('reports the lifecycle to its owner', async () => {
+        repo.records.get(REF)!.status = 'SUPPLIER_BOOKING';
+
+        const out: any = await service.getBookingStatus(REF, USER);
+
+        expect(out.data).toMatchObject({ reference: REF, status: 'SUPPLIER_BOOKING', bookingStatus: null, failure: null });
+    });
+
+    it('carries the failure and the legacy status once confirmed', async () => {
+        await service.confirmBooking(params(await quote()));
+
+        const out: any = await service.getBookingStatus(REF, USER);
+
+        expect(out.data).toMatchObject({ status: 'CONFIRMED', bookingStatus: 'confirmed' });
+    });
+
+    it('is a 404 for someone else\'s booking, not a leak', async () => {
+        await expect(service.getBookingStatus(REF, 'user-2')).rejects.toMatchObject({ status: 404 });
+    });
+
+    it('answers a booking from before the lifecycle from the sale itself', async () => {
+        vi.mocked(prisma.bookings.findFirst).mockResolvedValueOnce({
+            booking_id: 'CG-OLD111', status: 'confirmed', updated_at: new Date(), provider: 'travelgatex', currency: 'PHP',
+        } as never);
+
+        const out: any = await service.getBookingStatus('CG-OLD111', USER);
+
+        expect(out.data).toMatchObject({ reference: 'CG-OLD111', status: 'CONFIRMED', bookingStatus: 'confirmed', history: [] });
+    });
+
+    it('is a 404 when there is no such booking at all', async () => {
+        vi.mocked(prisma.bookings.findFirst).mockResolvedValueOnce(null);
+        await expect(service.getBookingStatus('CG-NOPE00', USER)).rejects.toMatchObject({ status: 404 });
+    });
+});

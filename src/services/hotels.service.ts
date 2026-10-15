@@ -1293,6 +1293,40 @@ export class HotelsService {
 
     // ââ Deals âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
+    // ── Completion from a payment event ─────────────────────────────────────
+
+    /**
+     * Finishes a booking from Stripe's authorisation event, for a traveller whose browser
+     * never made the confirm call.
+     *
+     * It goes through `confirmBooking`, so it is the same routine under the same claim: if the
+     * browser is already booking, this loses the claim and returns the winner's answer. It
+     * only acts when the traveller said who is staying at payment time — otherwise there is
+     * nothing to book with, the authorisation is recorded, and the browser completes it as
+     * it always did (or the sweeper releases the hold if it never comes).
+     */
+    async completeFromPayment(paymentIntentId: string): Promise<{
+        handled: boolean; completed: boolean; reason?: string; reference?: string;
+    }> {
+        const record = await this.lifecycle.recordAuthorised(paymentIntentId);
+        if (!record) return { handled: false, completed: false, reason: 'not a hotel booking attempt' };
+
+        if (record.status !== 'PAYMENT_AUTHORIZED') {
+            return { handled: true, completed: false, reason: `already ${record.status}`, reference: record.reference };
+        }
+
+        const params = await this.lifecycle.confirmParamsFor(record);
+        if (!params) {
+            return { handled: true, completed: false, reason: 'awaiting the traveller\'s details', reference: record.reference };
+        }
+
+        const result: any = await this.confirmBooking(params as any, { actor: 'webhook' });
+        return {
+            handled: true, completed: result?.success === true, reference: record.reference,
+            ...(result?.success === true ? {} : { reason: result?.error ?? 'not completed' }),
+        };
+    }
+
     // ── Booking status ──────────────────────────────────────────────────────
 
     /**

@@ -247,6 +247,19 @@ export class HotelsController {
                 checkOut:       z.string().optional(),
                 bundleFlightId: z.string().optional(),
                 displayedTotal: z.coerce.number().positive().optional(),
+                // What the confirmation will need, if the traveller has already said. Optional and
+                // additive: with these, a booking can be finished from the payment event alone.
+                holder:         z.object({ firstName: z.string(), lastName: z.string(), email: z.string().email() }).optional(),
+                guests:         z.array(z.object({ firstName: z.string(), lastName: z.string(), age: z.number().optional() })).optional(),
+                adults:         z.coerce.number().int().min(1).optional(),
+                children:       z.coerce.number().int().min(0).optional(),
+                propertyImage:  z.string().optional(),
+                specialRequests: z.string().optional(),
+                voucherCode:    z.string().optional(),
+                discountAmount: z.coerce.number().optional(),
+                cancellationPolicies: z.any().optional(),
+                quotedPrice:    z.coerce.number().optional(),
+                board:          z.string().max(120).optional(),
             }).parse(req.body);
             const result = await svc.createPayment({ ...body, userId: req.user!.sub });
             res.json(result);
@@ -277,6 +290,13 @@ export class HotelsController {
             }).parse(req.body);
             const result = await svc.confirmBooking({ ...body, userId: req.user!.sub });
             res.json(result);
+        } catch (err) { next(err); }
+    };
+
+    bookingStatus = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { reference } = z.object({ reference: z.string().min(1).max(64) }).parse(req.params);
+            res.json(await svc.getBookingStatus(reference, req.user!.sub));
         } catch (err) { next(err); }
     };
 
