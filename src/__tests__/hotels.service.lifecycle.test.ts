@@ -601,3 +601,31 @@ describe('a supplier that will not cancel', () => {
         expect(stripe.refunds.create).toHaveBeenCalledTimes(1);
     });
 });
+
+describe('a card that was not authorised', () => {
+    it('is refused at confirm, with the supplier never asked and the attempt left where it was', async () => {
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({
+            id: PI, status: 'requires_payment_method', amount: 26400, currency: 'usd',
+            metadata: { userId: USER, bookingReference: REF },
+        } as never);
+
+        await expect(service.confirmBooking(params(await quote())))
+            .rejects.toMatchObject({ status: 402, code: 'PAYMENT_REQUIRED' });
+
+        expect(bookCalls()).toBe(0);
+        expect(stripe.paymentIntents.capture).not.toHaveBeenCalled();
+        expect(repo.status(REF)).toBe('PAYMENT_PENDING');
+        expect(prisma.bookings.create).not.toHaveBeenCalled();
+    });
+
+    it('is refused for a payment that belongs to someone else', async () => {
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({
+            id: PI, status: 'requires_capture', amount: 26400, currency: 'usd',
+            metadata: { userId: 'user-2', bookingReference: REF },
+        } as never);
+
+        await expect(service.confirmBooking(params(await quote())))
+            .rejects.toMatchObject({ status: 403, code: 'FORBIDDEN' });
+        expect(bookCalls()).toBe(0);
+    });
+});
