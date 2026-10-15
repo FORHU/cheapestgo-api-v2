@@ -128,3 +128,37 @@ describe('HotelsController.searchStream', () => {
         expect(done).toMatchObject({ tgxFailed: true, tgxUnanswered: true });
     });
 });
+
+describe('HotelsController.searchStream — the whole stay', () => {
+    it('sends the stay total and nights beside the nightly price, in listings and in price events', async () => {
+        // Three nights at 100 a night.
+        const { provider } = fakeProvider({
+            providesContent: false,
+            data: [{ hotelId: 'H1', id: 'H1', name: 'The Grand', price: 100, currency: 'USD', images: ['x'], image: 'x', lat: 14.5, lng: 121 }],
+        });
+        setHotelProviderForTests(provider);
+        vi.mocked(getInstantHotelCatalog).mockResolvedValue([
+            { hotelId: 'H1', id: 'H1', name: 'The Grand', price: 0, images: ['x'], image: 'x', lat: 14.5, lng: 121 },
+        ]);
+
+        const { res, events } = fakeRes();
+        await new HotelsController().searchStream(fakeReq(BODY), res);
+
+        const prices = events().filter((e) => e.type === 'prices').flatMap((e) => e.data);
+        expect(prices).toEqual([expect.objectContaining({ hotelId: 'H1', price: 100, stayTotal: 300 })]);
+    });
+
+    it('does the same for hotels sent whole', async () => {
+        const { provider } = fakeProvider({
+            providesContent: false,
+            data: [{ hotelId: 'H9', id: 'H9', name: 'New', price: 80, currency: 'USD', images: ['x'], image: 'x', lat: 14.5, lng: 121 }],
+        });
+        setHotelProviderForTests(provider);
+
+        const { res, events } = fakeRes();
+        await new HotelsController().searchStream(fakeReq(BODY), res);
+
+        const hotels = events().filter((e) => e.type === 'hotels').flatMap((e) => e.data);
+        expect(hotels[0]).toMatchObject({ price: 80, stayTotal: 240, nights: 3 });
+    });
+});

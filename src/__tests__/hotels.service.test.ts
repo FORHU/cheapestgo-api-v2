@@ -140,17 +140,22 @@ describe('HotelsService.search()', () => {
     it('returns the search results', async () => {
         vi.mocked(runTgxSearch).mockResolvedValue(MOCK_SEARCH_RESULT as any);
 
-        const result = await service.search(SEARCH_PARAMS);
+        const result: any = await service.search(SEARCH_PARAMS);
 
-        expect(result).toEqual(MOCK_SEARCH_RESULT);
+        // The supplier's listing comes back as it was, with the whole stay added beside the
+        // nightly rate: 120 a night over the four nights of the stay.
+        expect(result.totalCount).toBe(MOCK_SEARCH_RESULT.totalCount);
+        expect(result.data).toEqual([
+            { ...MOCK_SEARCH_RESULT.data[0], stayTotal: 480, nights: 4 },
+        ]);
     });
 
     it('records demand even if demand recording fails', async () => {
         vi.mocked(runTgxSearch).mockResolvedValue(MOCK_SEARCH_RESULT as any);
 
-        const result = await service.search(SEARCH_PARAMS);
+        const result: any = await service.search(SEARCH_PARAMS);
 
-        expect(result).toEqual(MOCK_SEARCH_RESULT);
+        expect(result.totalCount).toBe(MOCK_SEARCH_RESULT.totalCount);
     });
 });
 

@@ -284,3 +284,29 @@ describe('HotelsService with the mock provider — price change since the travel
         expect(out.data.priceChange).toMatchObject({ direction: 'down', current: 228 });
     });
 });
+
+describe('HotelsService with the mock provider — the whole stay beside the nightly rate', () => {
+    it('search listings carry the stay total and the nights', async () => {
+        const out: any = await service.search({
+            destination: 'Manila', checkIn: STAY.checkIn, checkOut: STAY.checkOut, adults: 2,
+        });
+        const grand = out.data.find((h: any) => h.id === HOTEL);
+
+        // Cheapest room is room-only: 120 × 0.88 × 2 nights = 211.20 for the stay, 105.60 a night.
+        expect(grand.price).toBeCloseTo(105.6, 2);
+        expect(grand.stayTotal).toBe(211.2);
+        expect(grand.nights).toBe(2);
+        expect(out.allMappable.find((h: any) => h.id === HOTEL).stayTotal).toBe(211.2);
+    });
+
+    it('property rooms and rates carry both, and the per-night figure is unchanged', async () => {
+        const out: any = await service.getProperty(HOTEL, { ...STAY, adults: 2, children: 0 });
+        const standard = out.rooms.find((r: any) => r.name === 'Standard Double Room');
+        const bb = standard.rates.find((r: any) => r.boardCode === 'BB');
+
+        expect(bb.price).toBe(120);       // per night, as before
+        expect(bb.stayTotal).toBe(240);   // the stay
+        expect(standard.nights).toBe(2);
+        expect(standard.stayTotal).toBe(standard.rates.map((r: any) => r.stayTotal).sort((a: number, b: number) => a - b)[0]);
+    });
+});

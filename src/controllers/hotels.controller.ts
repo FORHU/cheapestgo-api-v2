@@ -4,6 +4,8 @@ import { AppError } from '@/middleware/error.middleware';
 import { HotelsService } from '@/services/hotels.service';
 import { getPlaceDetails, geocode as geoCodePlace } from '@/lib/google/places';
 import { config } from '@/config';
+import { nightsBetween } from '@/lib/hotels/nights';
+import { attachStayTotals } from '@/lib/hotels/stayTotal';
 import { fetchHotelContentPatches } from '@/lib/hotels/contentPatches';
 import { resolveTgxDestinationCode } from '@/lib/hotels/travelgatex';
 import { getInstantHotelCatalog } from '@/lib/hotels/search';
@@ -586,7 +588,8 @@ export class HotelsController {
              * Rate (ADR-0020). Dividing here as well advertised `total / nights²` on every stay
              * of more than one night, once `buildCityResults` began dividing at the source.
              */
-            const tgxHotels: any[]   = Array.isArray(tgxResult.data) ? tgxResult.data : [];
+            const stayNights = nightsBetween(body.checkin ?? body.checkIn, body.checkout ?? body.checkOut);
+            const tgxHotels: any[]   = attachStayTotals(Array.isArray(tgxResult.data) ? tgxResult.data : [], stayNights);
             const tgxHotelIdSet      = new Set(tgxHotels.map((h: any) => h.hotelId || h.id));
             const newTgxHotels       = tgxHotels.filter((h: any) => !catalogIdSet.has(h.hotelId || h.id));
 
@@ -594,6 +597,7 @@ export class HotelsController {
                 const prices = tgxHotels.map((h: any) => ({
                     hotelId:       h.hotelId || h.id,
                     price:         h.price,
+                    stayTotal:    h.stayTotal,
                     currency:      h.currency,
                     offerId:       h.offerId,
                     refundableTag: h.refundableTag,
@@ -697,7 +701,7 @@ export class HotelsController {
                         return { data: [] as any[], allMappable: [] as any[], totalCount: 0, truncated: false };
                     });
 
-                const secondHotels: any[] = Array.isArray(second.data) ? second.data : [];
+                const secondHotels: any[] = attachStayTotals(Array.isArray(second.data) ? second.data : [], stayNights);
                 const known = new Set([...tgxHotelIdSet, ...catalogIdSet]);
                 extraHotels = secondHotels.filter((h: any) => !known.has(h.hotelId || h.id));
                 console.log(`[stream] Second pass: ${secondHotels.length} hotels in ${Date.now() - t0}ms, ${extraHotels.length} of them new`);
@@ -710,6 +714,7 @@ export class HotelsController {
                         data: extraHotels.map((h: any) => ({
                             hotelId:       h.hotelId || h.id,
                             price:         h.price,
+                            stayTotal:    h.stayTotal,
                             currency:      h.currency,
                             offerId:       h.offerId,
                             refundableTag: h.refundableTag,

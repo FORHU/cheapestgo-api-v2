@@ -10,6 +10,7 @@ import { toAppError } from '@/services/hotelProviderErrors';
 import { HotelBookingLifecycleService } from '@/services/hotelBookingLifecycle.service';
 import { projectLegacyStatus, type LifecycleActor } from '@/lib/hotels/lifecycle/stateMachine';
 import { computePriceChange } from '@/lib/hotels/priceChange';
+import { attachStayTotals } from '@/lib/hotels/stayTotal';
 import type { LifecycleGuest } from '@/repositories/hotelBookingLifecycle.repository';
 import { groupByRoomName } from '@/lib/hotels/property';
 import { ensureEtgContent } from '@/lib/hotels/etgContent';
@@ -267,7 +268,14 @@ export class HotelsService {
             params.destination.toLowerCase().replace(/\s+/g, '-'),
             params.countryCode ?? 'XX',
         ).catch(() => {});
-        return results;
+
+        // The nightly rate stays as it was; the whole stay rides beside it.
+        const nights = nightsBetween(params.checkIn, params.checkOut);
+        return {
+            ...results,
+            data: attachStayTotals(results.data ?? [], nights),
+            ...(results.allMappable ? { allMappable: attachStayTotals(results.allMappable, nights) } : {}),
+        };
     }
 
     // ââ Amenities âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
@@ -433,8 +441,12 @@ export class HotelsService {
         const rawTypes = rawTypesOrNull ?? [];
         let rooms = groupByRoomName(rawTypes).map((room) => ({
             ...room,
+            // The price of the whole stay, beside the per-night figure the cards print, so
+            // nothing has to multiply a rounded nightly rate back up to learn what is billed.
+            stayTotal: room.price,
+            nights,
             price: room.price / nights,
-            rates: room.rates.map((rate) => ({ ...rate, price: rate.price / nights })),
+            rates: room.rates.map((rate) => ({ ...rate, stayTotal: rate.price, price: rate.price / nights })),
         }));
 
         const etg = providerContent ? null : await withTimeout(ensureEtgContent(hotelId, content), 8_000);
