@@ -421,7 +421,7 @@ describe('cancel preview', () => {
             vi.mocked(stripe.refunds.create).mockResolvedValue({ id: 're_1', status: 'succeeded' } as never);
             await service.cancelBooking({ bookingRef: REF, userId: USER, paymentIntentId: PI });
 
-            const refundedMinor = vi.mocked(stripe.refunds.create).mock.calls[0][0].amount as number;
+            const refundedMinor = vi.mocked(stripe.refunds.create).mock.calls[0][0]?.amount as number;
             expect(refundedMinor).toBe(Math.round(preview.data.refund.amount * 100));
         } finally {
             vi.useRealTimers();
