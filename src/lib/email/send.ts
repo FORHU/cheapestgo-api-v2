@@ -108,6 +108,14 @@ export async function sendTransactionalEmail(p: SendEmailParams): Promise<SendEm
         return { success: true, duplicate: true };
     }
 
+    // A mock supplier makes reservations that do not exist, so the mail about them must not
+    // reach a real inbox. Logged, not queued: nothing is owed to anyone.
+    const transport = config.EMAIL_TRANSPORT ?? (config.HOTEL_PROVIDER === 'mock' ? 'log' : 'resend');
+    if (transport === 'log') {
+        console.info(`[email] transport=log — not sending ${p.emailType} to ${p.to}: ${p.subject}`);
+        return { success: true };
+    }
+
     // Queued rather than dropped: an unconfigured key is a deployment problem, and the mail is
     // still owed to the customer once it is fixed.
     if (!config.RESEND_API_KEY) {
