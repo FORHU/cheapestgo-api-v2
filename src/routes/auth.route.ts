@@ -30,7 +30,7 @@ const controller = new AuthController();
 
 router.post('/register', authRateLimit, controller.register);
 router.post('/login',    authRateLimit, controller.login);
-router.post('/logout',   authenticate,  controller.logout);
+router.post('/logout',                  controller.logout);
 router.post('/refresh',  authRateLimit, controller.refresh);
 router.get('/me',        authenticate,  controller.me);
 
