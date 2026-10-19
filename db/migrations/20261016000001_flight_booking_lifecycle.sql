@@ -50,12 +50,17 @@
 -- Applied by hand (see the migrations note in the project memory). Pipe in only the up section
 -- — the down section drops what was added, so running the whole file undoes itself.
 --
+-- Or with dbmate (`npx dbmate --url "…?sslmode=disable" up`). `transaction:false` below is what
+-- makes that work: dbmate otherwise wraps the file in a transaction of its own, the COMMIT here
+-- ends it early, and dbmate fails with "pq: unexpected transaction status idle" after the SQL
+-- has already committed. With it, this file's own BEGIN … COMMIT is the only transaction.
+--
 -- After applying: `prisma db pull` to bring the models into prisma/schema.prisma. The code uses
 -- raw SQL against these until then, so nothing waits on it.
 --
 -- `duffel_pre_order_*` are left alone. The new flow stops writing them; the old rows keep theirs.
 
--- migrate:up
+-- migrate:up transaction:false
 BEGIN;
 
 ALTER TABLE public.booking_sessions
