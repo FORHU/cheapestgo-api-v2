@@ -160,6 +160,11 @@ export class FlightBookingLifecycleService {
         return this.repo.begin(sessionId);
     }
 
+    /** Where an attempt is. Null when there is none, or the lifecycle is not there yet. */
+    find(sessionId: string): Promise<FlightLifecycleRecord | null> {
+        return this.repo.findBySession(sessionId);
+    }
+
     // ── Completion ──────────────────────────────────────────────────────────
 
     /**

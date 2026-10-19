@@ -72,11 +72,12 @@ vi.mock('@/repositories/flights.repository', () => ({
     }),
 }));
 
-const lifecycle = vi.hoisted(() => ({ complete: vi.fn(), open: vi.fn() }));
+const lifecycle = vi.hoisted(() => ({ complete: vi.fn(), open: vi.fn(), find: vi.fn() }));
 vi.mock('@/services/flightBookingLifecycle.service', () => ({
     FlightBookingLifecycleService: vi.fn(function(this: any) {
         this.complete = lifecycle.complete;
         this.open     = lifecycle.open;
+        this.find     = lifecycle.find;
     }),
 }));
 
@@ -489,6 +490,60 @@ describe('FlightsService.confirm()', () => {
             await expect(confirm()).rejects.toMatchObject({ status: 402, code: 'PAYMENT_NOT_COMPLETED' });
             expect(completeDuffelBooking).not.toHaveBeenCalled();
         });
+    });
+});
+
+// ─── getBookingStatus() ───────────────────────────────────────────────────────
+
+describe('FlightsService.getBookingStatus()', () => {
+    const repoOf = () => (service as any).repo;
+    const attempt = (status: string, over: Record<string, unknown> = {}) =>
+        ({ sessionId: SESSION_ID, userId: USER_ID, status, failureCode: null, failureMessage: null, ...over });
+
+    beforeEach(() => {
+        repoOf().getFlightBookingBySessionForUser.mockResolvedValue(null);
+        lifecycle.find.mockResolvedValue(null);
+    });
+
+    it('answers with the booking once there is one, as it always has', async () => {
+        repoOf().getFlightBookingBySessionForUser.mockResolvedValue({ id: BOOKING_ID, pnr: 'PNRABC', status: 'ticketed' });
+        expect(await service.getBookingStatus(SESSION_ID, USER_ID))
+            .toEqual({ found: true, bookingId: BOOKING_ID, pnr: 'PNRABC', status: 'ticketed' });
+        expect(lifecycle.find).not.toHaveBeenCalled();
+    });
+
+    it('says the airline is being asked, rather than "not found", mid-completion', async () => {
+        lifecycle.find.mockResolvedValue(attempt('SUPPLIER_BOOKING'));
+        expect(await service.getBookingStatus(SESSION_ID, USER_ID)).toEqual({ found: false, lifecycle: 'processing' });
+
+        lifecycle.find.mockResolvedValue(attempt('PAYMENT_AUTHORIZED'));
+        expect(await service.getBookingStatus(SESSION_ID, USER_ID)).toEqual({ found: false, lifecycle: 'processing' });
+    });
+
+    it('says the payment has not been made yet', async () => {
+        lifecycle.find.mockResolvedValue(attempt('PAYMENT_PENDING'));
+        expect(await service.getBookingStatus(SESSION_ID, USER_ID)).toEqual({ found: false, lifecycle: 'pending' });
+    });
+
+    it('says a person is looking at it', async () => {
+        lifecycle.find.mockResolvedValue(attempt('NEEDS_REVIEW', { failureCode: 'CAPTURE_FAILED' }));
+        expect(await service.getBookingStatus(SESSION_ID, USER_ID)).toEqual({ found: false, lifecycle: 'needs_review' });
+    });
+
+    it('says why it failed, from the attempt', async () => {
+        lifecycle.find.mockResolvedValue(attempt('FAILED', { failureCode: 'PRICE_CHANGED', failureMessage: 'The fare changed.' }));
+        expect(await service.getBookingStatus(SESSION_ID, USER_ID)).toEqual({
+            found: false, failed: true, lifecycle: 'failed', code: 'PRICE_CHANGED', error: 'The fare changed.',
+        });
+    });
+
+    it('tells no one about someone else\'s attempt', async () => {
+        lifecycle.find.mockResolvedValue(attempt('SUPPLIER_BOOKING', { userId: 'someone-else' }));
+        expect(await service.getBookingStatus(SESSION_ID, USER_ID)).toEqual({ found: false });
+    });
+
+    it('is plain "not found" when there is no attempt either', async () => {
+        expect(await service.getBookingStatus(SESSION_ID, USER_ID)).toEqual({ found: false });
     });
 });
 

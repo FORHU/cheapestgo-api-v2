@@ -143,6 +143,12 @@ describe('opening an attempt', () => {
         expect(await svc.open(SESSION)).toMatchObject({ status: 'PAYMENT_PENDING' });
         expect(lifecycle.begin).toHaveBeenCalledWith(SESSION);
     });
+
+    it('finds one by its session', async () => {
+        lifecycle.findBySession.mockResolvedValue(record({ status: 'NEEDS_REVIEW' }));
+        expect(await svc.find(SESSION)).toMatchObject({ status: 'NEEDS_REVIEW' });
+        expect(lifecycle.findBySession).toHaveBeenCalledWith(SESSION);
+    });
 });
 
 // ── The happy path ─────────────────────────────────────────────────────────────

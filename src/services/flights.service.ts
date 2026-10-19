@@ -545,9 +545,34 @@ export class FlightsService {
 
     // ── Booking status ────────────────────────────────────────────────────────
 
+    /**
+     * Where a booking is. Once the sale is written that is the booking; before then it is the
+     * attempt, so a refresh while the airline is being asked says so instead of "not found".
+     * `lifecycle` is `pending` (not paid), `processing`, `needs_review` or `failed`.
+     */
     async getBookingStatus(sessionId: string, userId: string) {
         const booking = await this.repo.getFlightBookingBySessionForUser(sessionId, userId);
-        if (!booking) return { found: false };
+        if (!booking) {
+            const attempt = await this.lifecycle.find(sessionId);
+            if (!attempt || attempt.userId !== userId) return { found: false };
+            switch (attempt.status) {
+                case 'PAYMENT_PENDING':
+                    return { found: false, lifecycle: 'pending' };
+                case 'NEEDS_REVIEW':
+                    return { found: false, lifecycle: 'needs_review' };
+                case 'FAILED':
+                case 'EXPIRED':
+                    return {
+                        found: false, failed: true, lifecycle: 'failed',
+                        code: attempt.failureCode ?? 'BOOKING_FAILED',
+                        error: attempt.failureMessage ?? 'This booking could not be completed. Your card has not been charged.',
+                    };
+                default:
+                    // PAYMENT_AUTHORIZED, SUPPLIER_BOOKING, and CONFIRMED in the moment before
+                    // the sale is read back.
+                    return { found: false, lifecycle: 'processing' };
+            }
+        }
 
         if (booking.status === 'failed') {
             return {
