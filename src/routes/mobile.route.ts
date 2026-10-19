@@ -238,8 +238,7 @@ router.post('/flights/confirm', optionalAuth, mobileSearchRateLimit, async (req:
             sessionId:       z.string().min(1),
         }).parse(req.body);
 
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
-        const result  = await new FlightsService().confirm(paymentIntentId, sessionId, userId, baseUrl);
+        const result  = await new FlightsService().confirm(paymentIntentId, sessionId, userId);
         return res.json({ success: true, ...result });
     } catch (err) { next(err); }
 });

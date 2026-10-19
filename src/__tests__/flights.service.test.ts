@@ -18,6 +18,7 @@ vi.mock('@/lib/flights/duffel', () => ({
     createDuffelCancellationQuote: vi.fn(),
     confirmDuffelCancellation:     vi.fn(),
     getDuffelOrder:                vi.fn(),
+    getDuffelOffer:                vi.fn(),
     placeDuffelOrder:              vi.fn(),
     refreshDuffelOffer:            vi.fn(),
     ORDER_CREATE_TIMEOUT_MS:       130_000,
@@ -55,9 +56,6 @@ vi.mock('@/repositories/flights.repository', () => ({
         this.createBookingSession              = vi.fn().mockResolvedValue({ id: 'sess-123' });
         this.updateBookingSessionPayment       = vi.fn().mockResolvedValue(undefined);
         this.updateBookingSessionAudit         = vi.fn().mockResolvedValue(undefined);
-        this.updateBookingSessionDuffelPreOrder = vi.fn().mockResolvedValue(undefined);
-        this.findRecentPreOrderSessions        = vi.fn().mockResolvedValue([]);
-        this.expireSessionsForPreOrder         = vi.fn().mockResolvedValue(undefined);
         this.getFlightBookingBySession         = vi.fn().mockResolvedValue(null);
         this.getFlightBookingBySessionForUser  = vi.fn();
         this.getFlightBookingById              = vi.fn();
@@ -68,12 +66,25 @@ vi.mock('@/repositories/flights.repository', () => ({
         this.getBookingSessionForCancelQuote   = vi.fn().mockResolvedValue(null);
         this.getPriceCalendarRaw               = vi.fn();
         this.getPriceCalendarFallback          = vi.fn();
+        this.getBookingSession                 = vi.fn().mockResolvedValue(null);
+        this.lockSessionForBooking             = vi.fn().mockResolvedValue(true);
+        this.setSessionStatus                  = vi.fn().mockResolvedValue(undefined);
     }),
 }));
 
+const lifecycle = vi.hoisted(() => ({ complete: vi.fn(), open: vi.fn() }));
+vi.mock('@/services/flightBookingLifecycle.service', () => ({
+    FlightBookingLifecycleService: vi.fn(function(this: any) {
+        this.complete = lifecycle.complete;
+        this.open     = lifecycle.open;
+    }),
+}));
+
+vi.mock('@/services/flightBookingCompletion', () => ({ completeDuffelBooking: vi.fn() }));
+
 vi.mock('@/middleware/error.middleware', () => ({
     AppError: class AppError extends Error {
-        constructor(public status: number, message: string, public code: string) {
+        constructor(public status: number, message: string, public code: string, public details?: Record<string, unknown>) {
             super(message);
         }
     },
@@ -90,10 +101,12 @@ vi.mock('@/config', () => ({
 
 import { searchFlightsWithStatus, applyServerFilters }      from '@/lib/flights/search';
 import {
-    placeDuffelOrder, getDuffelOrder,
+    placeDuffelOrder, getDuffelOrder, getDuffelOffer,
     createDuffelCancellationQuote, confirmDuffelCancellation,
 } from '@/lib/flights/duffel';
 import { stripe }          from '@/lib/stripe';
+import { applyMarkup, toStripeAmount, FLIGHT_MARKUP_SPEC } from '@/lib/pricing';
+import { completeDuffelBooking } from '@/services/flightBookingCompletion';
 import { FlightsService }  from '@/services/flights.service';
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -223,8 +236,21 @@ describe('FlightsService.search()', () => {
 });
 
 // ─── book() ───────────────────────────────────────────────────────────────────
+//
+// `book` used to buy the ticket and then ask for the card. It now asks for the card and buys
+// nothing: the order is placed by the booking lifecycle once the card is authorised. Each test
+// here that changed maps to a row of "Behaviour changes this slice makes on purpose" in the
+// flight booking money-safety plan.
 
 describe('FlightsService.book()', () => {
+    const repoOf = () => (service as any).repo;
+
+    beforeEach(() => {
+        vi.mocked(getDuffelOffer).mockResolvedValue(RAW_OFFER);
+        vi.mocked(stripe.paymentIntents.create).mockResolvedValue({ id: PI_ID, client_secret: 'pi_secret_xyz' } as any);
+        lifecycle.open.mockResolvedValue(null);
+    });
+
     it('throws 422 FARE_UNAVAILABLE for mystifly provider', async () => {
         await expect(service.book({ ...BOOK_PARAMS, provider: 'mystifly_v2' }))
             .rejects.toMatchObject({ status: 422, code: 'FARE_UNAVAILABLE' });
@@ -242,74 +268,117 @@ describe('FlightsService.book()', () => {
             .rejects.toMatchObject({ status: 400, code: 'INVALID_PRICE' });
     });
 
-    it('calls placeDuffelOrder with the passenger name and contact from book params', async () => {
-        vi.mocked(placeDuffelOrder).mockResolvedValue({
-            kind: 'success',
-            order: { id: 'ord1', booking_reference: 'PNR1', documents: [] },
-            finalTotal: '100.00', finalCurrency: 'usd',
-        } as any);
-        vi.mocked(stripe.paymentIntents.create).mockResolvedValue({
-            id: PI_ID, client_secret: 'pi_secret_xyz',
-        } as any);
-
+    // §3 row 1
+    it('places no airline order — the card is authorised first', async () => {
         await service.book(BOOK_PARAMS);
 
-        expect(placeDuffelOrder).toHaveBeenCalledWith(
-            expect.objectContaining({
-                rawOffer: RAW_OFFER,
-                passengers: [expect.objectContaining({
-                    id:          'pax1',
-                    given_name:  'Juan',
-                    family_name: 'Cruz',
-                    email:       'juan@example.com',
-                })],
-            }),
-        );
+        expect(placeDuffelOrder).not.toHaveBeenCalled();
+        expect(createDuffelCancellationQuote).not.toHaveBeenCalled();
     });
 
-    it('creates a Stripe PI with automatic capture and returns clientSecret + sessionId + paymentIntentId', async () => {
-        vi.mocked(placeDuffelOrder).mockResolvedValue({
-            kind: 'success',
-            order: { id: 'ord1', booking_reference: 'PNR1', documents: [] },
-            finalTotal: '100.00', finalCurrency: 'usd',
-        } as any);
-        vi.mocked(stripe.paymentIntents.create).mockResolvedValue({
-            id: PI_ID, client_secret: 'pi_secret_xyz',
-        } as any);
-
+    // §3 row 2
+    it('opens a manual-capture PaymentIntent priced from the offer Duffel holds now', async () => {
         const result = await service.book(BOOK_PARAMS);
 
+        expect(getDuffelOffer).toHaveBeenCalledWith('off-abc', { withServices: false });
+        const expected = toStripeAmount(applyMarkup(100, FLIGHT_MARKUP_SPEC).chargedPrice, 'usd');
         expect(stripe.paymentIntents.create).toHaveBeenCalledWith(
-            expect.objectContaining({ currency: 'usd', capture_method: 'automatic' }),
+            expect.objectContaining({
+                amount: expected, currency: 'usd', capture_method: 'manual',
+                metadata: expect.objectContaining({ bookingSessionId: SESSION_ID, type: 'flight', provider: 'duffel' }),
+            }),
             expect.objectContaining({ idempotencyKey: expect.stringContaining('flight-pi-') }),
         );
-        expect(result.clientSecret).toBe('pi_secret_xyz');
-        expect(result.sessionId).toBe(SESSION_ID);
-        expect(result.paymentIntentId).toBe(PI_ID);
+        expect(result).toEqual({ clientSecret: 'pi_secret_xyz', sessionId: SESSION_ID, paymentIntentId: PI_ID });
     });
 
-    it('throws 409 PRICE_CHANGED when the Duffel offer price has changed', async () => {
-        vi.mocked(placeDuffelOrder).mockResolvedValue({
-            kind: 'price_changed', oldPrice: 100, newPrice: 120, currency: 'usd',
-        } as any);
+    it('writes the attempt as a manual-capture session, with what its order will need', async () => {
+        await service.book(BOOK_PARAMS);
 
-        await expect(service.book(BOOK_PARAMS))
+        expect(repoOf().createBookingSession).toHaveBeenCalledWith(expect.objectContaining({
+            captureMethod: 'manual',
+            flight: expect.objectContaining({ _offerId: 'off-abc' }),
+            passengers: BOOK_PARAMS.passengers,
+            contact: BOOK_PARAMS.contact,
+        }));
+        expect(repoOf().updateBookingSessionPayment).toHaveBeenCalledWith(SESSION_ID, PI_ID);
+        // What the hold was computed from: the fare in the airline's currency, before markup.
+        expect(repoOf().updateBookingSessionAudit).toHaveBeenCalledWith(SESSION_ID, expect.objectContaining({
+            currency: 'usd', originalPrice: 100,
+        }));
+        expect(lifecycle.open).toHaveBeenCalledWith(SESSION_ID);
+    });
+
+    it('prices chosen seats from the offer, never from the browser\'s own total', async () => {
+        vi.mocked(getDuffelOffer).mockResolvedValue({ ...RAW_OFFER, available_services: [{ id: 'seat_1', total_amount: '15.00' }] });
+
+        await service.book({ ...BOOK_PARAMS, seatServiceIds: ['seat_1'], seatTotal: 999 });
+
+        expect(getDuffelOffer).toHaveBeenCalledWith('off-abc', { withServices: true });
+        expect(vi.mocked(stripe.paymentIntents.create).mock.calls[0][0].amount)
+            .toBe(toStripeAmount(applyMarkup(115, FLIGHT_MARKUP_SPEC).chargedPrice, 'usd'));
+    });
+
+    it('refuses a seat the offer no longer sells, before the card', async () => {
+        await expect(service.book({ ...BOOK_PARAMS, seatServiceIds: ['seat_gone'] }))
+            .rejects.toMatchObject({ status: 409, code: 'SERVICE_UNAVAILABLE' });
+        expect(stripe.paymentIntents.create).not.toHaveBeenCalled();
+    });
+
+    // §3 row 3: what `book` can still catch before the card
+    it('says an offer Duffel no longer has is gone, before the card', async () => {
+        vi.mocked(getDuffelOffer).mockResolvedValue(null);
+
+        await expect(service.book(BOOK_PARAMS)).rejects.toMatchObject({ status: 410, code: 'OFFER_EXPIRED' });
+        expect(stripe.paymentIntents.create).not.toHaveBeenCalled();
+    });
+
+    it('says the price changed, before the card, when the fare rose since the traveller saw it', async () => {
+        await expect(service.book({ ...BOOK_PARAMS, confirmedPrice: 80 }))
             .rejects.toMatchObject({ status: 409, code: 'PRICE_CHANGED' });
+        expect(stripe.paymentIntents.create).not.toHaveBeenCalled();
     });
 
-    it('throws 409 OFFER_REPLACED when Duffel substitutes a new offer', async () => {
-        vi.mocked(placeDuffelOrder).mockResolvedValue({
-            kind: 'offer_replaced', newOffer: {},
-        } as any);
+    it('does not call a fare that came down a price change', async () => {
+        await expect(service.book({ ...BOOK_PARAMS, confirmedPrice: 120 })).resolves.toMatchObject({ paymentIntentId: PI_ID });
+    });
 
-        await expect(service.book(BOOK_PARAMS))
-            .rejects.toMatchObject({ status: 409, code: 'OFFER_REPLACED' });
+    it('refuses an unusable phone before the card', async () => {
+        await expect(service.book({ ...BOOK_PARAMS, contact: { email: 'juan@example.com', phone: '12' } }))
+            .rejects.toMatchObject({ status: 400, code: 'INVALID_PHONE' });
+        expect(stripe.paymentIntents.create).not.toHaveBeenCalled();
+    });
+
+    it('leaves nothing to clean up when Stripe is down — no order exists yet', async () => {
+        vi.mocked(stripe.paymentIntents.create).mockRejectedValue(new Error('Stripe is down'));
+
+        await expect(service.book(BOOK_PARAMS)).rejects.toThrow('Stripe is down');
+        expect(createDuffelCancellationQuote).not.toHaveBeenCalled();
+    });
+
+    it('lets a traveller book a duplicate departure once they have been warned', async () => {
+        // Warned, not refused (ADR-0011).
+        repoOf().getActiveBookingsForUser.mockResolvedValue([{ id: 'bk-other' }]);
+        repoOf().findSegmentConflict.mockResolvedValue({ booking_id: 'bk-other' });
+        const firstSegFlight = { ...MOCK_FLIGHT, slices: [{ segments: [{ origin: { iata_code: 'MNL' }, departing_at: '2026-09-01T08:00:00' }] }] };
+
+        await expect(service.book({ ...BOOK_PARAMS, flight: firstSegFlight as any }))
+            .rejects.toMatchObject({ code: 'DUPLICATE_BOOKING' });
+
+        await expect(service.book({ ...BOOK_PARAMS, flight: firstSegFlight as any, acknowledgeDuplicate: true }))
+            .resolves.toMatchObject({ paymentIntentId: PI_ID });
     });
 });
 
 // ─── confirm() ────────────────────────────────────────────────────────────────
 
 describe('FlightsService.confirm()', () => {
+    const authorised = (over: Record<string, unknown> = {}) => vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({
+        id: PI_ID, status: 'requires_capture', capture_method: 'manual',
+        metadata: { bookingSessionId: SESSION_ID, provider: 'duffel' }, ...over,
+    } as any);
+    const confirm = () => service.confirm(PI_ID, SESSION_ID, USER_ID);
+
     it('throws 403 SESSION_MISMATCH when the PI sessionId does not match', async () => {
         vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({
             id:       PI_ID,
@@ -317,8 +386,7 @@ describe('FlightsService.confirm()', () => {
             metadata: { bookingSessionId: 'other-session', provider: 'duffel' },
         } as any);
 
-        await expect(service.confirm(PI_ID, SESSION_ID, USER_ID, 'http://localhost:3001'))
-            .rejects.toMatchObject({ status: 403, code: 'SESSION_MISMATCH' });
+        await expect(confirm()).rejects.toMatchObject({ status: 403, code: 'SESSION_MISMATCH' });
     });
 
     it('returns booking data immediately with source "webhook" if the booking already has a PNR', async () => {
@@ -332,23 +400,95 @@ describe('FlightsService.confirm()', () => {
             id: BOOKING_ID, pnr: 'PNRABC', status: 'confirmed', payment_intent_id: PI_ID,
         });
 
-        const result = await service.confirm(PI_ID, SESSION_ID, USER_ID, 'http://localhost:3001');
+        const result = await confirm();
 
         expect(result.pnr).toBe('PNRABC');
         expect(result.source).toBe('webhook');
     });
 
-    it('throws 402 PAYMENT_NOT_COMPLETED when Duffel PI is not in succeeded state', async () => {
-        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({
-            id:       PI_ID,
-            status:   'requires_capture',
-            metadata: { bookingSessionId: SESSION_ID, provider: 'duffel' },
-        } as any);
-        const repo = (service as any).repo;
-        repo.getFlightBookingBySession.mockResolvedValue(null);
+    // §3 row 6
+    it('completes an authorised, not yet captured, payment through the booking lifecycle', async () => {
+        authorised();
+        lifecycle.complete.mockResolvedValue({ kind: 'confirmed', bookingId: BOOKING_ID, pnr: 'PNRABC', status: 'ticketed' });
+        const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
-        await expect(service.confirm(PI_ID, SESSION_ID, USER_ID, 'http://localhost:3001'))
-            .rejects.toMatchObject({ status: 402, code: 'PAYMENT_NOT_COMPLETED' });
+        const result = await confirm();
+
+        expect(lifecycle.complete).toHaveBeenCalledWith({
+            sessionId: SESSION_ID, paymentIntentId: PI_ID, actor: 'browser', userId: USER_ID,
+        });
+        expect(result).toEqual({ bookingId: BOOKING_ID, pnr: 'PNRABC', status: 'ticketed', source: 'lifecycle' });
+        // In process: no HTTP round trip to /internal/create-booking (ADR-0012).
+        expect(fetchSpy).not.toHaveBeenCalled();
+        fetchSpy.mockRestore();
+    });
+
+    // §3 row 5
+    it('says "still processing" rather than failing when the airline has not settled it', async () => {
+        authorised();
+        lifecycle.complete.mockResolvedValue({ kind: 'pending', needsReview: true, message: 'Your booking is being confirmed by our team.' });
+
+        await expect(confirm()).rejects.toMatchObject({
+            status: 409, code: 'BOOKING_PROCESSING', message: 'Your booking is being confirmed by our team.',
+            details: { pending: true, needsReview: true, sessionId: SESSION_ID },
+        });
+    });
+
+    // §3 row 3
+    it('relays a fare that changed after the card, with the hold released', async () => {
+        authorised();
+        lifecycle.complete.mockResolvedValue({
+            kind: 'failed', code: 'PRICE_CHANGED', message: 'The fare changed.',
+            details: { oldPrice: 100, newPrice: 140, currency: 'USD' },
+        });
+
+        await expect(confirm()).rejects.toMatchObject({
+            status: 409, code: 'PRICE_CHANGED', details: { oldPrice: 100, newPrice: 140, currency: 'USD' },
+        });
+    });
+
+    it('relays an offer that expired after the card', async () => {
+        authorised();
+        lifecycle.complete.mockResolvedValue({ kind: 'failed', code: 'OFFER_EXPIRED', message: 'This fare is no longer available.' });
+        await expect(confirm()).rejects.toMatchObject({ status: 410, code: 'OFFER_EXPIRED' });
+    });
+
+    it('keeps the wire code clients know for a payment that was not authorised', async () => {
+        authorised({ status: 'requires_payment_method' });
+        lifecycle.complete.mockResolvedValue({ kind: 'failed', code: 'PAYMENT_NOT_AUTHORIZED', message: 'Payment not authorised' });
+        await expect(confirm()).rejects.toMatchObject({ status: 402, code: 'PAYMENT_NOT_COMPLETED' });
+    });
+
+    describe('a session booked before this release (its order placed at book)', () => {
+        const legacy = {
+            id: SESSION_ID, user_id: USER_ID, payment_intent_id: PI_ID, capture_method: 'automatic',
+            duffel_pre_order_id: 'ord-old', duffel_pre_order_pnr: 'PNROLD',
+            duffel_pre_order_tickets: ['T-1'], duffel_pre_order_ticketed: true,
+        };
+
+        it('is finished in process, the old way, without the lifecycle', async () => {
+            authorised({ status: 'succeeded', capture_method: 'automatic' });
+            (service as any).repo.getBookingSession.mockResolvedValue(legacy);
+            vi.mocked(completeDuffelBooking).mockResolvedValue({
+                bookingId: BOOKING_ID, pnr: 'PNROLD', status: 'ticketed', confirmedPrice: 112, confirmedCurrency: 'USD',
+            });
+
+            const result = await confirm();
+
+            expect(lifecycle.complete).not.toHaveBeenCalled();
+            expect((service as any).repo.lockSessionForBooking).toHaveBeenCalledWith(SESSION_ID);
+            expect(completeDuffelBooking).toHaveBeenCalledWith({
+                session: legacy, paymentIntentId: PI_ID,
+                order: { orderId: 'ord-old', pnr: 'PNROLD', tickets: ['T-1'], isTicketed: true },
+            });
+            expect(result).toEqual({ bookingId: BOOKING_ID, pnr: 'PNROLD', status: 'ticketed', source: 'confirm-fallback' });
+        });
+
+        it('still needs the payment taken', async () => {
+            authorised({ status: 'processing', capture_method: 'automatic' });
+            await expect(confirm()).rejects.toMatchObject({ status: 402, code: 'PAYMENT_NOT_COMPLETED' });
+            expect(completeDuffelBooking).not.toHaveBeenCalled();
+        });
     });
 });
 
@@ -480,139 +620,5 @@ describe('FlightsService.offerRefresh()', () => {
         vi.mocked(refreshDuffelOffer).mockRejectedValue(new Error('Duffel 429'));
 
         await expect(service.offerRefresh(chosen)).resolves.toMatchObject({ success: false, reason: 'upstream_error' });
-    });
-});
-
-// ─── book(): the safety rules ported from v1 ──────────────────────────────────
-
-describe('FlightsService.book() — never buys a trip twice, never strands an order', () => {
-    const placed = () => vi.mocked(placeDuffelOrder).mockResolvedValue({
-        kind: 'success',
-        order: { id: 'ord-new', booking_reference: 'PNRNEW', documents: [] },
-        finalTotal: '100.00', finalCurrency: 'usd',
-    } as any);
-    const pi = () => vi.mocked(stripe.paymentIntents.create).mockResolvedValue({ id: PI_ID, client_secret: 'secret' } as any);
-    const repoOf = () => (service as any).repo;
-
-    const earlierSession = {
-        id: 'sess-earlier', status: 'payment_initiated', duffel_pre_order_id: 'ord-earlier',
-        payment_intent_id: 'pi_earlier', flight: { _offerId: RAW_OFFER.id },
-        created_at: new Date(Date.now() - 5 * 60_000),
-    };
-    const liveOrder = (patch: Record<string, any> = {}) => ({
-        id: 'ord-earlier', booking_reference: 'PNROLD', total_amount: '100.00', total_currency: 'USD',
-        documents: [], passengers: [{ given_name: 'Juan', family_name: 'Cruz', born_on: '1990-01-01' }],
-        ...patch,
-    });
-
-    it('reuses the order a previous attempt bought for the same offer and people', async () => {
-        // Back to details, then submit again: without this the traveller pays for two tickets.
-        repoOf().findRecentPreOrderSessions.mockResolvedValue([earlierSession]);
-        vi.mocked(getDuffelOrder).mockResolvedValue(liveOrder() as any);
-        pi();
-
-        await service.book(BOOK_PARAMS);
-
-        expect(placeDuffelOrder).not.toHaveBeenCalled();
-        expect(stripe.paymentIntents.cancel).toHaveBeenCalledWith('pi_earlier');
-    });
-
-    it('releases the earlier order and buys again when a name was corrected', async () => {
-        // Reusing it would ticket the misspelled name the traveller went back to fix.
-        repoOf().findRecentPreOrderSessions.mockResolvedValue([earlierSession]);
-        vi.mocked(getDuffelOrder).mockResolvedValue(liveOrder({
-            passengers: [{ given_name: 'Jaun', family_name: 'Cruz', born_on: '1990-01-01' }],
-        }) as any);
-        vi.mocked(createDuffelCancellationQuote).mockResolvedValue({ id: 'q-old' } as any);
-        vi.mocked(confirmDuffelCancellation).mockResolvedValue({} as any);
-        placed(); pi();
-
-        await service.book(BOOK_PARAMS);
-
-        expect(createDuffelCancellationQuote).toHaveBeenCalledWith('ord-earlier');
-        expect(placeDuffelOrder).toHaveBeenCalled();
-        expect(repoOf().expireSessionsForPreOrder).toHaveBeenCalledWith('ord-earlier');
-    });
-
-    it('cancels the airline order when anything after it fails', async () => {
-        // A Stripe outage used to leave a paid ticket against the balance that nothing recorded.
-        placed();
-        vi.mocked(stripe.paymentIntents.create).mockRejectedValue(new Error('Stripe is down'));
-        vi.mocked(createDuffelCancellationQuote).mockResolvedValue({ id: 'q-new' } as any);
-        vi.mocked(confirmDuffelCancellation).mockResolvedValue({} as any);
-
-        await expect(service.book(BOOK_PARAMS)).rejects.toThrow('Stripe is down');
-
-        expect(createDuffelCancellationQuote).toHaveBeenCalledWith('ord-new');
-        expect(confirmDuffelCancellation).toHaveBeenCalledWith('q-new');
-    });
-
-    it('lets a traveller book a duplicate departure once they have been warned', async () => {
-        // Warned, not refused (ADR-0011).
-        repoOf().getActiveBookingsForUser.mockResolvedValue([{ id: 'bk-other' }]);
-        repoOf().findSegmentConflict.mockResolvedValue({ booking_id: 'bk-other' });
-        const firstSegFlight = { ...MOCK_FLIGHT, slices: [{ segments: [{ origin: { iata_code: 'MNL' }, departing_at: '2026-09-01T08:00:00' }] }] };
-
-        await expect(service.book({ ...BOOK_PARAMS, flight: firstSegFlight as any }))
-            .rejects.toMatchObject({ code: 'DUPLICATE_BOOKING' });
-
-        placed(); pi();
-        await expect(service.book({ ...BOOK_PARAMS, flight: firstSegFlight as any, acknowledgeDuplicate: true }))
-            .resolves.toMatchObject({ paymentIntentId: PI_ID });
-    });
-
-    it('sends passport details to the airline when the offer asks for them', async () => {
-        placed(); pi();
-        const wantsDocs = { ...RAW_OFFER, passenger_identity_documents_required: true };
-        const flight = { ...MOCK_FLIGHT, _rawOffer: wantsDocs };
-
-        await service.book({
-            ...BOOK_PARAMS,
-            flight: flight as any,
-            passengers: [{ ...BOOK_PARAMS.passengers[0], passportNumber: 'P1234567', passportExpiry: '2031-01-01', nationality: 'ph' }],
-        });
-
-        expect(placeDuffelOrder).toHaveBeenCalledWith(expect.objectContaining({
-            passengers: [expect.objectContaining({
-                identity_documents: [{ type: 'passport', unique_identifier: 'P1234567', issuing_country_code: 'PH', expires_on: '2031-01-01' }],
-            })],
-        }));
-    });
-});
-
-describe('FlightsService.book() — a timed-out order is looked for, not written off', () => {
-    it('adopts the order Duffel created while the request was abandoned', async () => {
-        // Aborting POST /air/orders does not cancel it. Reporting failure here leaves a real,
-        // paid, ticketed PNR against the balance with nothing linking it to the traveller.
-        const { findOrderFromTimedOutAttempt, toReconciledOrder } = await import('@/lib/flights/duffelOrderReconcile');
-        vi.mocked(placeDuffelOrder).mockResolvedValue({
-            kind: 'error', status: 504, timedOut: true,
-            data: { errors: [{ code: 'timeout', message: 'timed out' }] },
-        } as any);
-        vi.mocked(findOrderFromTimedOutAttempt).mockResolvedValue({
-            id: 'ord-recovered', booking_reference: 'PNRREC', total_amount: '100.00', total_currency: 'usd',
-            documents: [{ type: 'electronic_ticket', unique_identifier: 'T-1' }],
-        } as any);
-        vi.mocked(toReconciledOrder).mockReturnValue({
-            orderId: 'ord-recovered', pnr: 'PNRREC', tickets: ['T-1'], isTicketed: true,
-            orderTotal: '100.00', orderCurrency: 'usd',
-        } as any);
-        vi.mocked(stripe.paymentIntents.create).mockResolvedValue({ id: PI_ID, client_secret: 'secret' } as any);
-
-        const result = await service.book(BOOK_PARAMS);
-
-        expect(findOrderFromTimedOutAttempt).toHaveBeenCalled();
-        expect(result.paymentIntentId).toBe(PI_ID);
-    });
-
-    it('reports the failure when no such order exists', async () => {
-        const { findOrderFromTimedOutAttempt } = await import('@/lib/flights/duffelOrderReconcile');
-        vi.mocked(placeDuffelOrder).mockResolvedValue({
-            kind: 'error', status: 504, timedOut: true,
-            data: { errors: [{ code: 'timeout', message: 'timed out' }] },
-        } as any);
-        vi.mocked(findOrderFromTimedOutAttempt).mockResolvedValue(null);
-
-        await expect(service.book(BOOK_PARAMS)).rejects.toMatchObject({ code: 'DUFFEL_ORDER_FAILED' });
     });
 });

@@ -55,8 +55,7 @@ export class FlightsController {
                 paymentIntentId: z.string(),
                 sessionId:       z.string(),
             }).parse(req.body);
-            const baseUrl = `${req.protocol}://${req.get('host')}`;
-            const result = await svc.confirm(paymentIntentId, sessionId, req.user!.sub, baseUrl);
+            const result = await svc.confirm(paymentIntentId, sessionId, req.user!.sub);
             res.json(result);
         } catch (err) { next(err); }
     };

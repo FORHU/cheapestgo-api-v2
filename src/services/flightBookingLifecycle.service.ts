@@ -39,7 +39,7 @@ import { startSupplierAttempt, finishSupplierAttempt } from '@/lib/hotels/suppli
 import { makeStrictConverter } from '@/lib/payments/convertStrict';
 import { applyMarkup, FLIGHT_MARKUP_SPEC, getFlightPriceTolerance } from '@/lib/pricing';
 import type { LifecycleActor } from '@/lib/flights/lifecycle/stateMachine';
-import { FlightBookingLifecycleRepository } from '@/repositories/flightBookingLifecycle.repository';
+import { FlightBookingLifecycleRepository, type FlightLifecycleRecord } from '@/repositories/flightBookingLifecycle.repository';
 import { FlightsRepository } from '@/repositories/flights.repository';
 import { ExchangeRatesService } from '@/services/exchange-rates.service';
 import { completeDuffelBooking, type CompletionSession, type DuffelOrderRef } from '@/services/flightBookingCompletion';
@@ -139,6 +139,13 @@ export class FlightBookingLifecycleService {
         this.captureRetryMs  = options.captureRetryMs ?? 750;
     }
 
+    // ── Opening an attempt ──────────────────────────────────────────────────
+
+    /** Records that `book` opened an attempt. Null when the lifecycle is not there yet. */
+    open(sessionId: string): Promise<FlightLifecycleRecord | null> {
+        return this.repo.begin(sessionId);
+    }
+
     // ── Completion ──────────────────────────────────────────────────────────
 
     /**
@@ -210,10 +217,14 @@ export class FlightBookingLifecycleService {
     private async order(a: Attempt): Promise<CompletionOutcome> {
         const { session } = a;
         const offerId: string | undefined = session.flight?._offerId;
+        const seatServiceIds: string[] = session.seat_service_ids ?? [];
+        const bagServiceIds: string[]  = session.bag_service_ids ?? [];
 
         let rawOffer: any;
         try {
-            rawOffer = offerId ? await getDuffelOffer(offerId) : null;
+            rawOffer = offerId
+                ? await getDuffelOffer(offerId, { withServices: seatServiceIds.length + bagServiceIds.length > 0 })
+                : null;
         } catch (err: any) {
             console.warn(`[flight-lifecycle] offer ${offerId} could not be read: ${err?.message}`);
             return this.refused(a, 'UPSTREAM_UNAVAILABLE', `We could not reach the airline to confirm your fare. ${NOT_CHARGED} Please try again.`);
@@ -226,8 +237,6 @@ export class FlightBookingLifecycleService {
             return this.refused(a, 'INVALID_PHONE', `Invalid phone number. Please enter a valid phone number with country code. ${NOT_CHARGED}`);
         }
 
-        const seatServiceIds: string[] = session.seat_service_ids ?? [];
-        const bagServiceIds: string[]  = session.bag_service_ids ?? [];
         const total = orderTotal(rawOffer, seatServiceIds, bagServiceIds);
         const bookedBase = Number(session.original_price ?? total);
 

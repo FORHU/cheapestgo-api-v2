@@ -236,8 +236,10 @@ export async function getDuffelSeatMaps(offerId: string): Promise<any[]> {
  * Distinct from `refreshDuffelOffer`, which runs a whole new offer_request to find
  * *alternatives* when this one has expired. This asks about the offer in hand.
  */
-export async function getDuffelOffer(offerId: string): Promise<any | null> {
-    const res = await fetch(`${DUFFEL_BASE}/air/offers/${encodeURIComponent(offerId)}`, {
+export async function getDuffelOffer(offerId: string, options: { withServices?: boolean } = {}): Promise<any | null> {
+    // Seats and bags are priced from `available_services`, which Duffel leaves out unless asked.
+    const query = options.withServices ? '?return_available_services=true' : '';
+    const res = await fetch(`${DUFFEL_BASE}/air/offers/${encodeURIComponent(offerId)}${query}`, {
         headers: duffelHeaders(),
         signal: AbortSignal.timeout(12000),
     });

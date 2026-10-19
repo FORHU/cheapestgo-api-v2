@@ -137,6 +137,14 @@ beforeEach(() => {
     });
 });
 
+describe('opening an attempt', () => {
+    it('records its creation', async () => {
+        lifecycle.begin.mockResolvedValue(record({ status: 'PAYMENT_PENDING' }));
+        expect(await svc.open(SESSION)).toMatchObject({ status: 'PAYMENT_PENDING' });
+        expect(lifecycle.begin).toHaveBeenCalledWith(SESSION);
+    });
+});
+
 // ── The happy path ─────────────────────────────────────────────────────────────
 
 describe('an order the airline accepts', () => {
@@ -155,7 +163,7 @@ describe('an order the airline accepts', () => {
     it('orders the offer the session stored, for the passengers the session stored', async () => {
         await complete();
 
-        expect(getDuffelOffer).toHaveBeenCalledWith('off_1');
+        expect(getDuffelOffer).toHaveBeenCalledWith('off_1', { withServices: false });
         const params = vi.mocked(placeDuffelOrder).mock.calls[0][0];
         expect(params).toMatchObject({
             rawOffer: OFFER,
@@ -169,6 +177,8 @@ describe('an order the airline accepts', () => {
     it('prices the seats and bags the session chose from the offer, not from anything the browser said', async () => {
         sessions.getBookingSession.mockResolvedValue({ ...SESSION_ROW, seat_service_ids: ['seat_1'], original_price: 115 });
         await complete();
+        // Duffel leaves the services out of an offer unless asked.
+        expect(getDuffelOffer).toHaveBeenCalledWith('off_1', { withServices: true });
         expect(vi.mocked(placeDuffelOrder).mock.calls[0][0]).toMatchObject({ total: '115.00', seatServiceIds: ['seat_1'], confirmedPrice: 115 });
     });
 
