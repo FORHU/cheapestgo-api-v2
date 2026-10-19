@@ -298,6 +298,27 @@ export class FlightsRepository {
         }
     }
 
+    /**
+     * Takes the session for booking by its free-form `status`, the way /internal/create-booking
+     * always has. Only the flight booking lifecycle's fallback calls this, while the lifecycle
+     * column is not there yet: one statement, so exactly one caller gets `true`.
+     */
+    async lockSessionForBooking(sessionId: string): Promise<boolean> {
+        const rows = await prisma.$queryRaw<{ id: string }[]>`
+            UPDATE booking_sessions
+               SET status = 'processing'
+             WHERE id = ${sessionId}::uuid
+               AND status IN ('pending', 'initiated', 'payment_initiated', 'payment_authorized')
+            RETURNING id
+        `;
+        return rows.length > 0;
+    }
+
+    /** Keeps the legacy `status` truthful for the code that still reads it. Never a decision. */
+    async setSessionStatus(sessionId: string, status: 'failed' | 'expired') {
+        await prisma.$executeRaw`UPDATE booking_sessions SET status = ${status} WHERE id = ${sessionId}::uuid`;
+    }
+
     async markSessionCompleted(sessionId: string) {
         await prisma.$executeRaw`
             UPDATE booking_sessions SET status = 'completed', completed_at = NOW()
