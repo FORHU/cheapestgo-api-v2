@@ -83,6 +83,31 @@ export class FlightsService {
         };
     }
 
+    // ── One offer ─────────────────────────────────────────────────────────────
+
+    /**
+     * The offer being bought, as Duffel holds it now, in the shape the results cards draw —
+     * for the checkout's summary of the flight: its segments, terminals, aircraft, bags and
+     * fare terms. Read again rather than carried in the URL or the browser's storage, which
+     * a refresh, a shared link or a new tab do not have.
+     *
+     * Without the raw Duffel payload: that is the server's, and the browser has no use for it.
+     */
+    async getOffer(offerId: string, tripType: 'one-way' | 'round-trip' | 'multi-city' = 'one-way'): Promise<FlightOffer> {
+        let raw: any;
+        try {
+            raw = await getDuffelOffer(offerId);
+        } catch (err: any) {
+            console.warn(`[offer] ${offerId} could not be read: ${err?.message}`);
+            throw new AppError(503, 'We could not reach the airline to check this fare. Please try again shortly.', 'UPSTREAM_UNAVAILABLE');
+        }
+        if (!raw) throw new AppError(410, 'This fare is no longer available. Please search again for current prices.', 'OFFER_EXPIRED');
+
+        const { _rawOffer, ...offer } = normalizedToFlightOffer(parseDuffelOffer(raw), tripType);
+        void _rawOffer;
+        return offer;
+    }
+
     // ── Book (open the payment for an attempt) ────────────────────────────────
 
     /**

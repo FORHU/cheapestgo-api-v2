@@ -6,6 +6,7 @@ const router = Router();
 const ctrl   = new FlightsController();
 
 router.post('/search',               ctrl.search);
+router.get( '/offers/:offerId',      ctrl.offer);
 router.post('/bags',                 ctrl.bags);
 router.post('/seat-map',             ctrl.seatMap);
 router.post('/fare-rules',           ctrl.fareRules);

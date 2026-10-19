@@ -42,6 +42,15 @@ export class FlightsController {
         } catch (err) { next(err); }
     };
 
+    /** The offer being bought, for the checkout's summary of the flight. */
+    offer = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const offerId  = z.string().min(1).parse(req.params.offerId);
+            const tripType = z.enum(['one-way', 'round-trip', 'multi-city']).optional().parse(req.query.tripType);
+            res.json(await svc.getOffer(offerId, tripType));
+        } catch (err) { next(err); }
+    };
+
     book = async (req: Request, res: Response, next: NextFunction) => {
         try {
             const result = await svc.book({ ...req.body, userId: req.user!.sub });

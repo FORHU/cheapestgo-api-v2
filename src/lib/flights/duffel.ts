@@ -715,6 +715,7 @@ export function normalizedToFlightOffer(result: FlightResult, tripType: 'one-way
         totalStops: result.stops,
         refundable: (result as any).refundable ?? false,
         farePolicy: (raw as any).farePolicy ?? null,
+        baggage: duffelBaggage(raw),
         seatsRemaining: result.remaining_seats ?? undefined,
         tripType,
         traceId: result.traceId,
@@ -726,6 +727,33 @@ export function normalizedToFlightOffer(result: FlightResult, tripType: 'one-way
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
+
+/**
+ * The bags the fare includes for a traveller, as Duffel publishes them: per passenger, per
+ * segment, as `baggages: [{ type: 'carry_on' | 'checked', quantity }]`.
+ *
+ * The least generous segment wins — a checked bag allowed on the way out but not on the
+ * way back is not a checked bag the traveller has. The first passenger's allowance stands
+ * for the party. Undefined when Duffel says nothing, so a card shows no bag line rather than
+ * "No checked bag" on a fare that may well have one.
+ */
+function duffelBaggage(raw: any): { cabinBag: boolean; checkedBags: number } | undefined {
+    const allowances: Array<{ carryOn: number; checked: number }> = [];
+    for (const slice of raw?.slices ?? []) {
+        for (const segment of slice?.segments ?? []) {
+            const bags = segment?.passengers?.[0]?.baggages;
+            if (!Array.isArray(bags)) continue;
+            const count = (type: string) => bags.filter((b: any) => b?.type === type)
+                .reduce((n: number, b: any) => n + (Number(b?.quantity) || 0), 0);
+            allowances.push({ carryOn: count('carry_on'), checked: count('checked') });
+        }
+    }
+    if (allowances.length === 0) return undefined;
+    return {
+        cabinBag:    Math.min(...allowances.map((a) => a.carryOn)) > 0,
+        checkedBags: Math.min(...allowances.map((a) => a.checked)),
+    };
+}
 
 /**
  * One end of a segment: the code, plus the airport and city named the way Duffel

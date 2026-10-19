@@ -34,6 +34,30 @@ describe('Duffel offer → FlightOffer', () => {
         expect(back.departure).toMatchObject({ airport: 'JFK', city: 'New York' });
     });
 
+    it('carries the bag allowance Duffel publishes for the traveller', () => {
+        // The fixture's fare: one carry-on, nothing in the hold.
+        const offer = normalizedToFlightOffer(parseDuffelOffer(roundTrip, 'economy'), 'round-trip');
+        expect(offer.baggage).toEqual({ cabinBag: true, checkedBags: 0 });
+    });
+
+    it('gives the least generous allowance across the trip — a bag allowed out but not back is not allowed', () => {
+        const withBags = (out: number, back: number) => {
+            const copy = JSON.parse(JSON.stringify(roundTrip));
+            const bags = (n: number) => [{ type: 'carry_on', quantity: 1 }, ...(n ? [{ type: 'checked', quantity: n }] : [])];
+            copy.slices[0].segments.forEach((s: any) => s.passengers.forEach((p: any) => { p.baggages = bags(out); }));
+            copy.slices[1].segments.forEach((s: any) => s.passengers.forEach((p: any) => { p.baggages = bags(back); }));
+            return normalizedToFlightOffer(parseDuffelOffer(copy, 'economy'), 'round-trip').baggage;
+        };
+        expect(withBags(1, 1)).toEqual({ cabinBag: true, checkedBags: 1 });
+        expect(withBags(2, 1)).toEqual({ cabinBag: true, checkedBags: 1 });
+    });
+
+    it('says nothing about bags when Duffel says nothing', () => {
+        const copy = JSON.parse(JSON.stringify(roundTrip));
+        copy.slices.forEach((sl: any) => sl.segments.forEach((s: any) => s.passengers.forEach((p: any) => { delete p.baggages; })));
+        expect(normalizedToFlightOffer(parseDuffelOffer(copy, 'economy'), 'round-trip').baggage).toBeUndefined();
+    });
+
     it("gives each direction its own run time — the outbound's is not the return's", () => {
         const offer = normalizedToFlightOffer(parseDuffelOffer(roundTrip, 'economy'), 'round-trip');
         expect(offer.sliceDurations).toEqual([480, 410]);

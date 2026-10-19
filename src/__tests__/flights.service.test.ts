@@ -493,6 +493,33 @@ describe('FlightsService.confirm()', () => {
     });
 });
 
+// ─── getOffer() ───────────────────────────────────────────────────────────────
+
+describe('FlightsService.getOffer()', () => {
+    it('reads the offer from Duffel and answers it in the shape the results cards use, without the raw payload', async () => {
+        const { parseDuffelOffer, normalizedToFlightOffer } = await import('@/lib/flights/duffel');
+        vi.mocked(getDuffelOffer).mockResolvedValue(RAW_OFFER);
+        vi.mocked(parseDuffelOffer).mockReturnValue({ offer_id: 'off-abc' } as any);
+        vi.mocked(normalizedToFlightOffer).mockReturnValue({ offerId: 'off-abc', segments: [], _rawOffer: RAW_OFFER } as any);
+
+        const offer = await service.getOffer('off-abc', 'round-trip');
+
+        expect(getDuffelOffer).toHaveBeenCalledWith('off-abc');
+        expect(normalizedToFlightOffer).toHaveBeenCalledWith({ offer_id: 'off-abc' }, 'round-trip');
+        expect(offer).toEqual({ offerId: 'off-abc', segments: [] });
+    });
+
+    it('says the fare is gone when Duffel no longer has it', async () => {
+        vi.mocked(getDuffelOffer).mockResolvedValue(null);
+        await expect(service.getOffer('off-gone')).rejects.toMatchObject({ status: 410, code: 'OFFER_EXPIRED' });
+    });
+
+    it('says the airline could not be reached, rather than that the fare is gone', async () => {
+        vi.mocked(getDuffelOffer).mockRejectedValue(new Error('duffel 503'));
+        await expect(service.getOffer('off-abc')).rejects.toMatchObject({ status: 503, code: 'UPSTREAM_UNAVAILABLE' });
+    });
+});
+
 // ─── getBookingStatus() ───────────────────────────────────────────────────────
 
 describe('FlightsService.getBookingStatus()', () => {
