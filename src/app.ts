@@ -12,6 +12,19 @@ import internalRouter from '@/routes/internal.route';
 
 const app = express();
 
+// Caddy on the dev host proxies /api/v2 to this container, so every request arrives from
+// 127.0.0.1 with the real address in X-Forwarded-For. Left unset, express-rate-limit keys
+// all four limiters on the proxy's address — one shared bucket, so in production mode the
+// 10-per-15-minutes auth limit is spent by whoever logs in first and everyone else is
+// locked out. express-rate-limit says so on boot: ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
+//
+// A hop count, not `true`: `true` trusts the leftmost X-Forwarded-For entry, which the
+// client writes, so anyone could forge an address and get a fresh bucket per request.
+//
+// ponytail: 1 is right for one reverse proxy. Put Cloudflare or an ALB in front and this
+// becomes 2 — req.ip would otherwise be the CDN's address and the shared bucket is back.
+app.set('trust proxy', 1);
+
 app.use(helmet());
 
 // SITE_URL is always allowed. It is the frontend this API exists to serve, and
