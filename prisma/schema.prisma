@@ -6,7 +6,7 @@ generator client {
 datasource db {
   provider   = "postgresql"
   url        = env("DATABASE_URL")
-  extensions = [pg_trgm, uuid_ossp(map: "uuid-ossp", schema: "extensions")]
+  extensions = [pg_trgm]
 }
 
 model admin_audit_log {
@@ -119,50 +119,53 @@ model booking_policy_snapshots {
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model booking_sessions {
-  id                        String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id                   String            @db.Uuid
+  id                        String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                   String                  @db.Uuid
   provider                  String
-  flight                    Json              @default("{}")
-  passengers                Json              @default("[]")
-  contact                   Json              @default("{}")
-  status                    String            @default("pending")
-  expires_at                DateTime          @db.Timestamptz(6)
-  created_at                DateTime          @default(now()) @db.Timestamptz(6)
-  updated_at                DateTime          @default(now()) @db.Timestamptz(6)
+  flight                    Json                    @default("{}")
+  passengers                Json                    @default("[]")
+  contact                   Json                    @default("{}")
+  status                    String                  @default("pending")
+  expires_at                DateTime                @db.Timestamptz(6)
+  created_at                DateTime                @default(now()) @db.Timestamptz(6)
+  updated_at                DateTime                @default(now()) @db.Timestamptz(6)
   idempotency_key           String?
   payment_intent_id         String?
-  capture_method            String?           @default("automatic")
+  capture_method            String?                 @default("automatic")
   is_refundable             Boolean?
   is_changeable             Boolean?
-  refund_penalty_amount     Decimal?          @db.Decimal(10, 2)
+  refund_penalty_amount     Decimal?                @db.Decimal(10, 2)
   refund_penalty_currency   String?
-  change_penalty_amount     Decimal?          @db.Decimal(10, 2)
+  change_penalty_amount     Decimal?                @db.Decimal(10, 2)
   change_penalty_currency   String?
   policy_source             String?
   policy_version            String?
-  policy_locked             Boolean           @default(false)
+  policy_locked             Boolean                 @default(false)
   fare_policy               Json?
   seat_service_ids          String[]
-  seat_total                Decimal?          @default(0) @db.Decimal
+  seat_total                Decimal?                @default(0) @db.Decimal
   duffel_pre_order_id       String?
   duffel_pre_order_pnr      String?
   duffel_pre_order_tickets  String[]
   duffel_pre_order_ticketed Boolean?
-  original_price            Decimal?          @db.Decimal
-  charged_price             Decimal?          @db.Decimal
-  markup_pct                Decimal?          @db.Decimal
+  original_price            Decimal?                @db.Decimal
+  charged_price             Decimal?                @db.Decimal
+  markup_pct                Decimal?                @db.Decimal
   currency                  String?
   bag_service_ids           String[]
-  bag_total                 Decimal?          @default(0) @db.Decimal
-  completed_at              DateTime?         @db.Timestamptz(6)
-  payment_currency          String?
+  bag_total                 Decimal?                @default(0) @db.Decimal
+  completed_at              DateTime?               @db.Timestamptz(6)
   booking_reference         String?
+  payment_currency          String?
+  lifecycle_status          String                  @default("PAYMENT_PENDING")
+  flight_booking_events     flight_booking_events[]
   flight_bookings           flight_bookings[]
 
   @@index([expires_at], map: "idx_booking_sessions_expires_at")
   @@index([idempotency_key, user_id], map: "idx_booking_sessions_idempotency")
   @@index([status], map: "idx_booking_sessions_status")
   @@index([user_id], map: "idx_booking_sessions_user_id")
+  @@index([lifecycle_status, created_at], map: "booking_sessions_lifecycle_created_idx")
 }
 
 model bookings {
@@ -198,12 +201,12 @@ model bookings {
   charged_price                                                                  Decimal?                  @db.Decimal(12, 2)
   markup_pct                                                                     Decimal?                  @db.Decimal(6, 4)
   hotel_id                                                                       String?
+  booking_reference                                                              String?
+  fx_captured_at                                                                 DateTime?                 @db.Timestamptz(6)
+  fx_rate                                                                        Decimal?                  @db.Decimal(20, 10)
+  fx_source                                                                      String?
   source_brand                                                                   String?
   usd_amount                                                                     Decimal?                  @db.Decimal(14, 4)
-  fx_rate                                                                        Decimal?                  @db.Decimal(20, 10)
-  fx_captured_at                                                                 DateTime?                 @db.Timestamptz(6)
-  fx_source                                                                      String?
-  booking_reference                                                              String?
   booking_policy_snapshots_booking_policy_snapshots_booking_idTobookings         booking_policy_snapshots? @relation("booking_policy_snapshots_booking_idTobookings")
   booking_policy_snapshots_bookings_policy_snapshot_idTobooking_policy_snapshots booking_policy_snapshots? @relation("bookings_policy_snapshot_idTobooking_policy_snapshots", fields: [policy_snapshot_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
@@ -324,12 +327,12 @@ model flight_bookings {
   confirmed_currency        String?
   ticket_numbers            Json?                      @default("[]")
   ticketed_at               DateTime?                  @db.Timestamptz(6)
+  booking_reference         String?
+  fx_captured_at            DateTime?                  @db.Timestamptz(6)
+  fx_rate                   Decimal?                   @db.Decimal(20, 10)
+  fx_source                 String?
   source_brand              String?
   usd_amount                Decimal?                   @db.Decimal(14, 4)
-  fx_rate                   Decimal?                   @db.Decimal(20, 10)
-  fx_captured_at            DateTime?                  @db.Timestamptz(6)
-  fx_source                 String?
-  booking_reference         String?
   booking_financial_events  booking_financial_events[]
   flight_booking_notes      flight_booking_notes[]
   booking_sessions          booking_sessions?          @relation(fields: [session_id], references: [id], onUpdate: NoAction)
@@ -432,8 +435,8 @@ model flight_segments {
   itinerary_index      Int             @default(0)
   cabin_class          String          @default("economy")
   segment_index        Int             @default(0)
-  origin_terminal      String?
   destination_terminal String?
+  origin_terminal      String?
   flight_bookings      flight_bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([booking_id], map: "idx_flight_segments_booking_id")
@@ -462,18 +465,18 @@ model hotel_content {
   amenity_groups        Json      @default("[]")
   important_information String?
   room_groups           Json?     @default("[]")
-  metapolicy_struct     Json?
-  metapolicy_extra_info String?
-  etg_content_seeded_at DateTime? @db.Timestamptz(6)
   google_place_id       String?
   google_enriched_at    DateTime? @db.Timestamptz(6)
-  osm_geocoded_at       DateTime? @db.Timestamptz(6)
-  contact_info          Json?
+  etg_content_seeded_at DateTime? @db.Timestamptz(6)
+  metapolicy_extra_info String?
+  metapolicy_struct     Json?
   chain_code            String?
+  contact_info          Json?
+  delisted_at           DateTime? @db.Timestamptz(6)
   giata_id              String?
+  osm_geocoded_at       DateTime? @db.Timestamptz(6)
   room_groups_seeded_at DateTime? @db.Timestamptz(6)
   serp_filters          String[]  @default([])
-  delisted_at           DateTime? @db.Timestamptz(6)
 
   @@index([fetched_at])
   @@index([serp_filters], map: "hotel_content_serp_filters_gin", type: Gin)
@@ -667,9 +670,9 @@ model profiles {
   nationality String?
   created_at  DateTime? @default(now()) @db.Timestamptz(6)
   updated_at  DateTime? @default(now()) @db.Timestamptz(6)
+  role        String?   @default("user")
   banned_at   DateTime? @db.Timestamptz(6)
   preferences Json      @default("{}")
-  role        String?   @default("user")
   users       users     @relation(fields: [id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([email], map: "idx_profiles_email")
@@ -804,12 +807,12 @@ model unified_bookings {
   supplier_cost     Decimal?  @default(0) @db.Decimal(12, 2)
   markup_amount     Decimal?  @default(0) @db.Decimal(12, 2)
   profit            Decimal?  @default(0) @db.Decimal(12, 2)
+  booking_reference String?
+  fx_captured_at    DateTime? @db.Timestamptz(6)
+  fx_rate           Decimal?  @db.Decimal(20, 10)
+  fx_source         String?
   source_brand      String?
   usd_amount        Decimal?  @db.Decimal(14, 4)
-  fx_rate           Decimal?  @db.Decimal(20, 10)
-  fx_captured_at    DateTime? @db.Timestamptz(6)
-  fx_source         String?
-  booking_reference String?
 
   @@index([created_at(sort: Desc)], map: "idx_unified_bookings_created")
   @@index([metadata], map: "idx_unified_bookings_metadata", type: Gin)
@@ -1090,6 +1093,95 @@ model support_suggestion_events {
 
   @@index([article_id, locale, outcome, created_at], map: "idx_support_suggestion_events_article")
   @@index([conversation_id, created_at], map: "idx_support_suggestion_events_conversation")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model flight_booking_events {
+  id               BigInt           @id @default(autoincrement())
+  session_id       String           @db.Uuid
+  from_status      String?
+  to_status        String
+  actor            String
+  reason           String?
+  payload          Json?
+  created_at       DateTime         @default(now()) @db.Timestamptz(6)
+  booking_sessions booking_sessions @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([session_id, created_at], map: "flight_booking_events_session_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model hotel_booking_events {
+  id             BigInt         @id @default(autoincrement())
+  booking_id     String         @db.Uuid
+  from_status    String?
+  to_status      String
+  actor          String
+  reason         String?
+  payload        Json?
+  created_at     DateTime       @default(now()) @db.Timestamptz(6)
+  hotel_bookings hotel_bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([booking_id, created_at], map: "hotel_booking_events_booking_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model hotel_booking_guests {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id     String         @db.Uuid
+  position       Int
+  kind           String
+  first_name     String
+  last_name      String
+  age            Int?
+  email          String?
+  hotel_bookings hotel_bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([booking_id, position], map: "hotel_booking_guests_position_uniq")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model hotel_booking_payments {
+  id                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id        String         @db.Uuid
+  payment_intent_id String         @unique(map: "hotel_booking_payments_pi_uniq")
+  amount_minor      BigInt
+  currency          String
+  status            String         @default("created")
+  captured_at       DateTime?      @db.Timestamptz(6)
+  voided_at         DateTime?      @db.Timestamptz(6)
+  created_at        DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime       @default(now()) @db.Timestamptz(6)
+  hotel_bookings    hotel_bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model hotel_bookings {
+  id                     String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_reference      String                   @unique(map: "hotel_bookings_reference_uniq")
+  user_id                String                   @db.Uuid
+  status                 String                   @default("PAYMENT_PENDING")
+  provider               String
+  prebook_ref            String
+  payment_intent_id      String?
+  hotel_code             String?
+  property_name          String?
+  room_name              String?
+  check_in               DateTime?                @db.Date
+  check_out              DateTime?                @db.Date
+  currency               String
+  amount_minor           BigInt
+  draft                  Json                     @default("{}")
+  supplier_reference     String?
+  failure_code           String?
+  failure_message        String?
+  created_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  hotel_booking_events   hotel_booking_events[]
+  hotel_booking_guests   hotel_booking_guests[]
+  hotel_booking_payments hotel_booking_payments[]
+
+  @@index([status, created_at], map: "hotel_bookings_status_created_idx")
 }
 
 enum booking_policy_type {
