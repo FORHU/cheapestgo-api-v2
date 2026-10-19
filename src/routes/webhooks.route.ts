@@ -323,10 +323,27 @@ router.post(
                 }
 
                 // The authorisation landed. For a hotel booking whose traveller has already said who
-                // is staying, this is enough to finish it — the same routine, under the same claim, as
-                // the browser's confirm call, so whichever arrives first wins and the other is told.
+                // is staying, or any flight, this is enough to finish it — the same routine, under the
+                // same claim, as the browser's confirm call, so whichever arrives first wins and the
+                // other is told.
                 case 'payment_intent.amount_capturable_updated': {
                     const pi = event.data.object as Stripe.PaymentIntent;
+                    // A bundle's flight and hotel are separate PaymentIntents, each completed on its
+                    // own: `flight_bundle` is a flight, `hotel_bundle` a hotel.
+                    if (pi.metadata?.type === 'flight' || pi.metadata?.type === 'flight_bundle') {
+                        try {
+                            const { FlightBookingLifecycleService } = await import('@/services/flightBookingLifecycle.service');
+                            const out = await new FlightBookingLifecycleService().completeFromPayment(pi);
+                            logger.info('[webhooks/stripe] Flight payment authorised', { paymentIntentId: pi.id, ...out });
+                        } catch (err: any) {
+                            // Not rethrown, as for hotels: the lifecycle and the browser both still
+                            // stand, and a retry of this event would only repeat the same attempt.
+                            logger.error('[webhooks/stripe] Could not complete flight booking from payment', {
+                                paymentIntentId: pi.id, message: err?.message,
+                            });
+                        }
+                        break;
+                    }
                     if (pi.metadata?.type !== 'hotel' && pi.metadata?.type !== 'hotel_bundle') break;
                     try {
                         const { HotelsService } = await import('@/services/hotels.service');

@@ -72,7 +72,8 @@ describe('POST /stripe — payment_intent.amount_capturable_updated', () => {
     });
 
     it('leaves every other kind of payment alone', async () => {
-        const res = await deliver({ type: 'flight' });
+        // Flights have their own completion: webhooks.stripe.flightAuthorisation.test.ts.
+        const res = await deliver({ type: 'golf' });
 
         expect(completeFromPayment).not.toHaveBeenCalled();
         expect(res.body).toEqual({ received: true });

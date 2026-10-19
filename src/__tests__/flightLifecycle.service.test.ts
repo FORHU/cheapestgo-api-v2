@@ -493,6 +493,32 @@ describe('before the migration is applied', () => {
     });
 });
 
+// ── The webhook ────────────────────────────────────────────────────────────────
+
+describe('completing from the payment event', () => {
+    const event = (over: Record<string, unknown> = {}) => ({
+        id: PI, capture_method: 'manual', metadata: { bookingSessionId: SESSION, type: 'flight' }, ...over,
+    });
+
+    it('completes the attempt as the webhook, with no traveller to check against', async () => {
+        const out = await svc.completeFromPayment(event());
+
+        expect(out).toEqual({ handled: true, outcome: 'confirmed' });
+        expect(lastTransition()[3]).toMatchObject({ actor: 'webhook' });
+        expect(placeDuffelOrder).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves a payment from before this release alone — its order was placed at book', async () => {
+        expect(await svc.completeFromPayment(event({ capture_method: 'automatic' }))).toEqual({ handled: false });
+        expect(stripe.paymentIntents.retrieve).not.toHaveBeenCalled();
+    });
+
+    it('leaves a payment that names no session alone', async () => {
+        expect(await svc.completeFromPayment(event({ metadata: { type: 'flight' } }))).toEqual({ handled: false });
+        expect(sessions.getBookingSession).not.toHaveBeenCalled();
+    });
+});
+
 // ── What is checked before anything moves ──────────────────────────────────────
 
 describe('before the claim', () => {

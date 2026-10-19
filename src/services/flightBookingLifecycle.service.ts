@@ -193,6 +193,26 @@ export class FlightBookingLifecycleService {
     }
 
     /**
+     * The Stripe webhook's way in: the authorisation landed, so the attempt can be completed
+     * without the browser — whose tab may have closed the moment the card was accepted. The
+     * same routine, under the same claim, as the browser's confirm: whichever arrives first
+     * asks the airline, and the other is answered with its result.
+     *
+     * A payment from before this release captures automatically and had its order placed at
+     * `book`; it is not this routine's to complete.
+     */
+    async completeFromPayment(intent: {
+        id:              string;
+        capture_method?: string | null;
+        metadata?:       Record<string, string> | null;
+    }): Promise<{ handled: false } | { handled: true; outcome: CompletionOutcome['kind'] }> {
+        const sessionId = intent.metadata?.bookingSessionId;
+        if (!sessionId || intent.capture_method !== 'manual') return { handled: false };
+        const outcome = await this.complete({ sessionId, paymentIntentId: intent.id, actor: 'webhook' });
+        return { handled: true, outcome: outcome.kind };
+    }
+
+    /**
      * Wins the right to ask the airline. The authorisation is recorded first — the browser can
      * arrive before the webhook has — and losing that step is the same fact recorded twice, not
      * a conflict. While the lifecycle column is not there, the session's own `status` lock does
