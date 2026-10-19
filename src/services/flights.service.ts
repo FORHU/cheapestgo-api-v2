@@ -29,7 +29,7 @@ import {
 // only the module knew about would have been charged a hundred times over.
 import { applyMarkup, toStripeAmount, fromStripeAmount, FLIGHT_MARKUP_SPEC, getFlightPriceTolerance } from '@/lib/pricing';
 import { findReusablePreOrder, samePassengerIdentity, sameOrderTotal, REUSE_WINDOW_MS, type CandidateSession } from '@/lib/flights/preorderReuse';
-import { duffelIdentityDocuments } from '@/lib/flights/duffelIdentityDocuments';
+import { buildOrderPassengers, orderPhoneNumber } from '@/lib/flights/orderPassengers';
 import { findOrderFromTimedOutAttempt, toReconciledOrder } from '@/lib/flights/duffelOrderReconcile';
 import { awaitBookingRow } from '@/lib/flights/awaitBookingRow';
 import { makeStrictConverter } from '@/lib/payments/convertStrict';
@@ -236,48 +236,11 @@ export class FlightsService {
                 }
             }
 
-            // Build E.164 phone
-            const phoneInput = String(contact.phone ?? '').trim();
-            let e164Phone: string;
-            if (phoneInput.startsWith('+')) {
-                e164Phone = phoneInput.replace(/[\s\-()]/g, '');
-            } else {
-                const rawCountryCode = String(contact.countryCode ?? '82').replace(/\D/g, '') || '82';
-                const cleaned = phoneInput.replace(/\D/g, '').replace(/^0+/, '');
-                e164Phone = `+${rawCountryCode}${cleaned}`;
-            }
-            if (!/^\+\d{7,15}$/.test(e164Phone)) {
+            const e164Phone = orderPhoneNumber(contact);
+            if (!e164Phone) {
                 throw new AppError(400, `Invalid phone number. Please enter a valid phone number with country code.`, 'INVALID_PHONE');
             }
-
-            const duffelPaxTemplates: any[] = rawOffer.passengers ?? [];
-
-            const duffelTitle = (pax: any): string => {
-                const g = (pax.gender ?? '').toUpperCase();
-                const t = (pax.type ?? '').toUpperCase();
-                if (t === 'CHD' || t === 'INF') return g === 'M' ? 'mr' : 'miss';
-                return g === 'M' ? 'mr' : 'ms';
-            };
-
-            const orderPassengers = passengers.map((pax: any, idx: number) => ({
-                id: duffelPaxTemplates[idx]?.id,
-                title: duffelTitle(pax),
-                given_name: pax.firstName,
-                family_name: pax.lastName,
-                born_on: pax.dateOfBirth ?? pax.birthDate,
-                email: contact.email,
-                phone_number: e164Phone,
-                gender: (pax.gender ?? '').toUpperCase() === 'M' ? 'm' : 'f',
-                // Passport details for the airline's APIS feed. The form requires them and
-                // then none of it was sent, so the traveller had to supply it again at
-                // check-in. Only where the offer asks — some sources reject an order that
-                // volunteers them.
-                ...duffelIdentityDocuments(rawOffer, {
-                    passport:       pax.passport ?? pax.passportNumber,
-                    passportExpiry: pax.passportExpiry,
-                    nationality:    pax.nationality,
-                }),
-            }));
+            const orderPassengers = buildOrderPassengers(rawOffer, passengers, { email: contact.email, phone: e164Phone });
 
             const offerTotal = parseFloat(rawOffer.total_amount ?? '0');
             const availableSvcs: any[] = rawOffer.available_services ?? [];

@@ -12,8 +12,6 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
-import { getDuffelOrder } from '@/lib/flights/duffel';
-import { withBookedItinerary } from '@/lib/flights/duffelOrderSegments';
 import { ticketNumbersFrom, buildSeatMap } from '@/lib/flights/duffelTickets';
 import { awaitBookingRow } from '@/lib/flights/awaitBookingRow';
 import { fromStripeAmount } from '@/lib/pricing';
@@ -23,9 +21,12 @@ import { stripe } from '../lib/stripe';
 import { lockFx } from '../lib/payments/fxLock';
 import { searchFlights, saveSearch } from '@/lib/flights/search';
 import { sendFlightConfirmationEmail } from '@/lib/email/flightConfirmation';
+import { FlightsRepository } from '@/repositories/flights.repository';
+import { completeDuffelBooking } from '@/services/flightBookingCompletion';
 import type { FlightOffer } from '@/types/flights';
 
 const internalRouter = Router();
+const flightsRepo = new FlightsRepository();
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -130,9 +131,6 @@ async function handleDuffel(
     sessionId: string,
     paymentIntentId: string,
 ) {
-    const flight: any = session.flight ?? {};
-    const passengers: any[] = session.passengers ?? [];
-
     const preOrderId: string = session.duffel_pre_order_id ?? '';
     const preOrderPnr: string = session.duffel_pre_order_pnr ?? '';
     const preOrderTickets: string[] = session.duffel_pre_order_tickets ?? [];
@@ -146,96 +144,13 @@ async function handleDuffel(
 
     console.log(`[create-booking] Duffel pre-order: orderId=${preOrderId} pnr=${preOrderPnr} tickets=${preOrderTickets.length}`);
 
-    // Resolve confirmed price from Stripe PI
-    let confirmedPrice = Number(session.charged_price ?? session.original_price ?? 0);
-    let confirmedCurrency = (session.currency ?? 'usd').toUpperCase();
-    if (paymentIntentId) {
-        try {
-            const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
-            // The currency decides the scale: KRW has no minor unit, so dividing would
-            // record a ₩1,200,000 booking as ₩12,000.
-            confirmedPrice = fromStripeAmount(pi.amount, pi.currency ?? 'usd');
-            confirmedCurrency = (pi.currency ?? 'usd').toUpperCase();
-        } catch { /* non-critical */ }
-    }
-
-    const farePolicy: any = session.fare_policy ?? null;
-    const tripType: string = flight.tripType ?? flight.trip_type ?? 'one-way';
-    const bookingStatus = preOrderTicketed ? 'ticketed' : 'awaiting_ticket';
-
-    // The rate this booking was taken at, for USD reporting (ADR-0008). lockFx never
-    // throws; if it yields nulls the row is simply counted as unconverted until a
-    // backfill resolves it.
-    const fx = await lockFx(confirmedPrice, confirmedCurrency);
-
-    // Insert flight_bookings
-    const booking = await prisma.flight_bookings.create({
-        data: {
-            user_id: session.user_id,
-            session_id: sessionId,
-            provider: 'duffel',
-            pnr: preOrderPnr,
-            status: bookingStatus,
-            total_price: confirmedPrice,
-            currency: confirmedCurrency,
-            payment_intent_id: paymentIntentId || null,
-            confirmed_price: confirmedPrice,
-            confirmed_currency: confirmedCurrency,
-            charged_price: confirmedPrice,
-            supplier_cost: Number(session.original_price ?? confirmedPrice),
-            provider_order_id: preOrderId,
-            duffel_order_id: preOrderId,
-            ticket_numbers: preOrderTickets.length > 0 ? preOrderTickets : [],
-            fare_policy: farePolicy ?? undefined,
-            trip_type: tripType,
-            usd_amount:     fx.usd_amount,
-            fx_rate:        fx.fx_rate,
-            fx_captured_at: fx.fx_captured_at,
-            fx_source:      fx.fx_source,
-            source_brand:   process.env.BRAND_NAME ?? 'CheapestGo',
-        },
+    const completed = await completeDuffelBooking({
+        session,
+        paymentIntentId,
+        order: { orderId: preOrderId, pnr: preOrderPnr, tickets: preOrderTickets, isTicketed: preOrderTicketed },
     });
 
-    const bookingId = booking.id;
-
-    // Insert flight_segments — from the order Duffel is actually holding.
-    //
-    // This used to write `booking_sessions.flight`: the itinerary the traveller *selected*,
-    // which is client-supplied and not necessarily the one that got ticketed — the
-    // expired-offer path books from a freshly fetched offer. Any drift showed up as a
-    // confirmation email and a trips page describing a flight the PNR is not for. The stored
-    // payload is the fallback for an order with no readable slices.
-    const bookedOrder = await getDuffelOrder(preOrderId).catch((err: any) => {
-        console.warn(`[create-booking] Could not read order ${preOrderId} for its itinerary: ${err?.message}`);
-        return null;
-    });
-    await insertFlightSegments(bookingId, bookedOrder ? withBookedItinerary(flight, bookedOrder) : flight);
-
-    // Insert passengers
-    await insertPassengers(bookingId, passengers, preOrderTickets);
-
-    // Update session to completed
-    await prisma.$executeRaw`
-        UPDATE booking_sessions SET status = 'completed', completed_at = NOW()
-        WHERE id = ${sessionId}::uuid
-    `;
-
-    // The booking exists and the money has moved, so a mail outage must never turn a
-    // successful booking into a failed response — a failed send leaves a row in email_logs
-    // for the retry job instead.
-    await sendFlightConfirmationEmail(bookingId)
-        .catch((err) => console.error('[create-booking] Confirmation email failed:', err?.message));
-
-    console.log(`[create-booking] Duffel done. bookingId=${bookingId} pnr=${preOrderPnr} status=${bookingStatus}`);
-
-    return res.status(200).json({
-        success: true,
-        bookingId,
-        pnr: preOrderPnr,
-        status: bookingStatus,
-        confirmedPrice,
-        confirmedCurrency,
-    });
+    return res.status(200).json({ success: true, ...completed });
 }
 
 // ── Mystifly handler ─────────────────────────────────────────────────────────
@@ -343,10 +258,10 @@ async function handleMystifly(
     const bookingId = booking.id;
 
     // Insert flight_segments
-    await insertFlightSegments(bookingId, flight);
+    await flightsRepo.insertFlightSegments(bookingId, flight);
 
     // Insert passengers
-    await insertPassengers(bookingId, passengers);
+    await flightsRepo.insertPassengers(bookingId, passengers);
 
     // Update session to completed
     await prisma.$executeRaw`
@@ -422,88 +337,6 @@ function buildMystiflyPassengers(passengers: any[]): any[] {
             } : undefined,
         };
     });
-}
-
-async function insertFlightSegments(bookingId: string, flight: any) {
-    const segments: any[] = flight.segments ?? [];
-    if (segments.length === 0) {
-        console.warn(`[create-booking] No segments for booking ${bookingId}`);
-        return;
-    }
-
-    for (const seg of segments) {
-        try {
-            const depTime = seg.departure?.time ?? seg.departing_at ?? seg.departureTime ?? null;
-            const arrTime = seg.arrival?.time ?? seg.arriving_at ?? seg.arrivalTime ?? null;
-            const origin = seg.origin?.iata_code ?? seg.origin?.airport ?? seg.origin ?? '';
-            const destination = seg.destination?.iata_code ?? seg.destination?.airport ?? seg.destination ?? '';
-            // `airline` may be a normalised object ({ code, name }), a raw carrier object, or a
-            // plain IATA string — never insert the object itself, which coerces to the literal
-            // "[object Object]" in this text column.
-            const airline =
-                (typeof seg.airline === 'object'
-                    ? seg.airline?.code ?? seg.airline?.iata_code
-                    : seg.airline)
-                ?? seg.airline_iata_code
-                ?? seg.operating_carrier?.iata_code
-                ?? seg.marketing_carrier?.iata_code
-                ?? '';
-
-            // A segment with no readable times is skipped, not dated to now. `new Date()` here
-            // wrote today's date onto a leg of a future trip, which reads as a real departure
-            // on every screen that shows it — a missing leg at least looks missing.
-            if (!depTime || !arrTime) {
-                console.error(`[create-booking] Segment for booking ${bookingId} has no departure/arrival time — skipped rather than dated to now`);
-                continue;
-            }
-
-            await prisma.flight_segments.create({
-                data: {
-                    booking_id: bookingId,
-                    airline,
-                    flight_number: seg.flightNumber ?? seg.flight_number ?? '',
-                    origin,
-                    destination,
-                    departure: new Date(depTime),
-                    arrival: new Date(arrTime),
-                    cabin_class: seg.cabinClass ?? seg.cabin_class ?? 'economy',
-                    itinerary_index: seg.itineraryIndex ?? 0,
-                    segment_index: seg.segmentIndex ?? seg.itineraryIndex ?? 0,
-                },
-            });
-        } catch (segErr: any) {
-            console.error(`[create-booking] Failed to insert segment for booking ${bookingId}:`, segErr.message);
-        }
-    }
-}
-
-async function insertPassengers(bookingId: string, passengers: any[], ticketNumbers: string[] = []) {
-    const normaliseType = (raw: string | undefined): 'ADT' | 'CHD' | 'INF' => {
-        const map: Record<string, 'ADT' | 'CHD' | 'INF'> = {
-            ADT: 'ADT', adult: 'ADT',
-            CHD: 'CHD', child: 'CHD',
-            INF: 'INF', infant: 'INF',
-        };
-        return map[raw ?? ''] ?? 'ADT';
-    };
-
-    for (let i = 0; i < passengers.length; i++) {
-        const pax = passengers[i];
-        try {
-            await prisma.passengers.create({
-                data: {
-                    booking_id: bookingId,
-                    first_name: pax.firstName ?? pax.first_name ?? '',
-                    last_name: pax.lastName ?? pax.last_name ?? '',
-                    type: normaliseType(pax.type ?? pax.passengerType),
-                    ticket_number: ticketNumbers[i] ?? null,
-                    passport: pax.passport?.number ?? pax.passportNumber ?? null,
-                },
-            });
-        } catch (paxErr: any) {
-            console.error(`[create-booking] Failed to insert passenger ${i} for booking ${bookingId}:`, paxErr.message);
-        }
-    }
 }
 
 // ── POST /issue-ticket ───────────────────────────────────────────────────────

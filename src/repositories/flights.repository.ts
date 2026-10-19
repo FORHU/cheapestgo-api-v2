@@ -3,6 +3,7 @@
  */
 
 import { prisma } from '@/lib/prisma';
+import type { FxLock } from '@/lib/payments/fxLock';
 
 export class FlightsRepository {
 
@@ -164,6 +165,144 @@ export class FlightsRepository {
             },
             select: { booking_id: true },
         });
+    }
+
+    // ─── The sale: what a completed attempt is recorded as ─────────────────────
+
+    /** The flight_bookings row for a Duffel order that has been placed and paid for. */
+    async createDuffelFlightBooking(data: {
+        userId:          string;
+        sessionId:       string;
+        pnr:             string;
+        status:          string;
+        /** What the traveller paid, in `currency`. */
+        price:           number;
+        currency:        string;
+        paymentIntentId: string | null;
+        /** What the airline charged us, before markup. */
+        supplierCost:    number;
+        orderId:         string;
+        ticketNumbers:   string[];
+        farePolicy:      any;
+        tripType:        string;
+        fx:              FxLock;
+        sourceBrand:     string;
+    }): Promise<{ id: string }> {
+        return prisma.flight_bookings.create({
+            data: {
+                user_id: data.userId,
+                session_id: data.sessionId,
+                provider: 'duffel',
+                pnr: data.pnr,
+                status: data.status,
+                total_price: data.price,
+                currency: data.currency,
+                payment_intent_id: data.paymentIntentId,
+                confirmed_price: data.price,
+                confirmed_currency: data.currency,
+                charged_price: data.price,
+                supplier_cost: data.supplierCost,
+                provider_order_id: data.orderId,
+                duffel_order_id: data.orderId,
+                ticket_numbers: data.ticketNumbers,
+                fare_policy: data.farePolicy ?? undefined,
+                trip_type: data.tripType,
+                usd_amount:     data.fx.usd_amount,
+                fx_rate:        data.fx.fx_rate,
+                fx_captured_at: data.fx.fx_captured_at,
+                fx_source:      data.fx.fx_source,
+                source_brand:   data.sourceBrand,
+            },
+        });
+    }
+
+    async insertFlightSegments(bookingId: string, flight: any) {
+        const segments: any[] = flight.segments ?? [];
+        if (segments.length === 0) {
+            console.warn(`[flight-booking] No segments for booking ${bookingId}`);
+            return;
+        }
+
+        for (const seg of segments) {
+            try {
+                const depTime = seg.departure?.time ?? seg.departing_at ?? seg.departureTime ?? null;
+                const arrTime = seg.arrival?.time ?? seg.arriving_at ?? seg.arrivalTime ?? null;
+                const origin = seg.origin?.iata_code ?? seg.origin?.airport ?? seg.origin ?? '';
+                const destination = seg.destination?.iata_code ?? seg.destination?.airport ?? seg.destination ?? '';
+                // `airline` may be a normalised object ({ code, name }), a raw carrier object, or a
+                // plain IATA string — never insert the object itself, which coerces to the literal
+                // "[object Object]" in this text column.
+                const airline =
+                    (typeof seg.airline === 'object'
+                        ? seg.airline?.code ?? seg.airline?.iata_code
+                        : seg.airline)
+                    ?? seg.airline_iata_code
+                    ?? seg.operating_carrier?.iata_code
+                    ?? seg.marketing_carrier?.iata_code
+                    ?? '';
+
+                // A segment with no readable times is skipped, not dated to now. `new Date()` here
+                // wrote today's date onto a leg of a future trip, which reads as a real departure
+                // on every screen that shows it — a missing leg at least looks missing.
+                if (!depTime || !arrTime) {
+                    console.error(`[flight-booking] Segment for booking ${bookingId} has no departure/arrival time — skipped rather than dated to now`);
+                    continue;
+                }
+
+                await prisma.flight_segments.create({
+                    data: {
+                        booking_id: bookingId,
+                        airline,
+                        flight_number: seg.flightNumber ?? seg.flight_number ?? '',
+                        origin,
+                        destination,
+                        departure: new Date(depTime),
+                        arrival: new Date(arrTime),
+                        cabin_class: seg.cabinClass ?? seg.cabin_class ?? 'economy',
+                        itinerary_index: seg.itineraryIndex ?? 0,
+                        segment_index: seg.segmentIndex ?? seg.itineraryIndex ?? 0,
+                    },
+                });
+            } catch (segErr: any) {
+                console.error(`[flight-booking] Failed to insert segment for booking ${bookingId}:`, segErr.message);
+            }
+        }
+    }
+
+    async insertPassengers(bookingId: string, passengers: any[], ticketNumbers: string[] = []) {
+        const normaliseType = (raw: string | undefined): 'ADT' | 'CHD' | 'INF' => {
+            const map: Record<string, 'ADT' | 'CHD' | 'INF'> = {
+                ADT: 'ADT', adult: 'ADT',
+                CHD: 'CHD', child: 'CHD',
+                INF: 'INF', infant: 'INF',
+            };
+            return map[raw ?? ''] ?? 'ADT';
+        };
+
+        for (let i = 0; i < passengers.length; i++) {
+            const pax = passengers[i];
+            try {
+                await prisma.passengers.create({
+                    data: {
+                        booking_id: bookingId,
+                        first_name: pax.firstName ?? pax.first_name ?? '',
+                        last_name: pax.lastName ?? pax.last_name ?? '',
+                        type: normaliseType(pax.type ?? pax.passengerType),
+                        ticket_number: ticketNumbers[i] ?? null,
+                        passport: pax.passport?.number ?? pax.passportNumber ?? null,
+                    },
+                });
+            } catch (paxErr: any) {
+                console.error(`[flight-booking] Failed to insert passenger ${i} for booking ${bookingId}:`, paxErr.message);
+            }
+        }
+    }
+
+    async markSessionCompleted(sessionId: string) {
+        await prisma.$executeRaw`
+            UPDATE booking_sessions SET status = 'completed', completed_at = NOW()
+            WHERE id = ${sessionId}::uuid
+        `;
     }
 
     // ─── Flight bookings ───────────────────────────────────────────────────────
