@@ -38,7 +38,7 @@ import { orderTotal } from '@/lib/flights/orderTotal';
 import { startSupplierAttempt, finishSupplierAttempt } from '@/lib/hotels/supplierAttempt';
 import { makeStrictConverter } from '@/lib/payments/convertStrict';
 import { applyMarkup, FLIGHT_MARKUP_SPEC, getFlightPriceTolerance } from '@/lib/pricing';
-import type { LifecycleActor } from '@/lib/flights/lifecycle/stateMachine';
+import type { FlightBookingStatus, LifecycleActor } from '@/lib/flights/lifecycle/stateMachine';
 import { FlightBookingLifecycleRepository, type FlightLifecycleRecord } from '@/repositories/flightBookingLifecycle.repository';
 import { FlightsRepository } from '@/repositories/flights.repository';
 import { ExchangeRatesService } from '@/services/exchange-rates.service';
@@ -62,6 +62,20 @@ export type CompletionOutcome =
     | { kind: 'pending'; needsReview: boolean; message: string };
 
 export type VoidOutcome = 'voided' | 'already_void' | 'captured' | 'failed';
+
+export interface SweepReport {
+    scanned:   number;
+    /** Session ids. */
+    expired:   string[];
+    anomalies: Array<{ sessionId: string; reason: string }>;
+    attention: Array<{
+        sessionId:       string;
+        status:          FlightBookingStatus;
+        ageMinutes:      number;
+        failureCode:     string | null;
+        supplierOrderId: string | null;
+    }>;
+}
 
 export interface LifecycleOptions {
     /** How long a caller that lost the claim waits for the winner to finish. */
@@ -506,6 +520,66 @@ export class FlightBookingLifecycleService {
             console.error(`[flight-lifecycle] could not void ${paymentIntentId}:`, err?.message);
             return 'failed';
         }
+    }
+
+    // ── The sweeper ─────────────────────────────────────────────────────────
+
+    /**
+     * Cleans up attempts nobody finished and reports the ones that need a person.
+     *
+     * It releases money and closes records. It never orders and never calls Duffel: the query
+     * it walks excludes any attempt with a supplier call recorded against it, so the only
+     * holds it can release are ones for which the airline was never asked anything. An attempt
+     * the airline was asked about is only ever reported — it may have a ticket behind it.
+     */
+    async sweep(now: Date = new Date(), limit = 100): Promise<SweepReport> {
+        const report: SweepReport = { scanned: 0, expired: [], anomalies: [], attention: [] };
+
+        const pending    = await this.repo.findAbandoned(['PAYMENT_PENDING'], new Date(now.getTime() - PENDING_TTL_MS), limit);
+        const authorised = await this.repo.findAbandoned(['PAYMENT_AUTHORIZED'], new Date(now.getTime() - AUTHORISED_TTL_MS), limit);
+
+        for (const record of [...pending, ...authorised]) {
+            report.scanned++;
+
+            // No PaymentIntent: `book` wrote the session and then could not open the payment.
+            // There is nothing to release, only a record to close.
+            if (record.paymentIntentId) {
+                const voided = await this.voidAuthorisation(record.paymentIntentId);
+                if (voided === 'captured') {
+                    // Paid, never ordered, and the airline was never asked. Not ours to unwind.
+                    report.anomalies.push({ sessionId: record.sessionId, reason: 'payment was captured but the airline was never asked' });
+                    continue;
+                }
+                if (voided === 'failed') {
+                    report.anomalies.push({ sessionId: record.sessionId, reason: 'could not release the authorisation' });
+                    continue;
+                }
+            }
+
+            const moved = await this.repo.transition(record.sessionId, ['PAYMENT_PENDING', 'PAYMENT_AUTHORIZED'], 'EXPIRED', {
+                actor: 'sweeper',
+                reason: !record.paymentIntentId ? 'no payment was ever opened'
+                    : record.status === 'PAYMENT_AUTHORIZED' ? 'authorised and never completed' : 'payment never started',
+                patch: { failureCode: 'ABANDONED' },
+            });
+            if (moved === 'applied') {
+                await this.sessions.setSessionStatus(record.sessionId, 'expired')
+                    .catch((err: any) => console.error(`[flight-lifecycle] could not mark ${record.sessionId} expired: ${err?.message}`));
+                report.expired.push(record.sessionId);
+            }
+        }
+
+        const stuck = await this.repo.findNeedingAttention(new Date(now.getTime() - ATTENTION_AFTER_MS), limit);
+        for (const record of stuck) {
+            report.attention.push({
+                sessionId:       record.sessionId,
+                status:          record.status,
+                ageMinutes:      Math.round((now.getTime() - record.updatedAt.getTime()) / 60_000),
+                failureCode:     record.failureCode,
+                supplierOrderId: record.supplierOrderId,
+            });
+        }
+        return report;
     }
 
     /** The flat part of the markup in the fare's currency, as `book` computes it. */

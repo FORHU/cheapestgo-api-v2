@@ -471,20 +471,13 @@ function requireCronOrInternal(req: Request, res: Response, next: NextFunction) 
 
 internalRouter.post('/auto-recover', requireCronOrInternal, async (_req: Request, res: Response) => {
     try {
-        const cutoffRecent = new Date(Date.now() - MISMATCH_THRESHOLD).toISOString();
-        const cutoffOld    = new Date(Date.now() - MISMATCH_MAX_AGE).toISOString();
-
-        // Sessions with a payment_intent_id, not yet booked/expired, older than 5 min
-        const stuckSessions = await prisma.$queryRaw<any[]>`
-            SELECT id, provider, payment_intent_id, status, created_at
-            FROM booking_sessions
-            WHERE payment_intent_id IS NOT NULL
-              AND status NOT IN ('booked', 'expired', 'completed', 'failed')
-              AND created_at < ${cutoffRecent}::timestamptz
-              AND created_at >= ${cutoffOld}::timestamptz
-            ORDER BY created_at ASC
-            LIMIT ${AUTO_RECOVER_MAX}
-        `;
+        // Sessions with a payment_intent_id, not yet booked/expired, older than 5 min — and
+        // none the flight booking lifecycle owns, whose card is held rather than charged.
+        const stuckSessions = await flightsRepo.findSessionsToAutoRecover(
+            new Date(Date.now() - MISMATCH_THRESHOLD),
+            new Date(Date.now() - MISMATCH_MAX_AGE),
+            AUTO_RECOVER_MAX,
+        );
 
         if (!stuckSessions.length) {
             return res.json({ success: true, recovered: 0, message: 'No mismatches found' });

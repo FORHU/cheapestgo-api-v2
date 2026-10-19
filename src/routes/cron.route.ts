@@ -21,6 +21,8 @@ import { getDumpUrl, processDump } from '@/lib/hotels/etgDump';
 import { findUnrecordedReservations, filterAlreadyNotified, UNRECORDED_NOTIFICATION_TITLE } from '@/lib/admin/reconciliation';
 import { reconcilePlatformCost } from '@/lib/admin/platformCost';
 import { HotelBookingLifecycleService } from '@/services/hotelBookingLifecycle.service';
+import { FlightBookingLifecycleService } from '@/services/flightBookingLifecycle.service';
+import { FlightsRepository } from '@/repositories/flights.repository';
 import { createNotification } from '@/lib/admin/notify';
 import { ticketNumbersFrom } from '@/lib/flights/duffelTickets';
 import { sendFlightConfirmationEmail } from '@/lib/email/flightConfirmation';
@@ -410,20 +412,13 @@ router.get('/cleanup-orphaned-duffel-orders', async (_req: Request, res: Respons
         }
 
         const CUTOFF_MINUTES = 35;
-        const cutoff = new Date(Date.now() - CUTOFF_MINUTES * 60 * 1000).toISOString();
 
         // Flight bookings that have a provider_order_id but are still in payment-pending states
-        // and were created > 35 min ago (Stripe PI has likely expired)
-        const candidates = await prisma.$queryRaw<any[]>`
-            SELECT id, provider_order_id, payment_intent_id, status, created_at
-            FROM flight_bookings
-            WHERE provider = 'duffel'
-              AND provider_order_id IS NOT NULL
-              AND payment_intent_id IS NOT NULL
-              AND status IN ('payment_initiated', 'initiated', 'pending')
-              AND created_at < ${cutoff}::timestamptz
-            LIMIT 20
-        `;
+        // and were created > 35 min ago (Stripe PI has likely expired) — never one the flight
+        // booking lifecycle wrote, whose payment may be being kept for a person to settle.
+        const candidates = await new FlightsRepository().findOrphanedOrderCandidates(
+            new Date(Date.now() - CUTOFF_MINUTES * 60 * 1000),
+        );
 
         if (!candidates.length) {
             return res.json({ ok: true, cancelled: 0, message: 'No orphaned orders found' });
@@ -1479,6 +1474,60 @@ router.get('/hotel-booking-sweep', async (_req: Request, res: Response, next: Ne
 
         for (const a of report.anomalies) {
             console.warn(`[hotel-booking-sweep] ${a.reference}: ${a.reason}`);
+        }
+
+        res.json({
+            success:   true,
+            scanned:   report.scanned,
+            expired:   report.expired.length,
+            anomalies: report.anomalies,
+            attention: report.attention.length,
+            announced,
+        });
+    } catch (err) { next(err); }
+});
+
+// -----------------------------------------------------------------------------
+// GET /api/v2/cron/flight-booking-sweep
+// Schedule: every 10 minutes  (*/10 * * * *)
+//
+// The flight half of the sweep above. Releases card holds nobody finished, and says out loud
+// about attempts stuck with the airline. It never orders and never calls Duffel: a hold the
+// airline was never asked about is voided, and an attempt it was asked about is only ever
+// *reported* — Duffel may have issued a ticket a person has to find before anything is
+// released or captured.
+// -----------------------------------------------------------------------------
+
+const FLIGHT_SWEEP_ATTENTION_TITLE = 'Flight booking needs review';
+
+router.get('/flight-booking-sweep', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+        const report = await new FlightBookingLifecycleService().sweep();
+
+        // One notification per attempt, ever, as for hotels.
+        let announced = 0;
+        for (const item of report.attention) {
+            const seen = await prisma.notifications.findFirst({
+                where:  { title: FLIGHT_SWEEP_ATTENTION_TITLE, description: { contains: item.sessionId } },
+                select: { id: true },
+            }).catch(() => null);
+            if (seen) continue;
+
+            await createNotification(
+                FLIGHT_SWEEP_ATTENTION_TITLE,
+                `Booking session ${item.sessionId} has been ${item.status} for ${item.ageMinutes} minutes`
+                + `${item.failureCode ? ` (${item.failureCode})` : ''}. `
+                + (item.supplierOrderId
+                    ? `Duffel holds order ${item.supplierOrderId}. `
+                    : 'Duffel may hold an order the platform has not confirmed. ')
+                + "The traveller's card is being held. Check the Duffel dashboard and the attempt's "
+                + 'flight_booking_events before releasing or capturing anything.',
+            );
+            announced++;
+        }
+
+        for (const a of report.anomalies) {
+            console.warn(`[flight-booking-sweep] ${a.sessionId}: ${a.reason}`);
         }
 
         res.json({

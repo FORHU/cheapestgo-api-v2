@@ -519,6 +519,104 @@ describe('completing from the payment event', () => {
     });
 });
 
+// ── The sweeper ────────────────────────────────────────────────────────────────
+
+describe('sweep', () => {
+    const NOW = new Date('2026-10-19T12:00:00Z');
+    const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
+    const pendingRec    = record({ sessionId: 's-pending', status: 'PAYMENT_PENDING', paymentIntentId: 'pi_p', updatedAt: minutesAgo(200) });
+    const authorisedRec = record({ sessionId: 's-auth', status: 'PAYMENT_AUTHORIZED', paymentIntentId: 'pi_a', updatedAt: minutesAgo(45) });
+
+    beforeEach(() => {
+        lifecycle.findAbandoned.mockImplementation(async (statuses: string[]) =>
+            statuses.includes('PAYMENT_PENDING') ? [pendingRec] : [authorisedRec]);
+    });
+
+    it('releases holds nobody finished and closes their attempts', async () => {
+        const report = await svc.sweep(NOW);
+
+        expect(report.expired).toEqual(['s-pending', 's-auth']);
+        expect(stripe.paymentIntents.cancel).toHaveBeenCalledWith('pi_p');
+        expect(stripe.paymentIntents.cancel).toHaveBeenCalledWith('pi_a');
+        expect(transitions()).toEqual([
+            'PAYMENT_PENDING|PAYMENT_AUTHORIZED→EXPIRED',
+            'PAYMENT_PENDING|PAYMENT_AUTHORIZED→EXPIRED',
+        ]);
+        expect(lastTransition()[3]).toMatchObject({ actor: 'sweeper', patch: { failureCode: 'ABANDONED' } });
+        expect(sessions.setSessionStatus).toHaveBeenCalledWith('s-auth', 'expired');
+    });
+
+    it('waits two hours for an unpaid attempt and thirty minutes for an authorised one', async () => {
+        await svc.sweep(NOW);
+        expect(lifecycle.findAbandoned).toHaveBeenCalledWith(['PAYMENT_PENDING'], minutesAgo(120), 100);
+        expect(lifecycle.findAbandoned).toHaveBeenCalledWith(['PAYMENT_AUTHORIZED'], minutesAgo(30), 100);
+    });
+
+    it('closes an attempt whose payment was never opened, with nothing to release', async () => {
+        lifecycle.findAbandoned.mockImplementation(async (statuses: string[]) =>
+            statuses.includes('PAYMENT_PENDING') ? [record({ sessionId: 's-nopi', status: 'PAYMENT_PENDING', paymentIntentId: null })] : []);
+
+        const report = await svc.sweep(NOW);
+
+        expect(report.expired).toEqual(['s-nopi']);
+        expect(stripe.paymentIntents.retrieve).not.toHaveBeenCalled();
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+    });
+
+    it('reports, and never touches, a payment that was captured without the airline being asked', async () => {
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue(intent({ status: 'succeeded' }) as any);
+
+        const report = await svc.sweep(NOW);
+
+        expect(report.expired).toEqual([]);
+        expect(report.anomalies.map((a) => a.sessionId)).toEqual(['s-pending', 's-auth']);
+        expect(lifecycle.transition).not.toHaveBeenCalled();
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+    });
+
+    it('reports a hold it could not release and leaves the attempt as it was', async () => {
+        vi.mocked(stripe.paymentIntents.cancel).mockRejectedValue(new Error('stripe down'));
+
+        const report = await svc.sweep(NOW);
+
+        expect(report.anomalies).toHaveLength(2);
+        expect(lifecycle.transition).not.toHaveBeenCalled();
+    });
+
+    it('does not count an attempt that moved on before the sweep reached it', async () => {
+        lifecycle.transition.mockResolvedValue('lost');
+        const report = await svc.sweep(NOW);
+        expect(report.expired).toEqual([]);
+        expect(sessions.setSessionStatus).not.toHaveBeenCalled();
+    });
+
+    it('reports attempts stuck with the airline, with their order, and never moves or releases them', async () => {
+        lifecycle.findAbandoned.mockResolvedValue([]);
+        lifecycle.findNeedingAttention.mockResolvedValue([
+            record({ sessionId: 's-stuck', status: 'NEEDS_REVIEW', updatedAt: minutesAgo(40), failureCode: 'CAPTURE_FAILED', supplierOrderId: 'ord_9' }),
+        ]);
+
+        const report = await svc.sweep(NOW);
+
+        expect(lifecycle.findNeedingAttention).toHaveBeenCalledWith(minutesAgo(15), 100);
+        expect(report.attention).toEqual([
+            { sessionId: 's-stuck', status: 'NEEDS_REVIEW', ageMinutes: 40, failureCode: 'CAPTURE_FAILED', supplierOrderId: 'ord_9' },
+        ]);
+        expect(lifecycle.transition).not.toHaveBeenCalled();
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+        expect(stripe.paymentIntents.capture).not.toHaveBeenCalled();
+    });
+
+    it('never asks the airline anything', async () => {
+        lifecycle.findNeedingAttention.mockResolvedValue([record({ status: 'SUPPLIER_BOOKING' })]);
+        await svc.sweep(NOW);
+        expect(getDuffelOffer).not.toHaveBeenCalled();
+        expect(placeDuffelOrder).not.toHaveBeenCalled();
+        expect(findOrderFromTimedOutAttempt).not.toHaveBeenCalled();
+        expect(startSupplierAttempt).not.toHaveBeenCalled();
+    });
+});
+
 // ── What is checked before anything moves ──────────────────────────────────────
 
 describe('before the claim', () => {

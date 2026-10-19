@@ -99,6 +99,56 @@ export class FlightsRepository {
         });
     }
 
+    // ─── What the crons may act on ─────────────────────────────────────────────
+
+    /**
+     * Sessions /internal/auto-recover retries: paid, not booked, between five minutes and a
+     * day old.
+     *
+     * Never one the flight booking lifecycle owns — a Duffel session with a manual-capture
+     * PaymentIntent. Its card is held, not charged, so auto-recover reads it as unpaid and
+     * would expire the attempt under it; and one whose sale could not be recorded has no
+     * pre-order for create-booking to find. The lifecycle and its sweeper own those.
+     */
+    async findSessionsToAutoRecover(olderThan: Date, newerThan: Date, limit: number) {
+        return prisma.$queryRaw<{ id: string; provider: string; payment_intent_id: string; status: string; created_at: Date }[]>`
+            SELECT id, provider, payment_intent_id, status, created_at
+            FROM booking_sessions
+            WHERE payment_intent_id IS NOT NULL
+              AND status NOT IN ('booked', 'expired', 'completed', 'failed')
+              AND (provider <> 'duffel' OR capture_method IS DISTINCT FROM 'manual')
+              AND created_at < ${olderThan.toISOString()}::timestamptz
+              AND created_at >= ${newerThan.toISOString()}::timestamptz
+            ORDER BY created_at ASC
+            LIMIT ${limit}
+        `;
+    }
+
+    /**
+     * flight_bookings whose Duffel order the orphaned-order cron may cancel: still pending
+     * payment, long after the payment should have been taken.
+     *
+     * Never one the booking lifecycle wrote. It writes a booking only once the money is
+     * captured, and never with a pending status, so this is the second guard, not the first —
+     * but the action at the end of this query is cancelling somebody's ticket.
+     */
+    async findOrphanedOrderCandidates(olderThan: Date, limit = 20) {
+        return prisma.$queryRaw<{ id: string; provider_order_id: string; payment_intent_id: string; status: string; created_at: Date }[]>`
+            SELECT fb.id, fb.provider_order_id, fb.payment_intent_id, fb.status, fb.created_at
+            FROM flight_bookings fb
+            WHERE fb.provider = 'duffel'
+              AND fb.provider_order_id IS NOT NULL
+              AND fb.payment_intent_id IS NOT NULL
+              AND fb.status IN ('payment_initiated', 'initiated', 'pending')
+              AND NOT EXISTS (
+                  SELECT 1 FROM booking_sessions s
+                   WHERE s.id = fb.session_id AND s.capture_method = 'manual'
+              )
+              AND fb.created_at < ${olderThan.toISOString()}::timestamptz
+            LIMIT ${limit}
+        `;
+    }
+
     // ─── Duplicate booking guard ───────────────────────────────────────────────
 
     async getActiveBookingsForUser(userId: string): Promise<{ id: string }[]> {
