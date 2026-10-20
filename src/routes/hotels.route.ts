@@ -6,7 +6,7 @@ import { prisma } from '@/lib/prisma';
 import { tgxGraphQL, getTgxConfig } from '@/lib/hotels/travelgatex';
 import { CITY_ALIASES } from '@/lib/cityAliases';
 
-const router = Router();
+const router: Router = Router();
 const ctrl   = new HotelsController();
 
 // ── Hotel photo proxy ─────────────────────────────────────────────────────────

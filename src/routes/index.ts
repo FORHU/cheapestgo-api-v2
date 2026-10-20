@@ -23,7 +23,7 @@ import autocompleteRoutes  from './autocomplete.route';
 import googleRoutes        from './google.route';
 import emailRoutes         from './email.route';
 
-const router = Router();
+const router: Router = Router();
 
 router.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 

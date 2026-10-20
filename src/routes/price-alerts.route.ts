@@ -3,7 +3,7 @@ import { requireAuth } from '@/middleware/auth.middleware';
 import { prisma } from '@/lib/prisma';
 import { AppError } from '@/middleware/error.middleware';
 
-const router = Router();
+const router: Router = Router();
 router.use(requireAuth);
 
 const VALID_CABINS = new Set(['economy', 'premium_economy', 'business', 'first']);

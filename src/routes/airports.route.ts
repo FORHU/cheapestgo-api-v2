@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { config } from '@/config';
 import { searchAirports, placeMatchesQuery } from '@/lib/airports';
 
-const router = Router();
+const router: Router = Router();
 
 const DUFFEL_VERSION = 'v2';
 

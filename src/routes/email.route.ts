@@ -20,7 +20,7 @@ import { loadBookingEmailView, type BookingEmailView } from '@/lib/email/booking
 import { renderBookingConfirmationHtml } from '@/lib/email/booking-confirmation.template';
 import { renderBookingConfirmationPdf } from '@/lib/email/booking-confirmation.pdf';
 
-const router = Router();
+const router: Router = Router();
 
 const FROM_ADDRESS = 'CheapestGo <no-reply@mail.cheapestgo.com>';
 

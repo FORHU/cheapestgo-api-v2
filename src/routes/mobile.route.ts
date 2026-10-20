@@ -17,7 +17,7 @@ import { searchRateLimit as mobileSearchRateLimit } from '@/middleware/rate-limi
 import { FlightsService } from '@/services/flights.service';
 import { prisma } from '@/lib/prisma';
 
-const router = Router();
+const router: Router = Router();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

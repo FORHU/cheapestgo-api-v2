@@ -11,7 +11,7 @@ import { prisma } from '@/lib/prisma';
 import { redis } from '@/lib/redis';
 import { config } from '@/config';
 
-const router = Router();
+const router: Router = Router();
 
 /**
  * Where Google sends the browser back, quoted identically by both legs of the exchange.

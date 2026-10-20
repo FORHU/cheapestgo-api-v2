@@ -13,7 +13,7 @@ import { photosRateLimit } from '@/middleware/rate-limit.middleware';
 import { lookupPoiDetails, fetchPlacePhoto, placeholderSvg } from '@/lib/google/poi-details';
 import { logger } from '@/lib/logger';
 
-const router = Router();
+const router: Router = Router();
 
 // These photos are public and loaded as <img> from the web app's origin; helmet's default
 // same-origin policy would make the browser block them.

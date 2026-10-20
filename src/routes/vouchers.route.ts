@@ -12,7 +12,7 @@ import { requireAuth } from '@/middleware/auth.middleware';
 import { AppError } from '@/middleware/error.middleware';
 import { prisma } from '@/lib/prisma';
 
-const router = Router();
+const router: Router = Router();
 
 // ── In-memory sliding-window rate limiter (validation endpoint only) ──────────
 // 10 attempts per minute per user — prevents brute-forcing voucher codes.

@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Express } from 'express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import cors from 'cors';
@@ -10,7 +10,7 @@ import routes from '@/routes';
 import webhookRoutes from '@/routes/webhooks.route';
 import internalRouter from '@/routes/internal.route';
 
-const app = express();
+const app: Express = express();
 
 // Caddy on the dev host proxies /api/v2 to this container, so every request arrives from
 // 127.0.0.1 with the real address in X-Forwarded-For. Left unset, express-rate-limit keys

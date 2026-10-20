@@ -8,7 +8,7 @@
 import { Router, Request, Response } from 'express';
 import { config } from '@/config';
 
-const router = Router();
+const router: Router = Router();
 
 const GOOGLE_WEATHER_BASE = 'https://weather.googleapis.com/v1';
 

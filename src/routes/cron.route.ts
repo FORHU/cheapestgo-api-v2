@@ -30,7 +30,7 @@ import { makeStrictConverter } from '@/lib/payments/convertStrict';
 import { ExchangeRatesService } from '@/services/exchange-rates.service';
 import { fromStripeAmount } from '@/lib/pricing';
 
-const router = Router();
+const router: Router = Router();
 
 // ── Auth guard ────────────────────────────────────────────────────────────────
 

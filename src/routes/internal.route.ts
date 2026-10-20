@@ -25,7 +25,7 @@ import { FlightsRepository } from '@/repositories/flights.repository';
 import { completeDuffelBooking } from '@/services/flightBookingCompletion';
 import type { FlightOffer } from '@/types/flights';
 
-const internalRouter = Router();
+const internalRouter: Router = Router();
 const flightsRepo = new FlightsRepository();
 
 // ── Auth ─────────────────────────────────────────────────────────────────────

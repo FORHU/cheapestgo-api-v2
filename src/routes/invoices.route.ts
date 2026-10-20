@@ -25,7 +25,7 @@ import { prisma } from '@/lib/prisma';
 import { InvoicePdfDocument } from '@/components/InvoicePdfDocument';
 import { canonicalBrandName } from '@/lib/brand';
 
-const router = Router();
+const router: Router = Router();
 
 function formatCurrency(amount: number, currency: string): string {
     try {

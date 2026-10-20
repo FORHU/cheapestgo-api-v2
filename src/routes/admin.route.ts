@@ -20,7 +20,7 @@ import { roleLabel } from '@/lib/auth/roles';
 import { logAdminAction } from '@/lib/admin/audit';
 import { createNotification } from '@/lib/admin/notify';
 
-const router = Router();
+const router: Router = Router();
 
 // All admin routes below require a valid JWT AND the 'admin' role
 router.use(requireAuth, requireRole('admin'));

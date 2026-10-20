@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { BookingsController } from '@/controllers/bookings.controller';
 import { requireAuth } from '@/middleware/auth.middleware';
 
-const router = Router();
+const router: Router = Router();
 const ctrl = new BookingsController();
 
 // All booking routes require auth

@@ -34,7 +34,7 @@ import crypto from 'crypto';
 import { duffelHeaders } from '@/lib/flights/duffel';
 import { sendFlightConfirmationEmail } from '@/lib/email/flightConfirmation';
 
-const router = Router();
+const router: Router = Router();
 
 function verifyDuffelSignature(rawBody: Buffer, sigHeader: string, secret: string): boolean {
     const parts = Object.fromEntries(sigHeader.split(',').map(p => p.split('=')));
