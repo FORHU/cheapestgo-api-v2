@@ -164,6 +164,8 @@ router.get( '/count',                   ctrl.count);
 router.get( '/destinations',            searchRateLimit, ctrl.destinations);
 router.get( '/property/:id',            searchRateLimit, ctrl.property);
 router.get( '/deals',                   ctrl.deals);
+// Two indexed reads, no supplier call: safe for a page that re-renders on a timer.
+router.get( '/featured',                ctrl.featured);
 router.get( '/place-details',           ctrl.placeDetails);
 router.get( '/geocode',                 ctrl.geocode);
 router.post('/prebook',                 ctrl.preBook);

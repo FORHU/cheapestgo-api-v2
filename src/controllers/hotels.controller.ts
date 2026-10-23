@@ -54,6 +54,27 @@ export class HotelsController {
     };
 
     /**
+     * GET /api/v2/hotels/featured?city=Seoul&cc=KR
+     *
+     * The promoted stay for one destination, for the landing page's Walk. Two indexed
+     * table reads, no supplier call — the landing page re-renders on a timer, and a
+     * scheduled supplier search is pre-warming, which OTV's contract forbids (ADR 0005).
+     *
+     * `{ stay: null }` rather than a 404 when nothing is promoted: an act without a deal
+     * is an ordinary state of the page, not a missing resource.
+     */
+    featured = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { city, cc } = z.object({
+                city: z.string().min(1),
+                cc:   z.string().length(2).optional(),
+            }).parse(req.query);
+            const stay = await svc.featuredStayByCity(city, cc);
+            res.json({ stay });
+        } catch (err) { next(err); }
+    };
+
+    /**
      * A stay whose check-out is on or before its check-in, which is not a stay at all.
      *
      * The calendar no longer offers such a range (QA BG-5), but a pasted or edited URL
