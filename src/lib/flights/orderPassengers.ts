@@ -46,7 +46,7 @@ export function buildOrderPassengers(
 ): any[] {
     const duffelPaxTemplates: any[] = rawOffer.passengers ?? [];
 
-    return passengers.map((pax: any, idx: number) => ({
+    const built = passengers.map((pax: any, idx: number) => ({
         id: duffelPaxTemplates[idx]?.id,
         title: duffelTitle(pax),
         given_name: pax.firstName,
@@ -65,4 +65,40 @@ export function buildOrderPassengers(
             nationality:    pax.nationality,
         }),
     }));
+
+    linkInfantsToAdults(built, passengers, duffelPaxTemplates);
+    return built;
+}
+
+type Role = 'adult' | 'infant' | 'other';
+
+/**
+ * Who a traveller is to the airline. The offer's own passenger type is the authority — it is
+ * what the fare was priced for — and the form's label is only the fallback for an offer that
+ * lists none.
+ */
+function roleOf(pax: any, template: any): Role {
+    const offerType = String(template?.type ?? '').toLowerCase();
+    if (offerType) return offerType.startsWith('infant') ? 'infant' : offerType === 'adult' ? 'adult' : 'other';
+    const formType = String(pax?.type ?? '').toUpperCase();
+    return formType === 'INF' ? 'infant' : formType === 'ADT' ? 'adult' : 'other';
+}
+
+/**
+ * Name each infant on a responsible adult: the adult's `infant_passenger_id` is the infant's
+ * passenger id. Duffel refuses an order with infants that does not, and every infant needs an
+ * adult of its own, so the first infant goes with the first adult, the second with the second.
+ * An infant with no adult left is left unlinked for Duffel to refuse in its own words.
+ */
+function linkInfantsToAdults(built: any[], travellers: any[], templates: any[]): void {
+    const roles = travellers.map((pax, i) => roleOf(pax, templates[i]));
+    const adults  = roles.flatMap((r, i) => (r === 'adult' ? [i] : []));
+    const infants = roles.flatMap((r, i) => (r === 'infant' ? [i] : []));
+
+    infants.forEach((infantIdx, n) => {
+        const adultIdx = adults[n];
+        const infantId = built[infantIdx]?.id;
+        if (adultIdx === undefined || !infantId) return;
+        built[adultIdx].infant_passenger_id = infantId;
+    });
 }

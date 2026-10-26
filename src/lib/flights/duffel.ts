@@ -547,10 +547,19 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
             }
 
             const freshPaxTemplates: any[] = freshOffer.passengers ?? [];
-            const refreshedPassengers = params.passengers.map((pax: any, idx: number) => ({
-                ...pax,
-                id: freshPaxTemplates[idx]?.id ?? pax.id,
-            }));
+            const freshIdOf = (idx: number, fallback: string) => freshPaxTemplates[idx]?.id ?? fallback;
+            const refreshedPassengers = params.passengers.map((pax: any, idx: number) => {
+                const refreshed = { ...pax, id: freshIdOf(idx, pax.id) };
+                // An adult's `infant_passenger_id` names a passenger of the offer being left;
+                // on the fresh one it has to name that same infant's new id.
+                if (pax.infant_passenger_id) {
+                    const infantIdx = params.passengers.findIndex((p: any) => p.id === pax.infant_passenger_id);
+                    refreshed.infant_passenger_id = infantIdx >= 0
+                        ? freshIdOf(infantIdx, pax.infant_passenger_id)
+                        : pax.infant_passenger_id;
+                }
+                return refreshed;
+            });
 
             const attempt2 = await tryPlaceOrder(freshOffer.id, refreshedPassengers, freshBaseTotal.toFixed(2), freshOffer.total_currency, false, crypto.randomUUID());
 

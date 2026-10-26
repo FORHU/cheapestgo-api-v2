@@ -290,7 +290,18 @@ describe('FlightsService.book()', () => {
             }),
             expect.objectContaining({ idempotencyKey: expect.stringContaining('flight-pi-') }),
         );
-        expect(result).toEqual({ clientSecret: 'pi_secret_xyz', sessionId: SESSION_ID, paymentIntentId: PI_ID });
+        expect(result).toMatchObject({ clientSecret: 'pi_secret_xyz', sessionId: SESSION_ID, paymentIntentId: PI_ID });
+    });
+
+    it('tells the caller exactly what the card is held for, so the page can show that and nothing else', async () => {
+        const result = await service.book(BOOK_PARAMS);
+
+        const total = applyMarkup(100, FLIGHT_MARKUP_SPEC).chargedPrice;
+        expect(result).toMatchObject({ amount: total, currency: 'USD', fare: 100 });
+        expect(result.serviceFee).toBeCloseTo(total - 100, 2);
+        // The figure it reports is the figure Stripe was asked to hold.
+        expect(vi.mocked(stripe.paymentIntents.create).mock.calls[0][0].amount)
+            .toBe(toStripeAmount(result.amount, 'usd'));
     });
 
     it('writes the attempt as a manual-capture session, with what its order will need', async () => {
@@ -506,7 +517,24 @@ describe('FlightsService.getOffer()', () => {
 
         expect(getDuffelOffer).toHaveBeenCalledWith('off-abc');
         expect(normalizedToFlightOffer).toHaveBeenCalledWith({ offer_id: 'off-abc' }, 'round-trip');
-        expect(offer).toEqual({ offerId: 'off-abc', segments: [] });
+        expect(offer).toMatchObject({ offerId: 'off-abc', segments: [] });
+        expect(offer).not.toHaveProperty('_rawOffer');
+    });
+
+    it('quotes what the card would be held for — to the cent, the figure book then holds', async () => {
+        const { parseDuffelOffer, normalizedToFlightOffer } = await import('@/lib/flights/duffel');
+        vi.mocked(getDuffelOffer).mockResolvedValue(RAW_OFFER);
+        vi.mocked(parseDuffelOffer).mockReturnValue({ offer_id: 'off-abc' } as any);
+        vi.mocked(normalizedToFlightOffer).mockReturnValue({ offerId: 'off-abc', segments: [], _rawOffer: RAW_OFFER } as any);
+        vi.mocked(stripe.paymentIntents.create).mockResolvedValue({ id: PI_ID, client_secret: 'pi_secret_xyz' } as any);
+        lifecycle.open.mockResolvedValue(null);
+
+        const offer = await service.getOffer('off-abc');
+        const booked = await service.book(BOOK_PARAMS);
+
+        expect(offer.quote).toEqual({ currency: 'USD', fare: booked.fare, serviceFee: booked.serviceFee, total: booked.amount });
+        // A fee is part of the quote, not an afterthought: the total is more than the fare.
+        expect(offer.quote!.total).toBeGreaterThan(offer.quote!.fare);
     });
 
     it('says the fare is gone when Duffel no longer has it', async () => {

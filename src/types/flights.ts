@@ -104,6 +104,17 @@ export interface FlightSegmentDetail {
     fareBasis?: string;
 }
 
+/**
+ * What the traveller will be charged for a fare: the airline's price, our service fee, and the
+ * total, in the currency the card is held in. Present on `GET /flights/offers/:offerId` only.
+ */
+export interface FlightQuote {
+    currency: string;
+    fare: number;
+    serviceFee: number;
+    total: number;
+}
+
 export interface FlightOffer {
     offerId: string;
     provider: string;
@@ -137,6 +148,8 @@ export interface FlightOffer {
     resultIndex?: string;
     traceId?: string;
     alternatives?: FlightOffer[];
+    /** Only on the single-offer read; search results carry the airline's raw fare. */
+    quote?: FlightQuote;
 }
 
 // ─── Request shapes ───────────────────────────────────────────────────────────

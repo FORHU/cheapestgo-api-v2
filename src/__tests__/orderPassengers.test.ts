@@ -39,13 +39,81 @@ describe('buildOrderPassengers', () => {
         ], contact);
 
         expect(out).toEqual([
+            // The adult travels with the infant, so the airline is told which infant is theirs.
             { id: 'pas_adult', title: 'mr', given_name: 'Juan', family_name: 'Cruz', born_on: '1990-01-01',
-                email: 'juan@example.com', phone_number: '+639171234567', gender: 'm' },
+                email: 'juan@example.com', phone_number: '+639171234567', gender: 'm', infant_passenger_id: 'pas_infant' },
             { id: 'pas_child', title: 'miss', given_name: 'Ana', family_name: 'Cruz', born_on: '2018-05-05',
                 email: 'juan@example.com', phone_number: '+639171234567', gender: 'f' },
             { id: 'pas_infant', title: 'mr', given_name: 'Leo', family_name: 'Cruz', born_on: '2026-01-01',
                 email: 'juan@example.com', phone_number: '+639171234567', gender: 'm' },
         ]);
+    });
+
+    // Duffel refuses an order with an infant unless a responsible adult names it
+    // (`infant_passenger_id`), and every infant needs an adult of its own. Without this every
+    // booking with an infant passed `book`, held the card, and was refused at `confirm`.
+    describe('infants', () => {
+        const family = {
+            passengers: [
+                { id: 'pas_a1', type: 'adult' }, { id: 'pas_a2', type: 'adult' },
+                { id: 'pas_c1', type: 'child' },
+                { id: 'pas_i1', type: 'infant_without_seat' }, { id: 'pas_i2', type: 'infant_without_seat' },
+            ],
+            passenger_identity_documents_required: false,
+        };
+        const person = (firstName: string, type: string, birthDate: string) =>
+            ({ firstName, lastName: 'Cruz', birthDate, gender: 'M', type });
+
+        it('names each infant on its own responsible adult, in order', () => {
+            const out = buildOrderPassengers(family, [
+                person('Juan', 'ADT', '1990-01-01'), person('Maria', 'ADT', '1991-01-01'),
+                person('Ana', 'CHD', '2018-05-05'),
+                person('Leo', 'INF', '2026-01-01'), person('Lia', 'INF', '2026-02-01'),
+            ], contact);
+
+            expect(out[0].infant_passenger_id).toBe('pas_i1');
+            expect(out[1].infant_passenger_id).toBe('pas_i2');
+        });
+
+        it('puts the link on adults only — never on the child or the infants themselves', () => {
+            const out = buildOrderPassengers(family, [
+                person('Juan', 'ADT', '1990-01-01'), person('Maria', 'ADT', '1991-01-01'),
+                person('Ana', 'CHD', '2018-05-05'),
+                person('Leo', 'INF', '2026-01-01'), person('Lia', 'INF', '2026-02-01'),
+            ], contact);
+
+            for (const i of [2, 3, 4]) expect(out[i]).not.toHaveProperty('infant_passenger_id');
+        });
+
+        it('leaves an adult with no infant without the field', () => {
+            const out = buildOrderPassengers(
+                { passengers: [{ id: 'pas_a1', type: 'adult' }, { id: 'pas_a2', type: 'adult' }, { id: 'pas_i1', type: 'infant_without_seat' }] },
+                [person('Juan', 'ADT', '1990-01-01'), person('Maria', 'ADT', '1991-01-01'), person('Leo', 'INF', '2026-01-01')],
+                contact,
+            );
+
+            expect(out[0].infant_passenger_id).toBe('pas_i1');
+            expect(out[1]).not.toHaveProperty('infant_passenger_id');
+        });
+
+        it('reads who is an infant from the form when the offer does not say', () => {
+            // The offer fixture above this block lists no passenger types.
+            const out = buildOrderPassengers(offer, [
+                person('Juan', 'ADT', '1990-01-01'), person('Ana', 'CHD', '2018-05-05'), person('Leo', 'INF', '2026-01-01'),
+            ], contact);
+
+            expect(out[0].infant_passenger_id).toBe('pas_infant');
+        });
+
+        it('sends nothing extra when nobody is travelling with an infant', () => {
+            const out = buildOrderPassengers(
+                { passengers: [{ id: 'pas_a1', type: 'adult' }, { id: 'pas_c1', type: 'child' }] },
+                [person('Juan', 'ADT', '1990-01-01'), person('Ana', 'CHD', '2018-05-05')],
+                contact,
+            );
+
+            for (const p of out) expect(p).not.toHaveProperty('infant_passenger_id');
+        });
     });
 
     it('titles an adult woman ms and treats an unknown gender as female', () => {

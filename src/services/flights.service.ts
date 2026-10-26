@@ -27,12 +27,10 @@ import {
 // helpers this file used to carry charged a flat 0% and knew eight zero-decimal currencies
 // against that module's sixteen — so a flight was sold at cost, and a fare in a currency
 // only the module knew about would have been charged a hundred times over.
-import { applyMarkup, toStripeAmount, fromStripeAmount, FLIGHT_MARKUP_SPEC, getFlightPriceTolerance } from '@/lib/pricing';
+import { fromStripeAmount, FLIGHT_MARKUP_SPEC, getFlightPriceTolerance } from '@/lib/pricing';
 import { orderPhoneNumber } from '@/lib/flights/orderPassengers';
-import { orderTotal } from '@/lib/flights/orderTotal';
+import { priceFlightCharge } from '@/lib/flights/flightCharge';
 import { awaitBookingRow } from '@/lib/flights/awaitBookingRow';
-import { makeStrictConverter } from '@/lib/payments/convertStrict';
-import { ExchangeRatesService } from '@/services/exchange-rates.service';
 import { FlightBookingLifecycleService } from '@/services/flightBookingLifecycle.service';
 import { completeDuffelBooking } from '@/services/flightBookingCompletion';
 
@@ -105,7 +103,25 @@ export class FlightsService {
 
         const { _rawOffer, ...offer } = normalizedToFlightOffer(parseDuffelOffer(raw), tripType);
         void _rawOffer;
-        return offer;
+
+        // What the card would be held for, from the function `book` holds it with. Never at the
+        // cost of the offer itself: this read also draws the receipt, and a quote that cannot be
+        // made (rates down for a non-USD fare) leaves the page showing the fare alone.
+        try {
+            const charge = await priceFlightCharge(raw);
+            return {
+                ...offer,
+                quote: {
+                    currency: charge.chargeCurrency.toUpperCase(),
+                    fare: charge.fare,
+                    serviceFee: charge.serviceFee,
+                    total: charge.total,
+                },
+            };
+        } catch (err: any) {
+            console.warn(`[offer] ${offerId} could not be quoted: ${err?.message}`);
+            return offer;
+        }
     }
 
     // ── Book (open the payment for an attempt) ────────────────────────────────
@@ -147,6 +163,12 @@ export class FlightsService {
         clientSecret: string;
         sessionId: string;
         paymentIntentId: string;
+        /** What the card is held for. */
+        amount: number;
+        currency: string;
+        /** What Duffel bills for the order, and what we add to it: `fare + serviceFee = amount`. */
+        fare: number;
+        serviceFee: number;
     }> {
         const { contact, seatServiceIds, bagServiceIds, confirmedPrice, acknowledgeDuplicate, userId } = args;
 
@@ -262,7 +284,22 @@ export class FlightsService {
         }
 
         // ── What the order will need, checked while it costs nothing to say no ─
-        if (!orderPhoneNumber(contact)) {
+        //
+        // One traveller for every passenger the fare was priced for: Duffel refuses an order
+        // with a different number, and the route passes the request body through unchecked, so
+        // without this a wrong list opened a hold on the card and was only refused at confirm.
+        const travellers = args.passengers;
+        const pricedFor = Array.isArray(rawOffer.passengers) ? rawOffer.passengers.length : null;
+        if (!Array.isArray(travellers) || travellers.length === 0 || (pricedFor !== null && travellers.length !== pricedFor)) {
+            throw new AppError(
+                400,
+                pricedFor !== null
+                    ? `This fare is for ${pricedFor} traveller${pricedFor === 1 ? '' : 's'}. Please enter details for each of them.`
+                    : 'Please enter the details of every traveller.',
+                'INVALID_PASSENGERS',
+            );
+        }
+        if (!contact || !orderPhoneNumber(contact)) {
             throw new AppError(400, `Invalid phone number. Please enter a valid phone number with country code.`, 'INVALID_PHONE');
         }
         const onSale = new Set<string>((rawOffer.available_services ?? []).map((s: any) => s.id));
@@ -311,55 +348,11 @@ export class FlightsService {
 
         // ── The charge ─────────────────────────────────────────────────────────
         //
-        // What Duffel will ask for this order — the fare plus the seats and bags, all from the
-        // offer — in the airline's currency, before markup. The lifecycle prices its capture
-        // against the same figure, so it is stored on the session as `original_price`.
-        const stripeBase = parseFloat(orderTotal(rawOffer, seatServiceIds ?? [], bagServiceIds ?? []));
-        const baseCurrency = String(rawOffer.total_currency ?? 'usd').toLowerCase();
-        const chargeInCurrency = (displayCurrency || baseCurrency).toLowerCase();
-
-        const convert = makeStrictConverter(
-            baseCurrency === chargeInCurrency && baseCurrency === 'usd'
-                ? null                                   // nothing to convert; skip the fetch
-                : await new ExchangeRatesService().getLiveRates(),
-        );
-
-        // The flat component is in USD because the costs it recovers are: Duffel's $3.00
-        // order fee and Stripe's $0.30. `stripeBase` is in the supplier's currency, so it
-        // has to be converted first — adding 4.40 to a PHP fare would charge ₱4.40, about
-        // eight US cents. Falling back to zero under-recovers one booking by ~$4.40 rather
-        // than refusing it.
-        let flatInBaseCurrency = FLIGHT_MARKUP_SPEC.flat;
-        try {
-            flatInBaseCurrency = convert(FLIGHT_MARKUP_SPEC.flat, 'usd', baseCurrency);
-        } catch (fxErr: any) {
-            flatInBaseCurrency = 0;
-            console.error(
-                `[book] Could not convert the flat markup component USD→${baseCurrency} `
-                + `(${fxErr?.message}) — charging the proportional part only.`,
-            );
-        }
-
-        const pricing = applyMarkup(stripeBase, FLIGHT_MARKUP_SPEC, flatInBaseCurrency);
-
-        // Charge in the customer's own currency, so a refund matches what they paid with no
-        // FX drift. Strictly converted: a silent passthrough charges the fare's numeric
-        // value in the wrong currency — 5,800 PHP billed as 5,800 USD.
-        let chargePrice: number;
-        try {
-            chargePrice = chargeInCurrency !== baseCurrency
-                ? Math.round(convert(pricing.chargedPrice, baseCurrency, chargeInCurrency) * 100) / 100
-                : pricing.chargedPrice;
-        } catch (fxErr: any) {
-            console.error(`[book] FX conversion failed (${baseCurrency}→${chargeInCurrency}):`, fxErr?.message);
-            throw new AppError(
-                503,
-                'Currency conversion is temporarily unavailable. Your card was not charged. Please try again shortly.',
-                'FX_UNAVAILABLE',
-            );
-        }
-
-        const stripeAmount = toStripeAmount(chargePrice, chargeInCurrency);
+        // The same function the checkout's quote is made with, so what the traveller was
+        // shown is what the card is held for. An exchange-rate failure throws here, before a
+        // session exists, so it leaves nothing behind.
+        const charge = await priceFlightCharge(rawOffer, { seatServiceIds, bagServiceIds, displayCurrency });
+        const { baseCurrency, chargeCurrency: chargeInCurrency, pricing, total: chargePrice, stripeAmount } = charge;
 
         console.log(
             `[book] Pricing: original=${pricing.originalPrice} ${baseCurrency}, charged=${pricing.chargedPrice}, `
@@ -451,6 +444,12 @@ export class FlightsService {
             clientSecret: paymentIntent.client_secret!,
             sessionId,
             paymentIntentId: paymentIntent.id,
+            // What the card is held for, in the currency it is held in. The page shows these
+            // and nothing it worked out itself.
+            amount:     charge.total,
+            currency:   chargeInCurrency.toUpperCase(),
+            fare:       charge.fare,
+            serviceFee: charge.serviceFee,
         };
     }
 

@@ -59,7 +59,8 @@ nothing has been ordered and nothing authorised.
 | Mystifly fare | `422 FARE_UNAVAILABLE` — Mystifly is not live in v2 |
 | The offer, **always fetched again** from Duffel by id — a browser copy is never priced from | `410 OFFER_EXPIRED` when gone, `503 UPSTREAM_UNAVAILABLE` when Duffel does not answer |
 | Duplicate departure (ADR-0011) | `409 DUPLICATE_BOOKING` unless `acknowledgeDuplicate` |
-| The phone becomes E.164 (`orderPhoneNumber`) | `400 INVALID_PHONE` |
+| One traveller for every passenger the fare was priced for (none, or a different number, is refused) | `400 INVALID_PASSENGERS` |
+| A contact is present, and its phone becomes E.164 (`orderPhoneNumber`) | `400 INVALID_PHONE` |
 | Every chosen seat and bag is on sale in the offer | `409 SERVICE_UNAVAILABLE` |
 | The fare has not risen beyond tolerance since the traveller saw it (`confirmedPrice`, or the offer the browser sent) | `409 PRICE_CHANGED` with `oldPrice`, `newPrice`, `currency` |
 
@@ -68,6 +69,18 @@ The hold is priced from the offer — fare plus seats and bags, every price from
 as before. Duffel leaves services out of an offer unless asked, so `getDuffelOffer(id,
 { withServices: true })` asks when any were chosen. Pricing runs before anything is written,
 so a rates outage leaves no session behind.
+
+**One price, quoted and charged.** The figure comes from `priceFlightCharge`
+(`src/lib/flights/flightCharge.ts`): the airline's fare, our markup (`FLIGHT_MARKUP_SPEC`),
+the conversion, and the Stripe amount. `book` holds the card with it and answers
+`{ amount, currency, fare, serviceFee }` beside the PaymentIntent. `GET /flights/offers/:offerId`
+answers a `quote { currency, fare, serviceFee, total }` from the same function, so the checkout
+can show the total — fee included — before the traveller commits to anything, and a quote and a
+hold for the same offer agree to the cent. A quote that cannot be made (rates down for a non-USD
+fare) is left out and the offer is still answered. The browser works nothing out itself.
+
+The web checkout sends the fare it showed as `confirmedPrice`, so a fare that has risen since is
+refused here (`409 PRICE_CHANGED`), before any card is held.
 
 The session (`booking_sessions`) is written with `capture_method = 'manual'` and the pre-markup
 total in the fare's currency as `original_price`. **`capture_method = 'manual'` is what marks
@@ -126,7 +139,10 @@ loser waits for the winner (up to 20s) and is answered with its result. A unique
 ### The order
 
 From what the session stored: the offer fetched again by `flight._offerId`, the passengers
-rebuilt (`buildOrderPassengers`), seats and bags priced from the offer. A
+rebuilt (`buildOrderPassengers`), seats and bags priced from the offer. Each infant is named on
+a responsible adult of its own (`infant_passenger_id`, the first infant on the first adult) —
+Duffel refuses an order with infants that does not — and when the order is retried against a
+refreshed offer, that link is re-pointed at the fresh offer's infant. A
 `supplier_booking_attempts` row is written **before** the call (`client_reference` = session
 id). The Duffel idempotency key is `flight-order-<session id>` — per attempt, not the browser's
 per-offer key, which would answer a corrected retry with the first attempt's refusal.
@@ -221,7 +237,8 @@ Body is always `{ error: CODE, message, ...details }`.
 | `OFFER_EXPIRED` | 410 | book, confirm | Fare gone; at confirm the hold was released | Search again |
 | `PRICE_CHANGED` | 409 | book, confirm | Fare rose; carries `oldPrice`, `newPrice`, `currency`; at confirm the hold was released | Show both, start again |
 | `SERVICE_UNAVAILABLE` | 409 | book | A seat or bag is no longer sold | Choose again |
-| `INVALID_PHONE` | 400 | book, confirm | Not a phone Duffel will take | Fix it |
+| `INVALID_PHONE` | 400 | book, confirm | Not a phone Duffel will take, or no contact | Fix it |
+| `INVALID_PASSENGERS` | 400 | book | No travellers, or not as many as the fare was priced for | Enter every traveller |
 | `DUPLICATE_BOOKING` | 409 | book | Same departure already booked; `canProceed` | Warn, allow |
 | `UPSTREAM_UNAVAILABLE` / `FX_UNAVAILABLE` | 503 | book, confirm | Duffel or rates down; nothing charged | Retry |
 | `DUFFEL_ORDER_FAILED` | 400 | confirm | The airline refused; the hold was released | Show the message |
@@ -324,7 +341,12 @@ Record what you did as an `admin` event, and move the state to `CONFIRMED` or `F
 | Crons kept off lifecycle rows | `flights.repository.cronGuards.test.ts` |
 | Status read mid-completion | `flights.service.test.ts` › *getBookingStatus()* |
 | The sale's shape (unchanged by the extraction) | `internal.createBooking.duffel.test.ts` |
-| Order passengers, order total | `orderPassengers.test.ts`, `orderTotal.test.ts` |
+| Order passengers (infants linked to adults), order total | `orderPassengers.test.ts`, `orderTotal.test.ts` |
+| Infant link re-pointed when an expired offer is re-ordered | `duffelPlaceOrder.infants.test.ts` |
+| `book` refuses a request that cannot become an order, before the card | `flights.book.inputs.test.ts` |
+| The one price: fare, fee, total, conversion, the invariant `fare + fee = total` | `flightCharge.test.ts` |
+| `book` reports what it holds; the offer's quote equals it to the cent | `flights.service.test.ts` › *book()*, *getOffer()* |
+| A quote that cannot be made never costs the reader the offer | `flights.getOffer.quote.test.ts` |
 
 The app side: `src/__tests__/checkout-flight-page.test.tsx` (the flight checkout after the card,
 through a stubbed API and Stripe) and `flight-confirm-errors.test.ts`.
@@ -346,8 +368,16 @@ timeout, capture failure, the sweeper's selectivity), with Stripe and Duffel fak
 - **An `offer_replaced` after the card is a refusal.** Duffel would substitute the same flight
   only if seats and bags are chosen again, which cannot happen after the card.
 - **A rise within tolerance after the card is absorbed**, not charged.
-- **The web checkout's pay button shows the search price** from the URL, not the server's
-  charge. The app also sends `currency` where `book` reads `displayCurrency`, so flights are
-  charged in the fare's currency. Both predate this flow.
+- **The search results still show the airline's raw fare**, which is the comparison price. The
+  service fee appears at checkout, from the quote. The checkout's total, its Pay button and its
+  receipt show what `book` says the card is held for.
+- **The receipt shows the held amount.** If the fare falls between the card and the order, the
+  lifecycle captures less (§4); the receipt does not know, because `confirm` does not return
+  the captured figure.
+- **Flights are charged in the fare's currency.** The app sends `currency`, which `book` does not
+  read; it reads `displayCurrency`, which the app does not send. The two agree today only because
+  both are the fare's currency. Charging in the traveller's selected currency would mean sending
+  `displayCurrency` and quoting in it.
+- **The quote leaves out seats and bags**, which the web checkout does not offer yet.
 - **Mobile shows `BOOKING_PROCESSING` as a "Booking Failed" alert** carrying the message ("check
   your trips"). It is not mistaken for a success, but the title is wrong for it.
