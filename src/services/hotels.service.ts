@@ -2,6 +2,7 @@ import { HotelsRepository } from '@/repositories/hotels.repository';
 import type { FeaturedStay } from '@/types/hotels';
 import { hotelCountry } from '@/lib/geo/territories';
 import { runTgxSearch as searchHotels } from '@/lib/hotels/search';
+import { staysUnderMaintenance } from '@/lib/maintenance';
 import { quoteTgx, bookTgx, cancelTgx, fetchAmenitiesByDestination } from '@/lib/hotels/travelgatex';
 import { otvCodeToLabel, normalizeAmenityList } from '@/lib/hotels/amenityCodes';
 import { normalizeMetapolicy } from '@/lib/hotels/metapolicy';
@@ -242,6 +243,17 @@ export class HotelsService {
     }
 
     // ââ Search ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+
+    /**
+     * Whether stays are switched off.
+     *
+     * The guard itself lives in `runTgxSearch`, where every search, price and pre-book passes
+     * through. This exposes the same fact so the frontend can explain an empty page instead of
+     * just rendering one.
+     */
+    async staysUnderMaintenance(): Promise<boolean> {
+        return staysUnderMaintenance();
+    }
 
     async search(params: {
         destination:  string;

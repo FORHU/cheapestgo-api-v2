@@ -18,6 +18,7 @@ import { isConfirmedOutOfCountry } from '@/lib/geo/countryBoxes';
 import { hotelLocationNames } from '@/lib/geo/hotelLocation';
 import { hotelCountry, isTerritory } from '@/lib/geo/territories';
 import type { HotelSearchParams, HotelSearchResult } from '@/types/hotels';
+import { staysUnderMaintenance } from '@/lib/maintenance';
 
 // ─── Country name → ISO lookup (shared by stream route and ETG fallback) ──────
 
@@ -1390,6 +1391,14 @@ function boundToSubArea(result: HotelSearchResult, params: HotelSearchParams): H
 }
 
 export async function runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResult> {
+    // Guarded here rather than per endpoint, because every way a stay is searched, priced or
+    // pre-booked arrives through this one function. `truncated` stays false on purpose: the
+    // answer is complete, there is simply nothing to sell, and marking it truncated would
+    // invite callers to retry against a supplier we have deliberately stopped calling.
+    if (await staysUnderMaintenance()) {
+        return { data: [], allMappable: [], totalCount: 0 };
+    }
+
     const key = buildSearchKey(params);
 
     const existing = _inflight.get(key);

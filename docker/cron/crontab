@@ -12,6 +12,10 @@
 */30 * * * * curl -sf -X GET  $APP_URL/api/v2/cron/refresh-popular-flights        -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 
 # ── Sub-daily ─────────────────────────────────────────────────────────────────
+# One canary search an hour. It can switch stays maintenance on or off by itself, so it is
+# the one job here whose failure is visible to customers — see runSupplierHealthCheck.
+# Offset to :20 so it does not land with the jobs on the hour.
+20 *   * * * curl -sf -X GET $APP_URL/api/v2/cron/supplier-health     -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 0 */2  * * * curl -sf -X GET $APP_URL/api/v2/cron/fill-dest-cache     -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 0 */6  * * * curl -sf -X GET $APP_URL/api/v2/cron/duffel-balance-check -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 0 */6  * * * curl -sf -X GET $APP_URL/api/v2/cron/sync-flight-deals    -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
