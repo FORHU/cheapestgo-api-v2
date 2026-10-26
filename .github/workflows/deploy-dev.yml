@@ -19,17 +19,20 @@ name: Deploy Dev
 #      RABBITMQ_URL come from the host — do NOT set them here.
 
 on:
+  # Dev tracks main. Without this the dev container only changes when somebody
+  # remembers to dispatch, and it silently falls behind: on 2026-10-16 ilovelawyer
+  # dev was 24h and several merges stale while production deployed on every merge,
+  # which read as "changes not propagating" rather than as a missing trigger.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       ref:
-        # No default: this project deploys from `staging`, not the default branch,
-        # and a hardcoded value fetches a branch that may not exist, failing in
-        # checkout before anything is built. Blank falls back to github.ref_name.
-        description: "Branch, tag or SHA to deploy (use: staging)"
+        # No default on purpose: a hardcoded branch fetches something that may not
+        # exist, failing in checkout before anything is built. Blank falls back to
+        # github.ref_name, i.e. whichever branch you dispatch from.
+        description: "Branch, tag or SHA to deploy (blank = the branch you ran this from)"
         required: false
-  # Uncomment once a dev branch exists and the team wants push-to-deploy.
-  # push:
-  #   branches: [dev]
 
 concurrency:
   group: forhu-dev-cheapestgo
@@ -105,82 +108,121 @@ jobs:
       # UK stack.
       - name: Publish project env to Parameter Store
         env:
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
-          DUFFEL_ACCESS_TOKEN: ${{ secrets.DUFFEL_ACCESS_TOKEN }}
-          DUFFEL_TOKEN: ${{ secrets.DUFFEL_TOKEN }}
-          EXCHANGE_RATES_API_KEY: ${{ secrets.EXCHANGE_RATES_API_KEY }}
-          FUNCTIONS_SECRET: ${{ secrets.FUNCTIONS_SECRET }}
-          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
-          MOBILE_API_KEY: ${{ secrets.MOBILE_API_KEY }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          BRAND_EMAIL: ${{ vars.BRAND_EMAIL }}
-          BRAND_NAME: ${{ vars.BRAND_NAME }}
-          CHAT_WONDER_API_URL: ${{ vars.CHAT_WONDER_API_URL }}
-          DUFFEL_BALANCE_ALERT_THRESHOLD: ${{ vars.DUFFEL_BALANCE_ALERT_THRESHOLD }}
-          DUFFEL_BALANCE_CHECK: ${{ vars.DUFFEL_BALANCE_CHECK }}
-          FLIGHT_PRICE_TOLERANCE: ${{ vars.FLIGHT_PRICE_TOLERANCE }}
-          INTERNAL_API_URL: ${{ vars.INTERNAL_API_URL }}
-          MOBILE_GUEST_USER_ID: ${{ vars.MOBILE_GUEST_USER_ID }}
-          API_URL: ${{ vars.API_URL }}
-          NEXT_PUBLIC_BRAND_EMAIL: ${{ vars.NEXT_PUBLIC_BRAND_EMAIL }}
-          NEXT_PUBLIC_BRAND_NAME: ${{ vars.NEXT_PUBLIC_BRAND_NAME }}
-          SITE_URL: ${{ vars.SITE_URL }}
-          STRIPE_EXPECTED_ACCOUNT: ${{ vars.STRIPE_EXPECTED_ACCOUNT }}
-          SUPPORT_ATTACHMENTS_BUCKET: ${{ vars.SUPPORT_ATTACHMENTS_BUCKET }}
-          TRANSLATION_BASE_URL: ${{ vars.TRANSLATION_BASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || vars.ANTHROPIC_API_KEY }}
+          CHAT_WONDER_API_KEY: ${{ secrets.CHAT_WONDER_API_KEY || vars.CHAT_WONDER_API_KEY }}
+          COOKIE_SECRET: ${{ secrets.COOKIE_SECRET || vars.COOKIE_SECRET }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET || vars.CRON_SECRET }}
+          DUFFEL_ACCESS_TOKEN: ${{ secrets.DUFFEL_ACCESS_TOKEN || vars.DUFFEL_ACCESS_TOKEN }}
+          DUFFEL_TOKEN: ${{ secrets.DUFFEL_TOKEN || vars.DUFFEL_TOKEN }}
+          DUFFEL_WEBHOOK_SECRET: ${{ secrets.DUFFEL_WEBHOOK_SECRET || vars.DUFFEL_WEBHOOK_SECRET }}
+          EXCHANGE_RATES_API_KEY: ${{ secrets.EXCHANGE_RATES_API_KEY || vars.EXCHANGE_RATES_API_KEY }}
+          FUNCTIONS_SECRET: ${{ secrets.FUNCTIONS_SECRET || vars.FUNCTIONS_SECRET }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET || vars.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY || vars.GOOGLE_PLACES_API_KEY }}
+          JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET || vars.JWT_REFRESH_SECRET }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET || vars.JWT_SECRET }}
+          MAPBOX_TOKEN: ${{ secrets.MAPBOX_TOKEN || vars.MAPBOX_TOKEN }}
+          MOBILE_API_KEY: ${{ secrets.MOBILE_API_KEY || vars.MOBILE_API_KEY }}
+          MYSTIFLY_PASSWORD: ${{ secrets.MYSTIFLY_PASSWORD || vars.MYSTIFLY_PASSWORD }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY || vars.RESEND_API_KEY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY || vars.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET || vars.STRIPE_WEBHOOK_SECRET }}
+          API_URL: ${{ secrets.API_URL || vars.API_URL }}
+          BRAND_EMAIL: ${{ secrets.BRAND_EMAIL || vars.BRAND_EMAIL }}
+          BRAND_NAME: ${{ secrets.BRAND_NAME || vars.BRAND_NAME }}
+          CHAT_WONDER_API_URL: ${{ secrets.CHAT_WONDER_API_URL || vars.CHAT_WONDER_API_URL }}
+          CHAT_WONDER_MODEL: ${{ secrets.CHAT_WONDER_MODEL || vars.CHAT_WONDER_MODEL }}
+          CORS_ORIGIN: ${{ secrets.CORS_ORIGIN || vars.CORS_ORIGIN }}
+          DUFFEL_BALANCE_ALERT_THRESHOLD: ${{ secrets.DUFFEL_BALANCE_ALERT_THRESHOLD || vars.DUFFEL_BALANCE_ALERT_THRESHOLD }}
+          DUFFEL_BALANCE_CHECK: ${{ secrets.DUFFEL_BALANCE_CHECK || vars.DUFFEL_BALANCE_CHECK }}
+          FLIGHT_PRICE_TOLERANCE: ${{ secrets.FLIGHT_PRICE_TOLERANCE || vars.FLIGHT_PRICE_TOLERANCE }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID || vars.GOOGLE_CLIENT_ID }}
+          INTERNAL_API_URL: ${{ secrets.INTERNAL_API_URL || vars.INTERNAL_API_URL }}
+          JWT_EXPIRES_IN: ${{ secrets.JWT_EXPIRES_IN || vars.JWT_EXPIRES_IN }}
+          JWT_REFRESH_EXPIRES_IN: ${{ secrets.JWT_REFRESH_EXPIRES_IN || vars.JWT_REFRESH_EXPIRES_IN }}
+          MOBILE_GUEST_USER_ID: ${{ secrets.MOBILE_GUEST_USER_ID || vars.MOBILE_GUEST_USER_ID }}
+          MYSTIFLY_ACCOUNT_NUMBER: ${{ secrets.MYSTIFLY_ACCOUNT_NUMBER || vars.MYSTIFLY_ACCOUNT_NUMBER }}
+          MYSTIFLY_USERNAME: ${{ secrets.MYSTIFLY_USERNAME || vars.MYSTIFLY_USERNAME }}
+          NEXT_PUBLIC_BRAND_EMAIL: ${{ secrets.NEXT_PUBLIC_BRAND_EMAIL || vars.NEXT_PUBLIC_BRAND_EMAIL }}
+          NEXT_PUBLIC_BRAND_NAME: ${{ secrets.NEXT_PUBLIC_BRAND_NAME || vars.NEXT_PUBLIC_BRAND_NAME }}
+          SITE_URL: ${{ secrets.SITE_URL || vars.SITE_URL }}
+          STRIPE_EXPECTED_ACCOUNT: ${{ secrets.STRIPE_EXPECTED_ACCOUNT || vars.STRIPE_EXPECTED_ACCOUNT }}
+          SUPPORT_ATTACHMENTS_BUCKET: ${{ secrets.SUPPORT_ATTACHMENTS_BUCKET || vars.SUPPORT_ATTACHMENTS_BUCKET }}
+          TRANSLATION_BASE_URL: ${{ secrets.TRANSLATION_BASE_URL || vars.TRANSLATION_BASE_URL }}
+          # TravelgateX has no sandbox for hotels, so dev necessarily uses the LIVE
+          # credentials. Search is read-only and safe to exercise here. Prebook and
+          # book are not: they reach the real supplier and create real reservations
+          # against real inventory, with no marker distinguishing them from a
+          # customer's. Nothing in this configuration prevents that — only the
+          # person using the environment does.
+          TRAVELGATEX_API_KEY: ${{ secrets.TRAVELGATEX_API_KEY || vars.TRAVELGATEX_API_KEY }}
+          TRAVELGATEX_CODE: ${{ secrets.TRAVELGATEX_CODE || vars.TRAVELGATEX_CODE }}
         run: |
           set -euo pipefail
           umask 077
 
-          # NODE_ENV=production because the image runs a built bundle. PORT must
-          # match APP_PORT above and the Dockerfile's EXPOSE, or Caddy proxies to
-          # a port nothing listens on.
-          printf 'NODE_ENV=production\n'            > env.tmp
-          printf 'PORT=%s\n' '${{ env.APP_PORT }}' >> env.tmp
+          # PORT must match APP_PORT above and the Dockerfile's EXPOSE, or Caddy
+          # proxies to a port nothing listens on.
+          printf 'NODE_ENV=production\n'                   > env.tmp
+          printf 'PORT=%s\n' '${{ env.APP_PORT }}'        >> env.tmp
           printf 'AWS_REGION=%s\n' '${{ env.AWS_REGION }}' >> env.tmp
 
-          # Hotel suppliers are deliberately absent: TRAVELGATE*, TGX_*, ETG_*,
-          # RATEHAWK_*, ONDA_* and OTV_*. Unlike Duffel and Mystifly they have no
-          # sandbox, and this codebase has no dry-run flag — the only mode
-          # switches anywhere are MYSTIFLY_ENV and NODE_ENV. Live keys here would
-          # mean a dev tester can create a real reservation at a real hotel, with
-          # nothing but their restraint in the way. Hotel search and booking are
-          # therefore inert on dev until someone adds a booking guard to the
-          # commit path.
+          # No AWS_ACCESS_KEY / AWS_SECRET_ACCESS_KEY, though the local .env has
+          # them: on this host the instance role supplies credentials, and an
+          # explicit pair makes the SDK stop walking its provider chain.
+          #
+          # Hotel suppliers are deliberately absent — TRAVELGATE*, TGX_*, ETG_*,
+          # RATEHAWK_*, ONDA_*, OTV_*. Unlike Duffel and Mystifly they have no
+          # sandbox, and this codebase has no dry-run flag, so live keys would
+          # let a dev tester create a real reservation at a real hotel.
           #
           # Written only when set. `add` returns 0 on purpose: under `set -e` a
-          # bare `[ -n "$x" ] && printf ...` aborts the step on the first empty
-          # value, which with this many optional keys is a certainty.
+          # bare `[ -n "$x" ] && printf ...` aborts on the first empty value.
           add() { [ -n "${2:-}" ] && printf '%s=%s\n' "$1" "$2" >> env.tmp; return 0; }
 
-          # config.ts defaults API_URL to http://localhost:4000, and the Google OAuth
-          # redirect_uri is built from it — unset, Google is told to send the browser
-          # back to the container's own localhost and sign-in dies there. The dev host
-          # serves the app and the API from one origin, /api/v2 proxied to this
-          # container, so SITE_URL is the right fallback when no API_URL var is set.
-          add API_URL                            "${API_URL:-${SITE_URL:-}}"
-          add BRAND_EMAIL                        "${BRAND_EMAIL:-}"
-          add BRAND_NAME                         "${BRAND_NAME:-}"
-          add CHAT_WONDER_API_URL                "${CHAT_WONDER_API_URL:-}"
-          add CRON_SECRET                        "${CRON_SECRET:-}"
-          add DUFFEL_ACCESS_TOKEN                "${DUFFEL_ACCESS_TOKEN:-}"
-          add DUFFEL_BALANCE_ALERT_THRESHOLD     "${DUFFEL_BALANCE_ALERT_THRESHOLD:-}"
-          add DUFFEL_BALANCE_CHECK               "${DUFFEL_BALANCE_CHECK:-}"
-          add DUFFEL_TOKEN                       "${DUFFEL_TOKEN:-}"
-          add EXCHANGE_RATES_API_KEY             "${EXCHANGE_RATES_API_KEY:-}"
-          add FLIGHT_PRICE_TOLERANCE             "${FLIGHT_PRICE_TOLERANCE:-}"
-          add FUNCTIONS_SECRET                   "${FUNCTIONS_SECRET:-}"
-          add GOOGLE_PLACES_API_KEY              "${GOOGLE_PLACES_API_KEY:-}"
-          add INTERNAL_API_URL                   "${INTERNAL_API_URL:-}"
-          add MOBILE_API_KEY                     "${MOBILE_API_KEY:-}"
-          add MOBILE_GUEST_USER_ID               "${MOBILE_GUEST_USER_ID:-}"
-          add NEXT_PUBLIC_BRAND_EMAIL            "${NEXT_PUBLIC_BRAND_EMAIL:-}"
-          add NEXT_PUBLIC_BRAND_NAME             "${NEXT_PUBLIC_BRAND_NAME:-}"
-          add RESEND_API_KEY                     "${RESEND_API_KEY:-}"
-          add SITE_URL                           "${SITE_URL:-}"
-          add STRIPE_EXPECTED_ACCOUNT            "${STRIPE_EXPECTED_ACCOUNT:-}"
-          add SUPPORT_ATTACHMENTS_BUCKET         "${SUPPORT_ATTACHMENTS_BUCKET:-}"
-          add TRANSLATION_BASE_URL               "${TRANSLATION_BASE_URL:-}"
+          add ANTHROPIC_API_KEY                "${ANTHROPIC_API_KEY:-}"
+          add API_URL                          "${API_URL:-}"
+          add BRAND_EMAIL                      "${BRAND_EMAIL:-}"
+          add BRAND_NAME                       "${BRAND_NAME:-}"
+          add CHAT_WONDER_API_KEY              "${CHAT_WONDER_API_KEY:-}"
+          add CHAT_WONDER_API_URL              "${CHAT_WONDER_API_URL:-}"
+          add CHAT_WONDER_MODEL                "${CHAT_WONDER_MODEL:-}"
+          add COOKIE_SECRET                    "${COOKIE_SECRET:-}"
+          add CORS_ORIGIN                      "${CORS_ORIGIN:-}"
+          add CRON_SECRET                      "${CRON_SECRET:-}"
+          add DUFFEL_ACCESS_TOKEN              "${DUFFEL_ACCESS_TOKEN:-}"
+          add DUFFEL_BALANCE_ALERT_THRESHOLD   "${DUFFEL_BALANCE_ALERT_THRESHOLD:-}"
+          add DUFFEL_BALANCE_CHECK             "${DUFFEL_BALANCE_CHECK:-}"
+          add DUFFEL_TOKEN                     "${DUFFEL_TOKEN:-}"
+          add DUFFEL_WEBHOOK_SECRET            "${DUFFEL_WEBHOOK_SECRET:-}"
+          add EXCHANGE_RATES_API_KEY           "${EXCHANGE_RATES_API_KEY:-}"
+          add FLIGHT_PRICE_TOLERANCE           "${FLIGHT_PRICE_TOLERANCE:-}"
+          add FUNCTIONS_SECRET                 "${FUNCTIONS_SECRET:-}"
+          add GOOGLE_CLIENT_ID                 "${GOOGLE_CLIENT_ID:-}"
+          add GOOGLE_CLIENT_SECRET             "${GOOGLE_CLIENT_SECRET:-}"
+          add GOOGLE_PLACES_API_KEY            "${GOOGLE_PLACES_API_KEY:-}"
+          add INTERNAL_API_URL                 "${INTERNAL_API_URL:-}"
+          add JWT_EXPIRES_IN                   "${JWT_EXPIRES_IN:-}"
+          add JWT_REFRESH_EXPIRES_IN           "${JWT_REFRESH_EXPIRES_IN:-}"
+          add JWT_REFRESH_SECRET               "${JWT_REFRESH_SECRET:-}"
+          add JWT_SECRET                       "${JWT_SECRET:-}"
+          add MAPBOX_TOKEN                     "${MAPBOX_TOKEN:-}"
+          add MOBILE_API_KEY                   "${MOBILE_API_KEY:-}"
+          add MOBILE_GUEST_USER_ID             "${MOBILE_GUEST_USER_ID:-}"
+          add MYSTIFLY_ACCOUNT_NUMBER          "${MYSTIFLY_ACCOUNT_NUMBER:-}"
+          add MYSTIFLY_PASSWORD                "${MYSTIFLY_PASSWORD:-}"
+          add MYSTIFLY_USERNAME                "${MYSTIFLY_USERNAME:-}"
+          add NEXT_PUBLIC_BRAND_EMAIL          "${NEXT_PUBLIC_BRAND_EMAIL:-}"
+          add NEXT_PUBLIC_BRAND_NAME           "${NEXT_PUBLIC_BRAND_NAME:-}"
+          add RESEND_API_KEY                   "${RESEND_API_KEY:-}"
+          add SITE_URL                         "${SITE_URL:-}"
+          add STRIPE_EXPECTED_ACCOUNT          "${STRIPE_EXPECTED_ACCOUNT:-}"
+          add STRIPE_SECRET_KEY                "${STRIPE_SECRET_KEY:-}"
+          add STRIPE_WEBHOOK_SECRET            "${STRIPE_WEBHOOK_SECRET:-}"
+          add SUPPORT_ATTACHMENTS_BUCKET       "${SUPPORT_ATTACHMENTS_BUCKET:-}"
+          add TRANSLATION_BASE_URL             "${TRANSLATION_BASE_URL:-}"
+          add TRAVELGATEX_API_KEY              "${TRAVELGATEX_API_KEY:-}"
+          add TRAVELGATEX_CODE                 "${TRAVELGATEX_CODE:-}"
 
           aws ssm put-parameter \
             --name "${{ env.ENV_PARAM }}" \

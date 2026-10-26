@@ -13,10 +13,18 @@ import { getTgxConfig, tgxGraphQL } from '@/lib/hotels/travelgatex';
  * a content call that is slow or down must cost a search its pictures, never its results.
  */
 export interface HotelContentPatch {
-    images?: string[];
-    name?:   string;
-    lat?:    number;
-    lng?:    number;
+    images?:  string[];
+    name?:    string;
+    lat?:     number;
+    lng?:     number;
+    /**
+     * Street address, which is the only thing that tells a traveller which part of the
+     * city a hotel is in. Without it every card in a Seoul search reads "Seoul", and a
+     * hotel by Gimpo Airport is indistinguishable from one in Gangnam — the map is the
+     * only clue, and neighbouring Bucheon and Gwangmyeong sit close enough to look the
+     * same at a glance.
+     */
+    address?: string;
 }
 
 /** TGX types its media loosely, so anything that is not obviously moving counts as a photo. */
@@ -49,7 +57,7 @@ export async function fetchHotelContentPatches(
                        hotelData {
                          code hotelName
                          medias { url type }
-                         location { coordinates { latitude longitude } }
+                         location { coordinates { latitude longitude } address }
                        }
                      }
                    }
@@ -87,11 +95,22 @@ export async function fetchHotelContentPatches(
             const lng = Number(data.location?.coordinates?.longitude ?? 0);
             if (lat && lng) { patch.lat = lat; patch.lng = lng; }
 
-            if (patch.images || patch.name || patch.lat) patches.set(data.code, patch);
+            const address = String(data.location?.address ?? '').trim();
+            if (address) patch.address = address;
+
+            if (patch.images || patch.name || patch.lat || patch.address) {
+                patches.set(data.code, patch);
+            }
         }
 
         if (patches.size > 0) {
-            console.log(`[content-api] asked ${hotelIds.length}, patched ${patches.size}`);
+            // `addressed` separately: whether TGX actually fills location.address varies by
+            // supplier, and a patch that carries a name and a pin but no address still leaves
+            // the card unable to say which district it is in.
+            const addressed = [...patches.values()].filter(p => p.address).length;
+            console.log(
+                `[content-api] asked ${hotelIds.length}, patched ${patches.size}, addressed ${addressed}`,
+            );
         }
         return patches;
     } catch (err: any) {
