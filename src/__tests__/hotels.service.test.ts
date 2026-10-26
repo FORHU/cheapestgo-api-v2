@@ -36,6 +36,7 @@ vi.mock('@/repositories/hotels.repository', () => ({
     HotelsRepository: vi.fn(function(this: any) {
         this.recordSearchDemand   = vi.fn().mockResolvedValue(undefined);
         this.findHotelContent     = vi.fn();
+        this.findFeaturedDealByCity = vi.fn();
         this.findHotelReviews     = vi.fn();
         this.findHotelReviewItems = vi.fn();
         this.savePrebookQuote     = vi.fn().mockResolvedValue(undefined);

@@ -244,6 +244,39 @@ export interface AutocompleteResult {
     code?: string;
 }
 
+// ─── Landing Walk ─────────────────────────────────────────────────────────────
+
+/**
+ * The one promoted stay the landing page's Walk shows for a destination.
+ *
+ * Assembled from `hotel_deals` with `hotel_content` filling the gaps. Deliberately flat
+ * and deliberately small: the landing page renders on a timer and this crosses the wire
+ * four times per render, once per act.
+ *
+ * `price` is a promoted figure for the dates on the deal row, not a quote for the
+ * visitor's dates — the card links into a real search rather than offering to book this.
+ */
+export interface FeaturedStay {
+    hotelCode:   string | null;
+    name:        string;
+    /** Street address or the neighbourhood the admin promoted it under. */
+    location:    string | null;
+    city:        string;
+    countryCode: string | null;
+    price:       number;
+    currency:    string;
+    stars:       number | null;
+    /** Review score out of 10, not the star rating. */
+    rating:      number | null;
+    /** "Free cancel", "-20%" — whatever the deal is flagged with. */
+    badge:       string | null;
+    images:      string[];
+    lat:         number | null;
+    lng:         number | null;
+    /** When the deal was last touched. Lets a caller judge whether the price is stale. */
+    refreshedAt: string | null;
+}
+
 // Pricing lives in @/lib/pricing, not here.
 //
 // This file used to carry a second HOTEL_MARKUP, BUNDLE_MARKUP, applyMarkup and
