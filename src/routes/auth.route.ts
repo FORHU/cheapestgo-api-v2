@@ -176,12 +176,27 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
         // host and the storefront are different origins, and the callback has to know which
         // one to hand the session back to. It is still validated against an allowlist when
         // it is read — Redis says what was asked for, not what is permitted.
+        //
+        // Best-effort, and that is the point. `lib/redis.ts` is configured to fail fast —
+        // `enableOfflineQueue: false` with no retries — so an unreachable Redis rejects this
+        // call instantly rather than blocking. Unhandled, that reached the error middleware
+        // as a plain Error and every Google sign-in answered 500 while the rest of the API
+        // was healthy, which is exactly what happened on v2 production. The cookies below
+        // are what the callback actually verifies against; Redis is the cross-server spare.
         const startedOn = originOfRequest(req.headers) ?? '';
-        await redis.set(`oauth:state:${state}`, startedOn || '1', 'EX', 600);
+        await redis.set(`oauth:state:${state}`, startedOn || '1', 'EX', 600).catch(() => {});
 
         // Also cookie-store so the callback can find it on the same server
         res.cookie('oauth_state', state, { ...COOKIE_OPTIONS, maxAge: 600_000 });
         res.cookie('oauth_provider', 'google', { ...COOKIE_OPTIONS, maxAge: 600_000 });
+        // The origin, carried the same way as the state it belongs to. Without this the
+        // cookie path knows *that* a sign-in is legitimate but not *where* it began, so a
+        // staff-host sign-in completing without Redis would land on the storefront — the
+        // bug `resolveReturnOrigin` exists to prevent. Allowlisted on read, as the Redis
+        // copy is: a Host header is a request, not a permission.
+        if (startedOn) {
+            res.cookie('oauth_origin', startedOn, { ...COOKIE_OPTIONS, maxAge: 600_000 });
+        }
 
 
         const params = new URLSearchParams({
@@ -232,9 +247,11 @@ router.get('/google/callback', async (req: Request, res: Response) => {
             return failRedirect('oauth_missing_params');
         }
 
-        // Verify state — check Redis first, fall back to cookie
+        // Verify state — check Redis first, fall back to cookie. Swallowing the Redis error
+        // rather than letting it throw keeps a Redis outage from turning a valid sign-in
+        // into `oauth_failed`: the cookie set on the way out is sufficient on its own.
         const redisKey = `oauth:state:${state}`;
-        const redisOk  = await redis.get(redisKey);
+        const redisOk  = await redis.get(redisKey).catch(() => null);
         const cookieState = req.cookies?.oauth_state;
 
         if (!redisOk && state !== cookieState) {
@@ -242,16 +259,21 @@ router.get('/google/callback', async (req: Request, res: Response) => {
             return failRedirect('oauth_state');
         }
 
-        // Where this sign-in began, as recorded when the state was issued. Falls back to
-        // the request's own origin when the cookie path was used instead of Redis.
+        // Where this sign-in began, as recorded when the state was issued: Redis if it
+        // answered, else the cookie written beside the state, else this request's own host.
+        // The last is a genuine fallback rather than a guess — it is only reached when both
+        // records are gone, and resolveReturnOrigin still allowlists whatever it is handed.
         const returnOrigin = resolveReturnOrigin(
-            redisOk && redisOk !== '1' ? redisOk : originOfRequest(req.headers),
+            (redisOk && redisOk !== '1' ? redisOk : null)
+            ?? req.cookies?.oauth_origin
+            ?? originOfRequest(req.headers),
         );
 
         // Consume the state so it can't be replayed
-        if (redisOk) await redis.del(redisKey);
+        if (redisOk) await redis.del(redisKey).catch(() => {});
         res.clearCookie('oauth_state', COOKIE_OPTIONS);
         res.clearCookie('oauth_provider', COOKIE_OPTIONS);
+        res.clearCookie('oauth_origin', COOKIE_OPTIONS);
 
         // Exchange authorization code for tokens
         const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
