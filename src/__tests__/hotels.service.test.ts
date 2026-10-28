@@ -640,3 +640,78 @@ describe('HotelsService.createPayment() — the reference the browser can ask ab
         expect(out.data.bookingReference).toBe(metadata.bookingReference);
     });
 });
+
+// ─── featuredStayByCity() ─────────────────────────────────────────────────────
+
+/**
+ * The landing page's Walk shows one promoted stay per destination. The rules below are
+ * the ones that make the card honest: a real price, a real address where we have one,
+ * and nothing at all rather than an invented stay. See ADR 0005 in app-v2.
+ */
+describe('HotelsService.featuredStayByCity()', () => {
+    const DEAL = {
+        name: 'Myeongdong Stay', location: 'Jung-gu, Seoul', destination: 'Seoul',
+        country_code: 'KR', price: '4200.50', currency: 'PHP', stars: 4, rating: '8.6',
+        image_url: 'https://cdn.test/deal.jpg', badge: 'Free cancel', discount_tag: '',
+        hotel_code: 'H-1', lat: '37.5638', lng: '126.9820',
+        last_refreshed_at: new Date('2026-10-20T00:00:00Z'), updated_at: null,
+    };
+
+    it('returns null when the destination has no promoted stay', async () => {
+        (service as any).repo.findFeaturedDealByCity.mockResolvedValue(null);
+        expect(await service.featuredStayByCity('Seoul', 'KR')).toBeNull();
+    });
+
+    it('returns null for an empty city rather than querying', async () => {
+        expect(await service.featuredStayByCity('  ')).toBeNull();
+        expect((service as any).repo.findFeaturedDealByCity).not.toHaveBeenCalled();
+    });
+
+    it('builds the card from the deal alone when no content row exists', async () => {
+        (service as any).repo.findFeaturedDealByCity.mockResolvedValue(DEAL);
+        (service as any).repo.findHotelContent.mockResolvedValue(null);
+
+        const stay = await service.featuredStayByCity('Seoul', 'KR');
+
+        expect(stay).toMatchObject({
+            hotelCode: 'H-1', name: 'Myeongdong Stay', city: 'Seoul',
+            price: 4200.5, currency: 'PHP', stars: 4, rating: 8.6, badge: 'Free cancel',
+            location: 'Jung-gu, Seoul', lat: 37.5638, lng: 126.982,
+        });
+        // Decimal columns must reach the client as numbers, not Prisma Decimals or strings.
+        expect(typeof stay!.price).toBe('number');
+        expect(typeof stay!.rating).toBe('number');
+    });
+
+    it('fills address and extra images from content, without duplicating the deal image', async () => {
+        (service as any).repo.findFeaturedDealByCity.mockResolvedValue({ ...DEAL, location: '', lat: null, lng: null });
+        (service as any).repo.findHotelContent.mockResolvedValue({
+            address: '64 Namdaemun-ro', city: 'Seoul', country: 'KR', star_rating: 3,
+            images: ['https://cdn.test/deal.jpg', 'https://cdn.test/b.jpg'],
+            lat: 37.5, lng: 127.0,
+        });
+
+        const stay = await service.featuredStayByCity('Seoul', 'KR');
+
+        expect(stay!.location).toBe('64 Namdaemun-ro');
+        expect(stay!.lat).toBe(37.5);
+        // The deal image appears once, not twice, and leads.
+        expect(stay!.images).toEqual(['https://cdn.test/deal.jpg', 'https://cdn.test/b.jpg']);
+        // The deal's own star rating still wins over the catalog's.
+        expect(stay!.stars).toBe(4);
+    });
+
+    it('does not look up content for a deal with no hotel_code', async () => {
+        (service as any).repo.findFeaturedDealByCity.mockResolvedValue({ ...DEAL, hotel_code: '' });
+        const stay = await service.featuredStayByCity('Seoul');
+        expect((service as any).repo.findHotelContent).not.toHaveBeenCalled();
+        expect(stay!.name).toBe('Myeongdong Stay');
+    });
+
+    it('still returns the card when the content lookup fails', async () => {
+        (service as any).repo.findFeaturedDealByCity.mockResolvedValue(DEAL);
+        (service as any).repo.findHotelContent.mockRejectedValue(new Error('db down'));
+        const stay = await service.featuredStayByCity('Seoul', 'KR');
+        expect(stay!.name).toBe('Myeongdong Stay');
+    });
+});

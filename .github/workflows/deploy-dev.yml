@@ -24,7 +24,7 @@ on:
   # dev was 24h and several merges stale while production deployed on every merge,
   # which read as "changes not propagating" rather than as a missing trigger.
   push:
-    branches: [main]
+    branches: [main, staging]
   workflow_dispatch:
     inputs:
       environment:
