@@ -1,7 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { AuthService } from '@/services/auth.service';
-import { config } from '@/config';
+import {
+    BASE_COOKIE_OPTIONS, SESSION_COOKIE, LEGACY_SESSION_COOKIE, SESSION_MAX_AGE_MS,
+} from '@/lib/auth/cookie';
 
 const registerSchema = z.object({
     email:      z.string().email(),
@@ -15,11 +17,12 @@ const loginSchema = z.object({
     password: z.string().min(1),
 });
 
+// `sameSite` is this door's own: password sign-in has no cross-site step to survive, so it
+// takes the stricter value. The Google callback sets `lax` for the opposite reason. Name,
+// `secure`, `path` and the ban on `domain` come from the shared module.
 const COOKIE_OPTIONS = {
-    httpOnly: true,
-    secure:   config.NODE_ENV === 'production',
+    ...BASE_COOKIE_OPTIONS,
     sameSite: 'strict' as const,
-    path:     '/',
 };
 
 export class AuthController {
@@ -29,7 +32,7 @@ export class AuthController {
         try {
             const data = registerSchema.parse(req.body);
             const result = await this.service.register(data);
-            res.cookie('access_token', result.accessToken, { ...COOKIE_OPTIONS, maxAge: 86400_000 });
+            res.cookie(SESSION_COOKIE, result.accessToken, { ...COOKIE_OPTIONS, maxAge: SESSION_MAX_AGE_MS });
             res.cookie('refresh_token', result.refreshToken, { ...COOKIE_OPTIONS, maxAge: 604800_000 });
             res.status(201).json({ user: result.user });
         } catch (err) { next(err); }
@@ -39,7 +42,7 @@ export class AuthController {
         try {
             const data = loginSchema.parse(req.body);
             const result = await this.service.login(data.email, data.password);
-            res.cookie('access_token', result.accessToken, { ...COOKIE_OPTIONS, maxAge: 86400_000 });
+            res.cookie(SESSION_COOKIE, result.accessToken, { ...COOKIE_OPTIONS, maxAge: SESSION_MAX_AGE_MS });
             res.cookie('refresh_token', result.refreshToken, { ...COOKIE_OPTIONS, maxAge: 604800_000 });
             res.json({ user: result.user });
         } catch (err) { next(err); }
@@ -47,7 +50,11 @@ export class AuthController {
 
     logout = async (_req: Request, res: Response, next: NextFunction) => {
         try {
-            res.clearCookie('access_token', COOKIE_OPTIONS);
+            // Both names: a session issued before the rename is still in the browser under
+            // the old one, and clearing only the new one would leave someone signed in
+            // after they asked to be signed out.
+            res.clearCookie(SESSION_COOKIE, COOKIE_OPTIONS);
+            res.clearCookie(LEGACY_SESSION_COOKIE, COOKIE_OPTIONS);
             res.clearCookie('refresh_token', COOKIE_OPTIONS);
             res.json({ success: true });
         } catch (err) { next(err); }
@@ -57,7 +64,7 @@ export class AuthController {
         try {
             const token = req.cookies?.refresh_token;
             const result = await this.service.refresh(token);
-            res.cookie('access_token', result.accessToken, { ...COOKIE_OPTIONS, maxAge: 86400_000 });
+            res.cookie(SESSION_COOKIE, result.accessToken, { ...COOKIE_OPTIONS, maxAge: SESSION_MAX_AGE_MS });
             res.json({ success: true });
         } catch (err) { next(err); }
     };

@@ -1,6 +1,8 @@
 import { HotelsRepository } from '@/repositories/hotels.repository';
+import type { FeaturedStay } from '@/types/hotels';
 import { hotelCountry } from '@/lib/geo/territories';
 import { runTgxSearch as searchHotels } from '@/lib/hotels/search';
+import { staysUnderMaintenance } from '@/lib/maintenance';
 import { quoteTgx, bookTgx, cancelTgx, fetchAmenitiesByDestination } from '@/lib/hotels/travelgatex';
 import { otvCodeToLabel, normalizeAmenityList } from '@/lib/hotels/amenityCodes';
 import { normalizeMetapolicy } from '@/lib/hotels/metapolicy';
@@ -190,7 +192,68 @@ export class HotelsService {
         return this.repo.countHotelContentByCity(cityName, countryCode);
     }
 
+    /**
+     * The promoted stay the landing page's Walk shows for one destination.
+     *
+     * `hotel_deals` supplies everything the card advertises; `hotel_content` only fills
+     * the gaps a deal row leaves — address and coordinates — because a deal is written by
+     * hand in the admin and often carries neither. No supplier is contacted on this path
+     * and none may be: see ADR 0005 in app-v2.
+     *
+     * Null when the destination has no promoted stay. The Walk renders that act without a
+     * card rather than inventing one, so an empty table costs a card, never the journey.
+     */
+    async featuredStayByCity(cityName: string, countryCode?: string): Promise<FeaturedStay | null> {
+        if (!cityName.trim()) return null;
+
+        const deal = await this.repo.findFeaturedDealByCity(cityName, countryCode);
+        if (!deal) return null;
+
+        // Only looked up when the deal names a hotel we also hold content for. A deal with
+        // no `hotel_code` is still perfectly showable; it just has no address to add.
+        const content = deal.hotel_code
+            ? await this.repo.findHotelContent(deal.hotel_code).catch(() => null)
+            : null;
+
+        const images = [
+            ...(deal.image_url ? [deal.image_url] : []),
+            ...((content?.images ?? []).filter(Boolean)),
+        ];
+
+        return {
+            hotelCode:   deal.hotel_code || null,
+            name:        deal.name,
+            // The deal's own `location` is what the admin wrote for this promotion, so it
+            // wins over the catalog's address even when both exist.
+            location:    deal.location || content?.address || null,
+            city:        deal.destination || content?.city || cityName,
+            countryCode: deal.country_code || content?.country || null,
+            price:       Number(deal.price),
+            currency:    deal.currency || 'PHP',
+            stars:       deal.stars ?? content?.star_rating ?? null,
+            rating:      deal.rating != null ? Number(deal.rating) : null,
+            badge:       deal.badge || deal.discount_tag || null,
+            // De-duplicated: a deal image is frequently the catalog's first image too, and
+            // a gallery that opens on the same photo twice reads as broken.
+            images:      [...new Set(images)].slice(0, 5),
+            lat:         deal.lat != null ? Number(deal.lat) : content?.lat ?? null,
+            lng:         deal.lng != null ? Number(deal.lng) : content?.lng ?? null,
+            refreshedAt: deal.last_refreshed_at?.toISOString() ?? deal.updated_at?.toISOString() ?? null,
+        };
+    }
+
     // ââ Search ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+
+    /**
+     * Whether stays are switched off.
+     *
+     * The guard itself lives in `runTgxSearch`, where every search, price and pre-book passes
+     * through. This exposes the same fact so the frontend can explain an empty page instead of
+     * just rendering one.
+     */
+    async staysUnderMaintenance(): Promise<boolean> {
+        return staysUnderMaintenance();
+    }
 
     async search(params: {
         destination:  string;

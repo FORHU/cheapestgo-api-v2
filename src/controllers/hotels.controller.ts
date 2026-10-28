@@ -6,9 +6,7 @@ import { getPlaceDetails, geocode as geoCodePlace } from '@/lib/google/places';
 import { config } from '@/config';
 import { nightsBetween } from '@/lib/hotels/nights';
 import { fetchHotelContentPatches } from '@/lib/hotels/contentPatches';
-import { resolveTgxDestinationCode } from '@/lib/hotels/travelgatex';
 import { getInstantHotelCatalog, runTgxSearch } from '@/lib/hotels/search';
-import { prisma } from '@/lib/prisma';
 import { CITY_ALIASES } from '@/lib/cityAliases';
 import { DestinationsService } from '@/services/destinations.service';
 
@@ -50,6 +48,40 @@ export class HotelsController {
             }).parse(req.query);
             const count = await svc.countByCity(city, cc);
             res.json({ count });
+        } catch (err) { next(err); }
+    };
+
+    /**
+     * GET /api/v2/hotels/featured?city=Seoul&cc=KR
+     *
+     * The promoted stay for one destination, for the landing page's Walk. Two indexed
+     * table reads, no supplier call — the landing page re-renders on a timer, and a
+     * scheduled supplier search is pre-warming, which OTV's contract forbids (ADR 0005).
+     *
+     * `{ stay: null }` rather than a 404 when nothing is promoted: an act without a deal
+     * is an ordinary state of the page, not a missing resource.
+     */
+    featured = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { city, cc } = z.object({
+                city: z.string().min(1),
+                cc:   z.string().length(2).optional(),
+            }).parse(req.query);
+            const stay = await svc.featuredStayByCity(city, cc);
+            res.json({ stay });
+        } catch (err) { next(err); }
+    };
+
+    /**
+     * Whether stays are sellable at all, asked before a search rather than inferred from one.
+     *
+     * The frontend needs this as its own answer: an empty result set and a supplier that has
+     * stopped serving look identical in a search response, and only one of them should put a
+     * notice on the page.
+     */
+    maintenance = async (_req: Request, res: Response, next: NextFunction) => {
+        try {
+            res.json({ maintenance: await svc.staysUnderMaintenance() });
         } catch (err) { next(err); }
     };
 
@@ -98,8 +130,14 @@ export class HotelsController {
                 adults:   z.coerce.number().optional().default(2),
                 children: z.coerce.number().optional().default(0),
             }).parse(req.query);
-            const result = await svc.getProperty(id, { checkIn, checkOut, adults, children });
-            res.json(result);
+            const [result, maintenance] = await Promise.all([
+                svc.getProperty(id, { checkIn, checkOut, adults, children }),
+                svc.staysUnderMaintenance(),
+            ]);
+            // Carried on the response rather than short-circuiting it: the hotel's photos,
+            // description and location are ours and stay worth showing. Only the rooms are
+            // missing, and the page needs to say why instead of looking sold out.
+            res.json({ ...result, maintenance });
         } catch (err) { next(err); }
     };
 
@@ -293,6 +331,21 @@ export class HotelsController {
     // ── SSE streaming search ──────────────────────────────────────────────────
 
     searchStream = async (req: Request, res: Response) => {
+        // Answered before the stream opens. `runTgxSearch` already refuses during maintenance,
+        // but an empty stream is indistinguishable from a city with nothing in it, and the
+        // page would render "no results" for what is actually us being off sale. The client
+        // needs to be told which of the two it is.
+        if (await svc.staysUnderMaintenance()) {
+            // Framed as a stream event, not `res.json`. The client reads this endpoint line by
+            // line and holds the last unterminated line in its buffer, so a bare JSON body
+            // with no trailing newline is received and never parsed.
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.write(`data: ${JSON.stringify({ type: 'maintenance', data: [], totalCount: 0 })}\n\n`);
+            res.end();
+            return;
+        }
+
         const body: any = { ...req.body };
 
         // ── Normalize city name (strip country suffix "Tokyo, Japan" → "Tokyo") ──

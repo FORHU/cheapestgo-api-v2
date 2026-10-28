@@ -356,6 +356,41 @@ export class HotelsRepository {
     }
 
     /**
+     * The one promoted stay for a destination, for the landing page's Walk.
+     *
+     * Reads `hotel_deals` and nothing else: the landing page re-renders on a timer
+     * (`revalidate = 300`), so anything it touches runs on a schedule whether or not a
+     * visitor arrived, and a scheduled supplier search is the pre-warming OTV's contract
+     * forbids. See ADR 0005 in app-v2. `hotel_content` cannot stand in here — it carries
+     * no price at all.
+     *
+     * Matched on both spellings a deal is filed under, `destination` ("Seoul") and
+     * `city_key` ("seoul"), and through the same alias table the catalog count uses, so a
+     * city stored as "Seúl" is still found. Rows priced at 0 are skipped: the column
+     * defaults to 0, so an unpriced row would otherwise advertise a free hotel.
+     */
+    async findFeaturedDealByCity(cityName: string, countryCode?: string) {
+        const { cityNames, countryCodes } = hotelLocationNames(cityName, countryCode);
+
+        const where: Prisma.hotel_dealsWhereInput = {
+            OR: cityNames.flatMap(n => [
+                { destination: { equals: n, mode: 'insensitive' as const } },
+                { city_key:    { equals: n, mode: 'insensitive' as const } },
+            ]),
+            price: { gt: 0 },
+        };
+        if (countryCodes) where.country_code = { in: countryCodes, mode: 'insensitive' };
+
+        return prisma.hotel_deals.findFirst({
+            where,
+            orderBy: [
+                { last_refreshed_at: { sort: 'desc', nulls: 'last' } },
+                { updated_at: { sort: 'desc', nulls: 'last' } },
+            ],
+        });
+    }
+
+    /**
      * Record what the supplier quoted at prebook, so checkout charges from this row
      * rather than from the browser's payload.
      *
