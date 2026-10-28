@@ -164,7 +164,6 @@ async function handleMystifly(
 ) {
     const flight: any = session.flight ?? {};
     const passengers: any[] = session.passengers ?? [];
-    const contact: any = session.contact ?? {};
 
     // Extract FareSourceCode from traceId (format: FSC|convId||SearchId)
     const traceId: string = flight.traceId ?? flight.offer_id ?? '';

@@ -57,7 +57,7 @@ router.post('/validate', requireAuth, async (req: Request, res: Response, next: 
             throw new AppError(429, 'Too many attempts. Please wait a minute before trying again.', 'RATE_LIMITED');
         }
 
-        const { code, bookingPrice, currency, hotelId } = req.body as {
+        const { code, bookingPrice, hotelId } = req.body as {
             code: string;
             bookingPrice: number;
             currency?: string;

@@ -993,7 +993,6 @@ export class FlightsService {
         let stripeError: string | undefined;
         let actualStripeRefundAmount = 0;
         let actualStripeCurrency = refundCurrency.toUpperCase();
-        let cachedPi: any = null;
 
         if (!effectivePaymentIntentId && booking.session_id) {
             try {
@@ -1013,7 +1012,6 @@ export class FlightsService {
         if (effectivePaymentIntentId && refundAmount > 0) {
             try {
                 const pi = await stripe.paymentIntents.retrieve(effectivePaymentIntentId);
-                cachedPi = pi;
                 const piAmount = pi.amount;
                 const piCurrency = pi.currency.toLowerCase();
 

@@ -80,7 +80,7 @@ vi.mock('crypto', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────────────
 
 import { runTgxSearch } from '@/lib/hotels/search';
-import { quoteTgx, bookTgx, cancelTgx } from '@/lib/hotels/travelgatex';
+import { bookTgx, cancelTgx } from '@/lib/hotels/travelgatex';
 import { stripe } from '@/lib/stripe';
 import { HotelsService } from '@/services/hotels.service';
 import { prisma } from '@/lib/prisma';

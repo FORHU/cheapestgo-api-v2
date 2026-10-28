@@ -7,7 +7,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import {
     tgxGraphQL, getTgxSettings, getTgxConfig, getTgxFilterSearch, buildOccupancies,
-    normalizeOption, resolveTgxDestinationCode, fetchAmenitiesByHotelCodes, toRefundableTag,
+    normalizeOption, resolveTgxDestinationCode, toRefundableTag,
     type TgxOption,
 } from './travelgatex';
 import { otvCodeToLabel } from './amenityCodes';
@@ -1416,7 +1416,7 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
         adults = 2, children = 0, childrenAges,
         destinationCode, cityName, countryCode, hotelCode,
         guest_nationality = 'KR',
-        rung, bbox, areaRung,
+        rung,
     } = params;
 
     const currency    = 'USD';
@@ -1431,7 +1431,6 @@ async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResu
     const tgxCfg      = getTgxConfig();
     const destSettings  = getTgxSettings(tgxCfg, SUPPLIER_SEARCH_TIMEOUT_MS, true,  currency);
     const hotelSettings = getTgxSettings(tgxCfg, SUPPLIER_SEARCH_TIMEOUT_MS, false, currency);
-    const settings      = hotelSettings;
     const occupancies = buildOccupancies(Number(adults), Number(children), childrenAges);
 
     // Province/country rungs: ETG region search handles these better than TGX city lookup.

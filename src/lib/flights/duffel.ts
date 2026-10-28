@@ -326,7 +326,6 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
     } = params;
 
     const token = getDuffelToken();
-    const isSandbox = token.startsWith('duffel_test_');
 
     const getHdrs = (key: string) => ({
         'Authorization': `Bearer ${token}`,
@@ -658,11 +657,7 @@ export function parseDuffelOffer(offer: any, cabinClassFallback?: string): Fligh
     const lastSeg = allSegments[allSegments.length - 1];
 
     const refundCond = offer.conditions?.refund_before_departure;
-    const changeCond = offer.conditions?.change_before_departure;
     const isRefundable = refundCond?.allowed === true;
-    const isChangeable = changeCond?.allowed === true;
-    const refundPenalty = refundCond?.penalty_amount != null ? parseFloat(refundCond.penalty_amount) : null;
-    const changePenalty = changeCond?.penalty_amount != null ? parseFloat(changeCond.penalty_amount) : null;
 
     return {
         provider: 'duffel',

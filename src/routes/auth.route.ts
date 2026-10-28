@@ -203,7 +203,7 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
  * - Upserts the user in the DB
  * - Issues a JWT access_token cookie and redirects to SITE_URL
  */
-router.get('/google/callback', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/google/callback', async (req: Request, res: Response) => {
     const { code, state, error: oauthErr } = req.query as Record<string, string>;
 
     const failRedirect = (reason: string) =>
