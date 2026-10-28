@@ -27,6 +27,15 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      environment:
+        # Which deployment this run targets. Everything that differs between them —
+        # instance, ports, container names, SSM path — comes from that GitHub
+        # environment's variables rather than from this file, so one workflow serves both.
+        # A push to main has no input and therefore always means dev.
+        description: "Target environment"
+        type: choice
+        options: [dev, production]
+        default: dev
       ref:
         # No default on purpose: a hardcoded branch fetches something that may not
         # exist, failing in checkout before anything is built. Blank falls back to
@@ -35,30 +44,29 @@ on:
         required: false
 
 concurrency:
-  group: forhu-dev-cheapestgo
+  # Per environment: a dev deploy and a production deploy touch different hosts and must
+  # not queue behind or cancel one another.
+  group: forhu-cheapestgo-api-${{ inputs.environment || 'dev' }}
   cancel-in-progress: false
 
+# Only what is the same wherever this deploys. Anything that differs by environment is
+# resolved in the "Resolve target" step below, from that environment's variables.
 env:
   AWS_REGION: ap-southeast-1
   ACCOUNT_ID: "617163942417"
-  INSTANCE_ID: i-0f95a93145ea25e7a
   ECR_REPOSITORY: cheapestgo-v2-api
-  CONTAINER: cheapestgo-v2-api
-  NETWORK: forhu-dev
-  HOST_PORT: "4041"
   APP_PORT: "4000"
-  ENV_PARAM: /forhu-dev/cheapestgo-v2-api/env
-  SHARED_ENV: /opt/forhu-dev/credentials/cheapestgo.env
-  MERGED_ENV: /opt/forhu-dev/cheapestgo-v2-api.env
 
 jobs:
   deploy:
     name: Build and deploy (cheapestgo dev)
-    # Native arm64: the host is Graviton. An image built on ubuntu-latest is
-    # amd64, pulls cleanly, then dies with "exec format error". Do not
-    # cross-build under QEMU — Node and Prisma builds take hours and look hung.
-    runs-on: ubuntu-24.04-arm
-    environment: staging
+    # Runner arch follows the target: the dev host is Graviton, the production box is
+    # x86_64. Build natively on both — do not cross-build under QEMU, where Node and
+    # Prisma builds take hours and look hung.
+    runs-on: ${{ inputs.environment == 'production' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
+    # "dev" is the context, not the environment's name — dev secrets and variables live on
+    # the `staging` environment. Production maps to its own.
+    environment: ${{ inputs.environment == 'production' && 'production' || 'staging' }}
 
     permissions:
       id-token: write
@@ -73,15 +81,79 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_DEV_DEPLOY_ROLE_ARN || 'arn:aws:iam::617163942417:role/forhu-deploy' }}
+          # Production sets AWS_DEPLOY_ROLE_ARN on its own environment. forhu-deploy, the dev
+          # role, can only SendCommand to the dev host and only PutParameter under
+          # /forhu-dev/* — against production it fails on the instance ARN, after the build.
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN || vars.AWS_DEV_DEPLOY_ROLE_ARN || 'arn:aws:iam::617163942417:role/forhu-deploy' }}
           aws-region: ${{ env.AWS_REGION }}
+
+      # Everything that differs between dev and production, in one place.
+      #
+      # Dev keeps working values as defaults so nothing has to be configured to deploy it.
+      # Production has none: a missing production variable aborts rather than falling back,
+      # because the fallback would deploy production code onto the dev instance — against
+      # the dev database, with the dev SSM parameters — and report success doing it.
+      - name: Resolve target
+        id: cfg
+        env:
+          TARGET:           ${{ inputs.environment || 'dev' }}
+          V_INSTANCE_ID:    ${{ vars.INSTANCE_ID }}
+          V_NETWORK:        ${{ vars.DOCKER_NETWORK }}
+          V_CONTAINER:      ${{ vars.CONTAINER_NAME }}
+          V_CRON_CONTAINER: ${{ vars.CRON_CONTAINER_NAME }}
+          V_START_CRON:     ${{ vars.START_CRON }}
+          V_HOST_PORT:      ${{ vars.HOST_PORT }}
+          V_ENV_PARAM:      ${{ vars.ENV_PARAM }}
+          V_SHARED_ENV:     ${{ vars.SHARED_ENV }}
+          V_MERGED_ENV:     ${{ vars.MERGED_ENV }}
+        run: |
+          set -euo pipefail
+
+          if [ "$TARGET" = "production" ]; then
+            missing=""
+            for v in V_INSTANCE_ID V_NETWORK V_CONTAINER V_CRON_CONTAINER \
+                     V_HOST_PORT V_ENV_PARAM V_SHARED_ENV V_MERGED_ENV; do
+              [ -n "${!v:-}" ] || missing="$missing ${v#V_}"
+            done
+            if [ -n "$missing" ]; then
+              echo "::error::production environment is missing:$missing"
+              echo "Set them as variables on the 'production' environment, then re-run." >&2
+              exit 1
+            fi
+          fi
+
+          out() { printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"; }
+
+          # The tag prefix keeps a dev image from ever being mistaken for, or overwriting,
+          # a production one in the same ECR repository.
+          [ "$TARGET" = "production" ] && out tag_prefix prod || out tag_prefix dev
+
+          # The dev host is Graviton; the production box is x86_64 (t3 family). One
+          # image cannot serve both: the wrong arch pulls cleanly and then dies with
+          # "exec format error", which reads as a crash loop rather than a build fault.
+          [ "$TARGET" = "production" ] && out platform linux/amd64 || out platform linux/arm64
+
+          out instance_id    "${V_INSTANCE_ID:-i-0f95a93145ea25e7a}"
+          out network        "${V_NETWORK:-forhu-dev}"
+          out container      "${V_CONTAINER:-cheapestgo-v2-api}"
+          # The scheduler. Same ECR repository under a distinct tag prefix rather than a
+          # repository of its own: a second repo needs `ecr:CreateRepository` on the OIDC
+          # role, and this image is alpine + curl + supercronic + the crontab.
+          out cron_container "${V_CRON_CONTAINER:-cheapestgo-v2-cron}"
+          # Opt-in, and deliberately NOT in the production required-vars list above: an
+          # unset value must mean "do not run the scheduler", never a failed deploy.
+          out start_cron     "${V_START_CRON:-false}"
+          out host_port      "${V_HOST_PORT:-4041}"
+          out env_param      "${V_ENV_PARAM:-/forhu-dev/cheapestgo-v2-api/env}"
+          out shared_env     "${V_SHARED_ENV:-/opt/forhu-dev/credentials/cheapestgo.env}"
+          out merged_env     "${V_MERGED_ENV:-/opt/forhu-dev/cheapestgo-v2-api.env}"
+
+          echo "Target: $TARGET"
 
       - name: Resolve image tag
         id: tag
         run: |
-          # dev- prefix so a dev image can never be mistaken for, or overwrite,
-          # a production tag in the same ECR repository.
-          echo "tag=dev-$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ steps.cfg.outputs.tag_prefix }}-$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "registry=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> "$GITHUB_OUTPUT"
 
       - name: Login to Amazon ECR
@@ -98,9 +170,23 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          platforms: linux/arm64
+          platforms: ${{ steps.cfg.outputs.platform }}
           provenance: false
           tags: ${{ steps.tag.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+
+      # The scheduler image. Every job in docker/cron/crontab — the credit check, the
+      # dest-cache fill, the hotel-content refresh, the supplier-health probe — exists only
+      # in docker-compose.yml today, which is local development. Nothing scheduled has ever
+      # run in a deployed environment.
+      - name: Build and push cron image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker/cron
+          file: ./docker/cron/Dockerfile
+          push: true
+          platforms: ${{ steps.cfg.outputs.platform }}
+          provenance: false
+          tags: ${{ steps.tag.outputs.registry }}/${{ env.ECR_REPOSITORY }}:cron-${{ steps.tag.outputs.tag }}
 
       # This project's own secrets only. Anything unset is omitted rather than
       # written empty: an empty value looks configured and silently disables
@@ -145,6 +231,10 @@ jobs:
           MYSTIFLY_USERNAME: ${{ secrets.MYSTIFLY_USERNAME || vars.MYSTIFLY_USERNAME }}
           NEXT_PUBLIC_BRAND_EMAIL: ${{ secrets.NEXT_PUBLIC_BRAND_EMAIL || vars.NEXT_PUBLIC_BRAND_EMAIL }}
           NEXT_PUBLIC_BRAND_NAME: ${{ secrets.NEXT_PUBLIC_BRAND_NAME || vars.NEXT_PUBLIC_BRAND_NAME }}
+          # Extra origins a Google sign-in may return to. SITE_URL is always allowed and
+          # need not appear here; anything unlisted falls back to it. Unset is the previous
+          # behaviour exactly, so this is safe to leave empty.
+          OAUTH_RETURN_ORIGINS: ${{ secrets.OAUTH_RETURN_ORIGINS || vars.OAUTH_RETURN_ORIGINS }}
           SITE_URL: ${{ secrets.SITE_URL || vars.SITE_URL }}
           STRIPE_EXPECTED_ACCOUNT: ${{ secrets.STRIPE_EXPECTED_ACCOUNT || vars.STRIPE_EXPECTED_ACCOUNT }}
           SUPPORT_ATTACHMENTS_BUCKET: ${{ secrets.SUPPORT_ATTACHMENTS_BUCKET || vars.SUPPORT_ATTACHMENTS_BUCKET }}
@@ -214,6 +304,7 @@ jobs:
           add MYSTIFLY_USERNAME                "${MYSTIFLY_USERNAME:-}"
           add NEXT_PUBLIC_BRAND_EMAIL          "${NEXT_PUBLIC_BRAND_EMAIL:-}"
           add NEXT_PUBLIC_BRAND_NAME           "${NEXT_PUBLIC_BRAND_NAME:-}"
+          add OAUTH_RETURN_ORIGINS             "${OAUTH_RETURN_ORIGINS:-}"
           add RESEND_API_KEY                   "${RESEND_API_KEY:-}"
           add SITE_URL                         "${SITE_URL:-}"
           add STRIPE_EXPECTED_ACCOUNT          "${STRIPE_EXPECTED_ACCOUNT:-}"
@@ -225,7 +316,7 @@ jobs:
           add TRAVELGATEX_CODE                 "${TRAVELGATEX_CODE:-}"
 
           aws ssm put-parameter \
-            --name "${{ env.ENV_PARAM }}" \
+            --name "${{ steps.cfg.outputs.env_param }}" \
             --type SecureString --overwrite \
             --value "file://env.tmp" \
             --region "${{ env.AWS_REGION }}" > /dev/null
@@ -239,28 +330,55 @@ jobs:
         run: |
           set -euo pipefail
           IMAGE="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${TAG}"
+          CRON_IMAGE="${REGISTRY}/${{ env.ECR_REPOSITORY }}:cron-${TAG}"
 
           COMMANDS=(
             "set -euo pipefail"
-            "cat ${{ env.SHARED_ENV }} > ${{ env.MERGED_ENV }}"
-            "aws ssm get-parameter --name ${{ env.ENV_PARAM }} --with-decryption --region ${{ env.AWS_REGION }} --query Parameter.Value --output text >> ${{ env.MERGED_ENV }}"
-            "chmod 600 ${{ env.MERGED_ENV }}"
+            "cat ${{ steps.cfg.outputs.shared_env }} > ${{ steps.cfg.outputs.merged_env }}"
+            "aws ssm get-parameter --name ${{ steps.cfg.outputs.env_param }} --with-decryption --region ${{ env.AWS_REGION }} --query Parameter.Value --output text >> ${{ steps.cfg.outputs.merged_env }}"
+            "chmod 600 ${{ steps.cfg.outputs.merged_env }}"
             "aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${REGISTRY}"
             "docker container prune -f || true"
             "docker image prune -af || true"
-            "docker pull --platform linux/arm64 ${IMAGE}"
-            "docker rm -f ${{ env.CONTAINER }} 2>/dev/null || true"
-            "docker run -d --name ${{ env.CONTAINER }} --restart unless-stopped --platform linux/arm64 --network ${{ env.NETWORK }} --env-file ${{ env.MERGED_ENV }} -p 127.0.0.1:${{ env.HOST_PORT }}:${{ env.APP_PORT }} ${IMAGE}"
+            "docker pull --platform ${{ steps.cfg.outputs.platform }} ${IMAGE}"
+            "docker rm -f ${{ steps.cfg.outputs.container }} 2>/dev/null || true"
+            "docker run -d --name ${{ steps.cfg.outputs.container }} --restart unless-stopped --platform ${{ steps.cfg.outputs.platform }} --network ${{ steps.cfg.outputs.network }} --env-file ${{ steps.cfg.outputs.merged_env }} -p 127.0.0.1:${{ steps.cfg.outputs.host_port }}:${{ env.APP_PORT }} ${IMAGE}"
           )
+
+          # The scheduler is opt-in, via START_CRON on the target environment.
+          #
+          # Default false. While v2 runs beside v1 on the production box, both
+          # schedulers hold the same supplier credentials: v2's flight warming
+          # competes with v1's live customer searches for one Duffel rate limit,
+          # and on 2026-10-28 v1's app was taking 429s while this ran. Nothing a
+          # parallel deployment does should be able to degrade the live system.
+          #
+          # Set START_CRON=true on the environment at cutover, once v1's own
+          # scheduler is stopped.
+          if [ "${{ steps.cfg.outputs.start_cron }}" = "true" ]; then
+            COMMANDS+=(
+              "docker pull --platform ${{ steps.cfg.outputs.platform }} ${CRON_IMAGE}"
+              "docker rm -f ${{ steps.cfg.outputs.cron_container }} 2>/dev/null || true"
+              # APP_URL is set here rather than taken from the env file: the jobs call the API
+              # over the Docker network by container name, never back out through the public
+              # hostname, so the cron endpoints need no public exposure. No trailing slash —
+              # the crontab appends the path.
+              "docker run -d --name ${{ steps.cfg.outputs.cron_container }} --restart unless-stopped --platform ${{ steps.cfg.outputs.platform }} --network ${{ steps.cfg.outputs.network }} --env-file ${{ steps.cfg.outputs.merged_env }} -e APP_URL=http://${{ steps.cfg.outputs.container }}:${{ env.APP_PORT }} ${CRON_IMAGE}"
+            )
+          else
+            # Authoritative, not merely "do not create": a container from an earlier
+            # deploy keeps running under --restart unless-stopped, so it is removed.
+            COMMANDS+=( "docker rm -f ${{ steps.cfg.outputs.cron_container }} 2>/dev/null || true" )
+          fi
 
           # jq builds the JSON, so a quote inside any command cannot break it.
           PARAMS=$(printf '%s\n' "${COMMANDS[@]}" | jq -R . | jq -sc '{commands: .}')
 
           CMD_ID=$(aws ssm send-command \
             --region "${{ env.AWS_REGION }}" \
-            --instance-ids "${{ env.INSTANCE_ID }}" \
+            --instance-ids "${{ steps.cfg.outputs.instance_id }}" \
             --document-name AWS-RunShellScript \
-            --comment "deploy ${{ env.CONTAINER }} ${TAG}" \
+            --comment "deploy ${{ steps.cfg.outputs.container }} ${TAG}" \
             --timeout-seconds 900 \
             --parameters "${PARAMS}" \
             --query Command.CommandId --output text)
@@ -276,7 +394,7 @@ jobs:
             STATUS=$(aws ssm get-command-invocation \
               --region "${{ env.AWS_REGION }}" \
               --command-id "${{ steps.send.outputs.command_id }}" \
-              --instance-id "${{ env.INSTANCE_ID }}" \
+              --instance-id "${{ steps.cfg.outputs.instance_id }}" \
               --query Status --output text 2>/dev/null || echo Pending)
             echo "status: $STATUS"
             case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
@@ -286,7 +404,7 @@ jobs:
           aws ssm get-command-invocation \
             --region "${{ env.AWS_REGION }}" \
             --command-id "${{ steps.send.outputs.command_id }}" \
-            --instance-id "${{ env.INSTANCE_ID }}" \
+            --instance-id "${{ steps.cfg.outputs.instance_id }}" \
             --query '[StandardOutputContent,StandardErrorContent]' --output text
 
           [ "$STATUS" = "Success" ] || { echo "::error::deploy $STATUS"; exit 1; }

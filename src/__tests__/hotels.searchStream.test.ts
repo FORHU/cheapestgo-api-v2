@@ -11,7 +11,12 @@ vi.mock('@/lib/hotels/property', () => ({ resolveStayDates: vi.fn() }));
 vi.mock('@/lib/hotels/travelgatex', () => ({ resolveTgxDestinationCode: vi.fn() }));
 vi.mock('@/lib/hotels/contentPatches', () => ({ fetchHotelContentPatches: vi.fn() }));
 vi.mock('@/lib/hotels/search', () => ({ getInstantHotelCatalog: vi.fn(), runTgxSearch: vi.fn() }));
-vi.mock('@/services/hotels.service', () => ({ HotelsService: class {} }));
+// The stream asks the service whether stays are off sale before it opens the response
+// (see HotelsController.searchStream). These cases are about the normal path, so the stub
+// answers "on sale"; the maintenance branch is covered by staysMaintenance.test.ts.
+vi.mock('@/services/hotels.service', () => ({
+    HotelsService: class { async staysUnderMaintenance() { return false; } },
+}));
 vi.mock('@/services/destinations.service', () => ({ DestinationsService: class {} }));
 vi.mock('@/middleware/error.middleware', () => ({
     AppError: class extends Error { constructor(public status: number, m: string, public code?: string) { super(m); } },

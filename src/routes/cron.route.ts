@@ -15,6 +15,7 @@ import { getDuffelBalances, duffelHeaders } from '@/lib/flights/duffel';
 import { searchFlights } from '@/lib/flights/search';
 import { FlightOffer } from '@/types/flights';
 import { tgxGraphQL, getTgxConfig, resolveTgxDestinationCode } from '@/lib/hotels/travelgatex';
+import { adminSettingsService } from '@/services/adminSettings.service';
 import { otvCodeToLabel } from '@/lib/hotels/amenityCodes';
 import { RoomCatalogService } from '@/services/roomCatalog.service';
 import { getDumpUrl, processDump } from '@/lib/hotels/etgDump';
@@ -1600,6 +1601,22 @@ router.get('/platform-cost-reconciliation', async (req: Request, res: Response, 
         }
 
         res.json({ success: true, ...result });
+    } catch (err) { next(err); }
+});
+
+/**
+ * Is the hotel supplier still selling?
+ *
+ * The probe itself lives in `adminSettingsService`, because the admin screen's "Check now"
+ * button needs the same check behind session auth rather than the cron secret.
+ *
+ * Distinct from `/admin/tgx-health`, which pings TGX with `{ __typename }`: that answers
+ * "is the gateway reachable", which stayed green throughout the 2026-10-26 outage while
+ * every hotel search returned nothing.
+ */
+router.get('/supplier-health', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+        res.json(await adminSettingsService.runSupplierHealthCheck());
     } catch (err) { next(err); }
 });
 
