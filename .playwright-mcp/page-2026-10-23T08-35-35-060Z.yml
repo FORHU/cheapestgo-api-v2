@@ -1,0 +1,62 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - main [ref=e4]:
+      - generic [ref=e6]:
+        - link "CheapestGo home" [ref=e7] [cursor=pointer]:
+          - /url: /
+          - img "CheapestGo" [ref=e8]:
+            - generic [ref=e9]: cheapestGo
+        - generic [ref=e10]:
+          - link "Bookings" [ref=e11] [cursor=pointer]:
+            - /url: /trips
+          - button "Select currency" [ref=e13] [cursor=pointer]:
+            - generic [ref=e14]: ₩
+            - generic [ref=e15]: KRW
+          - link "Sign in" [ref=e18] [cursor=pointer]:
+            - /url: /login
+      - generic:
+        - generic:
+          - paragraph: Stays · Flights · AI planner
+          - heading "One search. Every way to go." [level=1]: One search.Every way to go.
+          - paragraph: Per night, not per surprise.
+      - generic [ref=e22]:
+        - generic [ref=e23]:
+          - button "Stays" [ref=e24] [cursor=pointer]
+          - button "Flights" [ref=e25] [cursor=pointer]
+        - generic [ref=e26]:
+          - text: Find me a stay in
+          - generic [ref=e27]: somewhere amazing
+          - text: ", from"
+          - generic [ref=e32]: sometime soon
+          - text: ", with"
+          - generic [ref=e37]: 2 of us
+          - text: .
+        - button "GO" [ref=e42] [cursor=pointer]
+      - generic [ref=e50]:
+        - img "CheapestGo" [ref=e51]:
+          - generic [ref=e52]: cheapestGo
+        - navigation [ref=e53]:
+          - link "Flights" [ref=e54] [cursor=pointer]:
+            - /url: /flights/search
+          - link "Hotels" [ref=e55] [cursor=pointer]:
+            - /url: /search
+          - link "Help" [ref=e56] [cursor=pointer]:
+            - /url: /help
+          - link "Manage booking" [ref=e57] [cursor=pointer]:
+            - /url: /trips
+          - link "Terms" [ref=e58] [cursor=pointer]:
+            - /url: /terms
+          - link "Privacy" [ref=e59] [cursor=pointer]:
+            - /url: /privacy
+        - generic [ref=e60]: © 2026 CheapestGo · Manila
+    - navigation "Primary" [ref=e62]:
+      - link "Home" [ref=e63] [cursor=pointer]:
+        - /url: /
+      - link "Trips" [ref=e69] [cursor=pointer]:
+        - /url: /trips
+      - button "Settings" [ref=e73]
+  - navigation "Preview brand" [ref=e79]:
+    - generic [ref=e80]: Preview
+    - button "CheapestGo" [pressed] [ref=e81]
+    - button "AirangGo" [ref=e82]
+  - region "Notifications alt+T"

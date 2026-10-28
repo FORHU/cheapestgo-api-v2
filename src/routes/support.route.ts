@@ -31,7 +31,7 @@ import { nextOpening } from '@/lib/support/hours';
  * into a void. The Agent's inbox and the Support Desk are a separate surface under /admin and
  * are not reachable from here.
  */
-const router = Router();
+const router: Router = Router();
 const svc = new SupportService();
 
 /**

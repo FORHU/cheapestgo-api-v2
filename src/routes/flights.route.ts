@@ -2,10 +2,11 @@ import { Router, Request, Response } from 'express';
 import { FlightsController } from '@/controllers/flights.controller';
 import { requireAuth } from '@/middleware/auth.middleware';
 
-const router = Router();
+const router: Router = Router();
 const ctrl   = new FlightsController();
 
 router.post('/search',               ctrl.search);
+router.get( '/offers/:offerId',      ctrl.offer);
 router.post('/bags',                 ctrl.bags);
 router.post('/seat-map',             ctrl.seatMap);
 router.post('/fare-rules',           ctrl.fareRules);

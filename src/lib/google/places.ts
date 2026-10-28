@@ -6,7 +6,6 @@
 
 import { config } from '@/config';
 import { prisma } from '@/lib/prisma';
-import { CITY_ALIASES, resolveHotelDbCities } from '@/lib/cityAliases';
 
 function getKey(): string {
     const key = config.GOOGLE_PLACES_API_KEY;

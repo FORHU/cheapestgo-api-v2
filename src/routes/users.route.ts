@@ -10,7 +10,7 @@ import { usersController } from '@/controllers/users.controller';
  * and four raw Prisma calls, which is how a name-length rule could exist in v1's form, v1's
  * route and nowhere here.
  */
-const router = Router();
+const router: Router = Router();
 
 // Every route below acts on the caller's own account, so all of them need a verified caller.
 router.use(requireAuth);

@@ -77,6 +77,10 @@ export interface HotelListing {
     boardCode?: string;
     roomTypes?: RoomType[];
     priceLoading?: boolean;
+    /** The whole stay, beside the nightly `price` the card advertises (ADR-0020). */
+    stayTotal?: number;
+    /** The nights `stayTotal` spans. */
+    nights?: number;
     provider?: string;
     _tgxToken?: string;
 }

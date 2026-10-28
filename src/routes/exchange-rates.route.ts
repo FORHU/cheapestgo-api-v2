@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { ExchangeRatesService } from '@/services/exchange-rates.service';
 
-const router = Router();
+const router: Router = Router();
 const svc = new ExchangeRatesService();
 
 /**

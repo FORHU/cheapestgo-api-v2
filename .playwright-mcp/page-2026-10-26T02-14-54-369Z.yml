@@ -1,0 +1,125 @@
+- generic [active] [ref=f7e1]:
+  - main [ref=f7e4]:
+    - generic [ref=f7e6]:
+      - link "CheapestGo home" [ref=f7e7] [cursor=pointer]:
+        - /url: /
+        - img "CheapestGo" [ref=f7e8]:
+          - generic [ref=f7e9]: cheapestGo
+      - generic [ref=f7e10]:
+        - link "Bookings" [ref=f7e11] [cursor=pointer]:
+          - /url: /trips
+        - button "Select currency" [ref=f7e13] [cursor=pointer]:
+          - generic [ref=f7e14]: ₩
+          - generic [ref=f7e15]: KRW
+        - link "Sign in" [ref=f7e18] [cursor=pointer]:
+          - /url: /login
+    - generic:
+      - generic:
+        - paragraph: Hotels · Flights · Golf
+        - heading "One search. Every way to go." [level=1]:
+          - generic: One search.
+          - generic: Every way to go.
+        - paragraph: Skip the surprise fees. Chase the sunsets.
+        - generic [aria-hidden]:
+          - generic: Scroll down to explore
+      - generic [aria-hidden]:
+        - generic:
+          - text: Alt
+          - generic:
+            - generic:
+              - generic:
+                - generic: "0"
+                - generic: "1"
+                - generic: "2"
+                - generic: "3"
+                - generic: "4"
+                - generic: "5"
+                - generic: "6"
+                - generic: "7"
+                - generic: "8"
+                - generic: "9"
+            - generic:
+              - generic:
+                - generic: "0"
+                - generic: "1"
+                - generic: "2"
+                - generic: "3"
+                - generic: "4"
+                - generic: "5"
+                - generic: "6"
+                - generic: "7"
+                - generic: "8"
+                - generic: "9"
+            - generic: ","
+            - generic:
+              - generic:
+                - generic: "0"
+                - generic: "1"
+                - generic: "2"
+                - generic: "3"
+                - generic: "4"
+                - generic: "5"
+                - generic: "6"
+                - generic: "7"
+                - generic: "8"
+                - generic: "9"
+            - generic:
+              - generic:
+                - generic: "0"
+                - generic: "1"
+                - generic: "2"
+                - generic: "3"
+                - generic: "4"
+                - generic: "5"
+                - generic: "6"
+                - generic: "7"
+                - generic: "8"
+                - generic: "9"
+            - generic:
+              - generic:
+                - generic: "0"
+                - generic: "1"
+                - generic: "2"
+                - generic: "3"
+                - generic: "4"
+                - generic: "5"
+                - generic: "6"
+                - generic: "7"
+                - generic: "8"
+                - generic: "9"
+          - text: ft
+    - generic [ref=f7e22]:
+      - generic [ref=f7e23]:
+        - button "Stays" [ref=f7e24] [cursor=pointer]
+        - button "Flights" [ref=f7e25] [cursor=pointer]
+      - generic [ref=f7e26]:
+        - text: Find me a stay in
+        - generic [ref=f7e27]: somewhere amazing
+        - text: ", from"
+        - generic [ref=f7e32]: sometime soon
+        - text: ", with"
+        - generic [ref=f7e37]: 2 of us
+        - text: .
+      - button "GO" [ref=f7e42] [cursor=pointer]
+    - generic [ref=f7e50]:
+      - img "CheapestGo" [ref=f7e51]:
+        - generic [ref=f7e52]: cheapestGo
+      - navigation [ref=f7e53]:
+        - link "Flights" [ref=f7e54] [cursor=pointer]:
+          - /url: /flights/search
+        - link "Hotels" [ref=f7e55] [cursor=pointer]:
+          - /url: /search
+        - link "Help" [ref=f7e56] [cursor=pointer]:
+          - /url: /help
+        - link "Manage booking" [ref=f7e57] [cursor=pointer]:
+          - /url: /trips
+        - link "Terms" [ref=f7e58] [cursor=pointer]:
+          - /url: /terms
+        - link "Privacy" [ref=f7e59] [cursor=pointer]:
+          - /url: /privacy
+      - generic [ref=f7e60]: © 2026 CheapestGo · Manila
+  - navigation "Preview brand" [ref=f7e61]:
+    - generic [ref=f7e62]: Preview
+    - button "CheapestGo" [pressed] [ref=f7e63]
+    - button "AirangGo" [ref=f7e64]
+  - region "Notifications alt+T"

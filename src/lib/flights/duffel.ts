@@ -236,8 +236,10 @@ export async function getDuffelSeatMaps(offerId: string): Promise<any[]> {
  * Distinct from `refreshDuffelOffer`, which runs a whole new offer_request to find
  * *alternatives* when this one has expired. This asks about the offer in hand.
  */
-export async function getDuffelOffer(offerId: string): Promise<any | null> {
-    const res = await fetch(`${DUFFEL_BASE}/air/offers/${encodeURIComponent(offerId)}`, {
+export async function getDuffelOffer(offerId: string, options: { withServices?: boolean } = {}): Promise<any | null> {
+    // Seats and bags are priced from `available_services`, which Duffel leaves out unless asked.
+    const query = options.withServices ? '?return_available_services=true' : '';
+    const res = await fetch(`${DUFFEL_BASE}/air/offers/${encodeURIComponent(offerId)}${query}`, {
         headers: duffelHeaders(),
         signal: AbortSignal.timeout(12000),
     });
@@ -324,7 +326,6 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
     } = params;
 
     const token = getDuffelToken();
-    const isSandbox = token.startsWith('duffel_test_');
 
     const getHdrs = (key: string) => ({
         'Authorization': `Bearer ${token}`,
@@ -545,10 +546,19 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
             }
 
             const freshPaxTemplates: any[] = freshOffer.passengers ?? [];
-            const refreshedPassengers = params.passengers.map((pax: any, idx: number) => ({
-                ...pax,
-                id: freshPaxTemplates[idx]?.id ?? pax.id,
-            }));
+            const freshIdOf = (idx: number, fallback: string) => freshPaxTemplates[idx]?.id ?? fallback;
+            const refreshedPassengers = params.passengers.map((pax: any, idx: number) => {
+                const refreshed = { ...pax, id: freshIdOf(idx, pax.id) };
+                // An adult's `infant_passenger_id` names a passenger of the offer being left;
+                // on the fresh one it has to name that same infant's new id.
+                if (pax.infant_passenger_id) {
+                    const infantIdx = params.passengers.findIndex((p: any) => p.id === pax.infant_passenger_id);
+                    refreshed.infant_passenger_id = infantIdx >= 0
+                        ? freshIdOf(infantIdx, pax.infant_passenger_id)
+                        : pax.infant_passenger_id;
+                }
+                return refreshed;
+            });
 
             const attempt2 = await tryPlaceOrder(freshOffer.id, refreshedPassengers, freshBaseTotal.toFixed(2), freshOffer.total_currency, false, crypto.randomUUID());
 
@@ -633,8 +643,8 @@ export function parseDuffelOffer(offer: any, cabinClassFallback?: string): Fligh
                 origin: seg.origin.iata_code,
                 destination: seg.destination.iata_code,
                 flightNumber: `${seg.marketing_carrier.iata_code}${seg.marketing_carrier_flight_number}`,
-                departure: { airport: seg.origin.iata_code, terminal: seg.origin_terminal, time: seg.departing_at },
-                arrival: { airport: seg.destination.iata_code, terminal: seg.destination_terminal, time: seg.arriving_at },
+                departure: { ...airportPlace(seg.origin), terminal: seg.origin_terminal, time: seg.departing_at },
+                arrival: { ...airportPlace(seg.destination), terminal: seg.destination_terminal, time: seg.arriving_at },
                 duration: parseDuffelDuration(seg.duration),
                 stops: 0,
                 aircraft: seg.aircraft?.name,
@@ -647,11 +657,7 @@ export function parseDuffelOffer(offer: any, cabinClassFallback?: string): Fligh
     const lastSeg = allSegments[allSegments.length - 1];
 
     const refundCond = offer.conditions?.refund_before_departure;
-    const changeCond = offer.conditions?.change_before_departure;
     const isRefundable = refundCond?.allowed === true;
-    const isChangeable = changeCond?.allowed === true;
-    const refundPenalty = refundCond?.penalty_amount != null ? parseFloat(refundCond.penalty_amount) : null;
-    const changePenalty = changeCond?.penalty_amount != null ? parseFloat(changeCond.penalty_amount) : null;
 
     return {
         provider: 'duffel',
@@ -704,9 +710,16 @@ export function normalizedToFlightOffer(result: FlightResult, tripType: 'one-way
         },
         segments: allSegments,
         totalDuration: result.duration,
+        // Each direction's own elapsed time, as Duffel quotes it. The times on the
+        // segments carry no UTC offset, so the client cannot work this out by
+        // subtracting them — it would be off by the zone gap between the two ends.
+        sliceDurations: Array.isArray(raw?.slices)
+            ? raw.slices.map((s: any) => parseDuffelDuration(s.duration))
+            : undefined,
         totalStops: result.stops,
         refundable: (result as any).refundable ?? false,
         farePolicy: (raw as any).farePolicy ?? null,
+        baggage: duffelBaggage(raw),
         seatsRemaining: result.remaining_seats ?? undefined,
         tripType,
         traceId: result.traceId,
@@ -718,6 +731,46 @@ export function normalizedToFlightOffer(result: FlightResult, tripType: 'one-way
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
+
+/**
+ * The bags the fare includes for a traveller, as Duffel publishes them: per passenger, per
+ * segment, as `baggages: [{ type: 'carry_on' | 'checked', quantity }]`.
+ *
+ * The least generous segment wins — a checked bag allowed on the way out but not on the
+ * way back is not a checked bag the traveller has. The first passenger's allowance stands
+ * for the party. Undefined when Duffel says nothing, so a card shows no bag line rather than
+ * "No checked bag" on a fare that may well have one.
+ */
+function duffelBaggage(raw: any): { cabinBag: boolean; checkedBags: number } | undefined {
+    const allowances: Array<{ carryOn: number; checked: number }> = [];
+    for (const slice of raw?.slices ?? []) {
+        for (const segment of slice?.segments ?? []) {
+            const bags = segment?.passengers?.[0]?.baggages;
+            if (!Array.isArray(bags)) continue;
+            const count = (type: string) => bags.filter((b: any) => b?.type === type)
+                .reduce((n: number, b: any) => n + (Number(b?.quantity) || 0), 0);
+            allowances.push({ carryOn: count('carry_on'), checked: count('checked') });
+        }
+    }
+    if (allowances.length === 0) return undefined;
+    return {
+        cabinBag:    Math.min(...allowances.map((a) => a.carryOn)) > 0,
+        checkedBags: Math.min(...allowances.map((a) => a.checked)),
+    };
+}
+
+/**
+ * One end of a segment: the code, plus the airport and city named the way Duffel
+ * names them, for the itinerary's "Hamad International Airport (DOH)". The names
+ * are left off, not guessed, when Duffel sends none.
+ */
+function airportPlace(place: any): { airport: string; airportName?: string; city?: string } {
+    return {
+        airport: place?.iata_code,
+        airportName: place?.name || undefined,
+        city: place?.city_name || place?.city?.name || undefined,
+    };
+}
 
 function parseDuffelDuration(duration: string): number {
     const matches = duration?.match(/P(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?/);

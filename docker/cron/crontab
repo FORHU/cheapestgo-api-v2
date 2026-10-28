@@ -8,6 +8,8 @@
 */5  * * * * curl -sf -X GET  $APP_URL/api/v2/cron/poll-pending-tickets           -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 */10 * * * * curl -sf -X POST $APP_URL/api/v2/internal/auto-recover               -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 */10 * * * * curl -sf -X GET  $APP_URL/api/v2/cron/cleanup-orphaned-duffel-orders -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+# Releases flight card holds nobody finished; reports attempts stuck with the airline. Never calls Duffel.
+*/10 * * * * curl -sf -X GET  $APP_URL/api/v2/cron/flight-booking-sweep           -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 */15 * * * * curl -sf -X POST $APP_URL/api/v2/internal/retry-emails               -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 */30 * * * * curl -sf -X GET  $APP_URL/api/v2/cron/refresh-popular-flights        -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 

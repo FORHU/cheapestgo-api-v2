@@ -1,6 +1,6 @@
 import { HotelsRepository } from '@/repositories/hotels.repository';
 import { parseRoomGroups, fetchEtgHotelInfo, findEtgHidByName, parseHotelImages, type RoomGroupEntry } from '@/lib/hotels/roomGroups';
-import { matchEtgRoomGroup, type EtgGroup } from '@/lib/hotels/roomMatch';
+import { matchEtgRoomGroupForCatalog, type EtgGroup } from '@/lib/hotels/roomMatch';
 
 /**
  * Room-level photos and amenities for the rooms of one hotel.
@@ -219,7 +219,7 @@ export class RoomCatalogService {
         const missed: string[] = [];
 
         for (const [code, description] of descMap) {
-            const match = matchEtgRoomGroup(description, groups as EtgGroup[]);
+            const match = matchEtgRoomGroupForCatalog(description, groups as EtgGroup[]);
             if (match.images.length || match.amenities.length) {
                 out.set(code, { photos: match.images, amenities: match.amenities });
             } else {

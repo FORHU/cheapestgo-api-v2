@@ -1,0 +1,584 @@
+{
+  "created_at": "2026-09-25T01:28:51.866087Z",
+  "updated_at": "2026-09-25T01:28:51.866087Z",
+  "id": "off_0000BAkgfNaX34JlUR3B0D",
+  "live_mode": false,
+  "expires_at": "2026-09-25T02:28:51.747417Z",
+  "supported_loyalty_programmes": [
+    "AA",
+    "AS",
+    "CX",
+    "MH",
+    "BA",
+    "AY",
+    "UL",
+    "QF",
+    "IB",
+    "JM",
+    "QR",
+    "UM",
+    "RJ",
+    "AT"
+  ],
+  "base_amount": "1746.00",
+  "intended_base_amount": "1746.00",
+  "base_currency": "USD",
+  "tax_amount": "2242.69",
+  "tax_currency": "USD",
+  "total_amount": "3988.69",
+  "intended_total_amount": "3988.69",
+  "total_currency": "USD",
+  "total_emissions_kg": "1884",
+  "passenger_identity_documents_required": false,
+  "supported_passenger_identity_document_types": [
+    "known_traveler_number",
+    "passenger_redress_number",
+    "passport"
+  ],
+  "partial": false,
+  "private_fares": [],
+  "conditions": {
+    "change_before_departure": null,
+    "refund_before_departure": null
+  },
+  "owner": {
+    "conditions_of_carriage_url": "https://www.finnair.com/gb-en/info/conditions-of-carriage-and-notices/general-conditions-of-carriage-for-passengers-and-baggage",
+    "iata_code": "AY",
+    "id": "arl_00009VME7DC2bj9quHXKow",
+    "logo_lockup_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-lockup/AY.svg",
+    "logo_symbol_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/AY.svg",
+    "name": "Finnair"
+  },
+  "slices": [
+    {
+      "id": "sli_0000BAkgfNaX34JlUR3Azz",
+      "duration": "PT8H",
+      "destination_type": "airport",
+      "origin_type": "airport",
+      "fare_brand_name": "Economy Light",
+      "ngs_shelf": 1,
+      "conditions": {
+        "change_before_departure": null,
+        "advance_seat_selection": null,
+        "priority_boarding": null,
+        "priority_check_in": null
+      },
+      "comparison_key": "BfmJSQ==",
+      "origin": {
+        "iata_code": "LHR",
+        "iata_country_code": "GB",
+        "id": "arp_lhr_gb",
+        "name": "Heathrow Airport",
+        "latitude": 51.470311,
+        "longitude": -0.458118,
+        "icao_code": "EGLL",
+        "time_zone": "Europe/London",
+        "city_name": "London",
+        "iata_city_code": "LON",
+        "type": "airport",
+        "city": {
+          "iata_code": "LON",
+          "iata_country_code": "GB",
+          "id": "cit_lon_gb",
+          "name": "London",
+          "latitude": null,
+          "longitude": null,
+          "icao_code": null,
+          "time_zone": null,
+          "city_name": null,
+          "iata_city_code": "LON",
+          "type": "city"
+        }
+      },
+      "destination": {
+        "iata_code": "JFK",
+        "iata_country_code": "US",
+        "id": "arp_jfk_us",
+        "name": "John F. Kennedy International Airport",
+        "latitude": 40.640556,
+        "longitude": -73.778519,
+        "icao_code": "KJFK",
+        "time_zone": "America/New_York",
+        "city_name": "New York",
+        "iata_city_code": "NYC",
+        "type": "airport",
+        "city": {
+          "iata_code": "NYC",
+          "iata_country_code": "US",
+          "id": "cit_nyc_us",
+          "name": "New York",
+          "latitude": null,
+          "longitude": null,
+          "icao_code": null,
+          "time_zone": null,
+          "city_name": null,
+          "iata_city_code": "NYC",
+          "type": "city"
+        }
+      },
+      "segments": [
+        {
+          "id": "seg_0000BAkgfNaX34JlUR3Azu",
+          "arriving_at": "2026-10-25T19:35:00",
+          "departing_at": "2026-10-25T15:35:00",
+          "destination_terminal": null,
+          "distance": null,
+          "duration": "PT8H",
+          "marketing_carrier_flight_number": "3777",
+          "operating_carrier_flight_number": null,
+          "origin_terminal": null,
+          "media": [],
+          "passengers": [
+            {
+              "passenger_id": "pas_0000BAkgecVG6rAnSTDnkk",
+              "cabin_class": "economy",
+              "cabin_class_marketing_name": "Economy",
+              "fare_basis_code": "VKW4C1B4",
+              "baggages": [
+                {
+                  "type": "carry_on",
+                  "quantity": 1
+                }
+              ],
+              "cabin": {
+                "marketing_name": "Economy",
+                "name": "economy",
+                "amenities": {
+                  "wifi": {
+                    "available": true,
+                    "cost": "paid"
+                  },
+                  "seat": {
+                    "type": "standard",
+                    "legroom": "standard",
+                    "pitch": "31"
+                  },
+                  "power": {
+                    "available": true
+                  }
+                }
+              }
+            },
+            {
+              "passenger_id": "pas_0000BAkgecVc5XSNTZO5I8",
+              "cabin_class": "economy",
+              "cabin_class_marketing_name": "Economy",
+              "fare_basis_code": "VKW4C1B4",
+              "baggages": [
+                {
+                  "type": "carry_on",
+                  "quantity": 1
+                }
+              ],
+              "cabin": {
+                "marketing_name": "Economy",
+                "name": "economy",
+                "amenities": {
+                  "wifi": {
+                    "available": true,
+                    "cost": "paid"
+                  },
+                  "seat": {
+                    "type": "standard",
+                    "legroom": "standard",
+                    "pitch": "31"
+                  },
+                  "power": {
+                    "available": true
+                  }
+                }
+              }
+            },
+            {
+              "passenger_id": "pas_0000BAkgecVc5XSNTZO5IE",
+              "cabin_class": "economy",
+              "cabin_class_marketing_name": "Economy",
+              "fare_basis_code": "VKW4C1B4",
+              "baggages": [
+                {
+                  "type": "carry_on",
+                  "quantity": 1
+                }
+              ],
+              "cabin": {
+                "marketing_name": "Economy",
+                "name": "economy",
+                "amenities": {
+                  "wifi": {
+                    "available": true,
+                    "cost": "paid"
+                  },
+                  "seat": {
+                    "type": "standard",
+                    "legroom": "standard",
+                    "pitch": "31"
+                  },
+                  "power": {
+                    "available": true
+                  }
+                }
+              }
+            }
+          ],
+          "stops": [],
+          "aircraft": {
+            "iata_code": "77W",
+            "id": "arc_00009VMF8AhXSSRnQDI6HH",
+            "name": "Boeing 777-300ER"
+          },
+          "marketing_carrier": {
+            "conditions_of_carriage_url": "https://www.finnair.com/gb-en/info/conditions-of-carriage-and-notices/general-conditions-of-carriage-for-passengers-and-baggage",
+            "iata_code": "AY",
+            "id": "arl_00009VME7DC2bj9quHXKow",
+            "logo_lockup_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-lockup/AY.svg",
+            "logo_symbol_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/AY.svg",
+            "name": "Finnair"
+          },
+          "operating_carrier": {
+            "conditions_of_carriage_url": "https://www.aa.com/i18n/customer-service/support/conditions-of-carriage.jsp",
+            "iata_code": "AA",
+            "id": "arl_00009VME7DAGiJjwomhv32",
+            "logo_lockup_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-lockup/AA.svg",
+            "logo_symbol_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/AA.svg",
+            "name": "American Airlines"
+          },
+          "origin": {
+            "iata_code": "LHR",
+            "iata_country_code": "GB",
+            "id": "arp_lhr_gb",
+            "name": "Heathrow Airport",
+            "latitude": 51.470311,
+            "longitude": -0.458118,
+            "icao_code": "EGLL",
+            "time_zone": "Europe/London",
+            "city_name": "London",
+            "iata_city_code": "LON",
+            "type": "airport",
+            "city": {
+              "iata_code": "LON",
+              "iata_country_code": "GB",
+              "id": "cit_lon_gb",
+              "name": "London",
+              "latitude": null,
+              "longitude": null,
+              "icao_code": null,
+              "time_zone": null,
+              "city_name": null,
+              "iata_city_code": "LON",
+              "type": "city"
+            }
+          },
+          "destination": {
+            "iata_code": "JFK",
+            "iata_country_code": "US",
+            "id": "arp_jfk_us",
+            "name": "John F. Kennedy International Airport",
+            "latitude": 40.640556,
+            "longitude": -73.778519,
+            "icao_code": "KJFK",
+            "time_zone": "America/New_York",
+            "city_name": "New York",
+            "iata_city_code": "NYC",
+            "type": "airport",
+            "city": {
+              "iata_code": "NYC",
+              "iata_country_code": "US",
+              "id": "cit_nyc_us",
+              "name": "New York",
+              "latitude": null,
+              "longitude": null,
+              "icao_code": null,
+              "time_zone": null,
+              "city_name": null,
+              "iata_city_code": "NYC",
+              "type": "city"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "sli_0000BAkgfNaX34JlUR3B07",
+      "duration": "PT6H50M",
+      "destination_type": "airport",
+      "origin_type": "airport",
+      "fare_brand_name": "Economy Light",
+      "ngs_shelf": 1,
+      "conditions": {
+        "change_before_departure": null,
+        "advance_seat_selection": null,
+        "priority_boarding": null,
+        "priority_check_in": null
+      },
+      "comparison_key": "B2kIUQ==",
+      "origin": {
+        "iata_code": "JFK",
+        "iata_country_code": "US",
+        "id": "arp_jfk_us",
+        "name": "John F. Kennedy International Airport",
+        "latitude": 40.640556,
+        "longitude": -73.778519,
+        "icao_code": "KJFK",
+        "time_zone": "America/New_York",
+        "city_name": "New York",
+        "iata_city_code": "NYC",
+        "type": "airport",
+        "city": {
+          "iata_code": "NYC",
+          "iata_country_code": "US",
+          "id": "cit_nyc_us",
+          "name": "New York",
+          "latitude": null,
+          "longitude": null,
+          "icao_code": null,
+          "time_zone": null,
+          "city_name": null,
+          "iata_city_code": "NYC",
+          "type": "city"
+        }
+      },
+      "destination": {
+        "iata_code": "LHR",
+        "iata_country_code": "GB",
+        "id": "arp_lhr_gb",
+        "name": "Heathrow Airport",
+        "latitude": 51.470311,
+        "longitude": -0.458118,
+        "icao_code": "EGLL",
+        "time_zone": "Europe/London",
+        "city_name": "London",
+        "iata_city_code": "LON",
+        "type": "airport",
+        "city": {
+          "iata_code": "LON",
+          "iata_country_code": "GB",
+          "id": "cit_lon_gb",
+          "name": "London",
+          "latitude": null,
+          "longitude": null,
+          "icao_code": null,
+          "time_zone": null,
+          "city_name": null,
+          "iata_city_code": "LON",
+          "type": "city"
+        }
+      },
+      "segments": [
+        {
+          "id": "seg_0000BAkgfNaX34JlUR3B05",
+          "arriving_at": "2026-11-02T11:10:00",
+          "departing_at": "2026-11-01T23:20:00",
+          "destination_terminal": null,
+          "distance": null,
+          "duration": "PT6H50M",
+          "marketing_carrier_flight_number": "5482",
+          "operating_carrier_flight_number": null,
+          "origin_terminal": null,
+          "media": [],
+          "passengers": [
+            {
+              "passenger_id": "pas_0000BAkgecVG6rAnSTDnkk",
+              "cabin_class": "economy",
+              "cabin_class_marketing_name": "Economy",
+              "fare_basis_code": "LKW7C1B4",
+              "baggages": [
+                {
+                  "type": "carry_on",
+                  "quantity": 1
+                }
+              ],
+              "cabin": {
+                "marketing_name": "Economy",
+                "name": "economy",
+                "amenities": {
+                  "wifi": {
+                    "available": true,
+                    "cost": "paid"
+                  },
+                  "seat": {
+                    "type": "standard",
+                    "legroom": "standard",
+                    "pitch": "31"
+                  },
+                  "power": {
+                    "available": true
+                  }
+                }
+              }
+            },
+            {
+              "passenger_id": "pas_0000BAkgecVc5XSNTZO5I8",
+              "cabin_class": "economy",
+              "cabin_class_marketing_name": "Economy",
+              "fare_basis_code": "LKW7C1B4",
+              "baggages": [
+                {
+                  "type": "carry_on",
+                  "quantity": 1
+                }
+              ],
+              "cabin": {
+                "marketing_name": "Economy",
+                "name": "economy",
+                "amenities": {
+                  "wifi": {
+                    "available": true,
+                    "cost": "paid"
+                  },
+                  "seat": {
+                    "type": "standard",
+                    "legroom": "standard",
+                    "pitch": "31"
+                  },
+                  "power": {
+                    "available": true
+                  }
+                }
+              }
+            },
+            {
+              "passenger_id": "pas_0000BAkgecVc5XSNTZO5IE",
+              "cabin_class": "economy",
+              "cabin_class_marketing_name": "Economy",
+              "fare_basis_code": "LKW7C1B4",
+              "baggages": [
+                {
+                  "type": "carry_on",
+                  "quantity": 1
+                }
+              ],
+              "cabin": {
+                "marketing_name": "Economy",
+                "name": "economy",
+                "amenities": {
+                  "wifi": {
+                    "available": true,
+                    "cost": "paid"
+                  },
+                  "seat": {
+                    "type": "standard",
+                    "legroom": "standard",
+                    "pitch": "31"
+                  },
+                  "power": {
+                    "available": true
+                  }
+                }
+              }
+            }
+          ],
+          "stops": [],
+          "aircraft": {
+            "iata_code": "77W",
+            "id": "arc_00009VMF8AhXSSRnQDI6HH",
+            "name": "Boeing 777-300ER"
+          },
+          "marketing_carrier": {
+            "conditions_of_carriage_url": "https://www.finnair.com/gb-en/info/conditions-of-carriage-and-notices/general-conditions-of-carriage-for-passengers-and-baggage",
+            "iata_code": "AY",
+            "id": "arl_00009VME7DC2bj9quHXKow",
+            "logo_lockup_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-lockup/AY.svg",
+            "logo_symbol_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/AY.svg",
+            "name": "Finnair"
+          },
+          "operating_carrier": {
+            "conditions_of_carriage_url": "https://www.britishairways.com/en-gb/information/legal/british-airways/general-conditions-of-carriage",
+            "iata_code": "BA",
+            "id": "arl_00009VME7DBKeMags5CliQ",
+            "logo_lockup_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-lockup/BA.svg",
+            "logo_symbol_url": "https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/BA.svg",
+            "name": "British Airways"
+          },
+          "origin": {
+            "iata_code": "JFK",
+            "iata_country_code": "US",
+            "id": "arp_jfk_us",
+            "name": "John F. Kennedy International Airport",
+            "latitude": 40.640556,
+            "longitude": -73.778519,
+            "icao_code": "KJFK",
+            "time_zone": "America/New_York",
+            "city_name": "New York",
+            "iata_city_code": "NYC",
+            "type": "airport",
+            "city": {
+              "iata_code": "NYC",
+              "iata_country_code": "US",
+              "id": "cit_nyc_us",
+              "name": "New York",
+              "latitude": null,
+              "longitude": null,
+              "icao_code": null,
+              "time_zone": null,
+              "city_name": null,
+              "iata_city_code": "NYC",
+              "type": "city"
+            }
+          },
+          "destination": {
+            "iata_code": "LHR",
+            "iata_country_code": "GB",
+            "id": "arp_lhr_gb",
+            "name": "Heathrow Airport",
+            "latitude": 51.470311,
+            "longitude": -0.458118,
+            "icao_code": "EGLL",
+            "time_zone": "Europe/London",
+            "city_name": "London",
+            "iata_city_code": "LON",
+            "type": "airport",
+            "city": {
+              "iata_code": "LON",
+              "iata_country_code": "GB",
+              "id": "cit_lon_gb",
+              "name": "London",
+              "latitude": null,
+              "longitude": null,
+              "icao_code": null,
+              "time_zone": null,
+              "city_name": null,
+              "iata_city_code": "LON",
+              "type": "city"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "passengers": [
+    {
+      "id": "pas_0000BAkgecVG6rAnSTDnkk",
+      "type": "adult",
+      "fare_type": null,
+      "age": null,
+      "given_name": null,
+      "family_name": null,
+      "loyalty_programme_accounts": []
+    },
+    {
+      "id": "pas_0000BAkgecVc5XSNTZO5I8",
+      "type": "adult",
+      "fare_type": null,
+      "age": null,
+      "given_name": null,
+      "family_name": null,
+      "loyalty_programme_accounts": []
+    },
+    {
+      "id": "pas_0000BAkgecVc5XSNTZO5IE",
+      "type": "child",
+      "fare_type": null,
+      "age": null,
+      "given_name": null,
+      "family_name": null,
+      "loyalty_programme_accounts": []
+    }
+  ],
+  "payment_requirements": {
+    "requires_instant_payment": false,
+    "payment_required_by": "2026-09-26T01:28:51.747342Z",
+    "price_guarantee_expires_at": null
+  },
+  "intended_services": null,
+  "available_airline_credit_ids": []
+}

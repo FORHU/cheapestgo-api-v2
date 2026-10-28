@@ -72,54 +72,11 @@ function safeRefundableTag(raw: RawPolicy): string | null {
     return null;
 }
 
-function safeHotelRemarks(raw: RawPolicy): string[] {
-    if (!raw) return [];
-    const remarks = raw.hotelRemarks ?? raw.hotel_remarks ?? raw.remarks ?? raw.hotelNotes;
-    if (Array.isArray(remarks)) return remarks.filter((r: any) => typeof r === 'string');
-    if (typeof remarks === 'string') return [remarks];
-    return [];
-}
-
 function safeNumber(val: unknown): number {
     if (typeof val === 'number' && !isNaN(val)) return val;
     if (typeof val === 'string') {
         const parsed = parseFloat(val);
         if (!isNaN(parsed)) return parsed;
-    }
-    return 0;
-}
-
-function detectNoShowPenalty(raw: RawPolicy): number {
-    if (!raw) return 0;
-    if (raw.noShowPenalty !== undefined)    return safeNumber(raw.noShowPenalty);
-    if (raw.no_show_penalty !== undefined)  return safeNumber(raw.no_show_penalty);
-    if (raw.noShowFee !== undefined)        return safeNumber(raw.noShowFee);
-    const infos = safeParseCancelInfos(raw);
-    const tier  = infos.find(i => i.type.toUpperCase().includes('NO_SHOW') || i.type.toUpperCase().includes('NOSHOW'));
-    if (tier) return tier.amount;
-    const remarks = safeHotelRemarks(raw);
-    for (const remark of remarks) {
-        const match = remark.match(/no[- ]?show.*?(\d+[\d,.]*)/i);
-        if (match) return safeNumber(match[1].replace(',', ''));
-    }
-    return 0;
-}
-
-function detectEarlyDepartureFee(raw: RawPolicy): number {
-    if (!raw) return 0;
-    if (raw.earlyDepartureFee !== undefined) return safeNumber(raw.earlyDepartureFee);
-    if (raw.early_departure_fee !== undefined) return safeNumber(raw.early_departure_fee);
-    if (raw.earlyCheckoutFee !== undefined) return safeNumber(raw.earlyCheckoutFee);
-    const infos = safeParseCancelInfos(raw);
-    const tier  = infos.find(i =>
-        i.type.toUpperCase().includes('EARLY_DEPARTURE') ||
-        i.type.toUpperCase().includes('EARLY_CHECKOUT')
-    );
-    if (tier) return tier.amount;
-    const remarks = safeHotelRemarks(raw);
-    for (const remark of remarks) {
-        const match = remark.match(/early\s+(?:departure|checkout).*?(\d+[\d,.]*)/i);
-        if (match) return safeNumber(match[1].replace(',', ''));
     }
     return 0;
 }
