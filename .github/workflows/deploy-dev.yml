@@ -101,6 +101,7 @@ jobs:
           V_NETWORK:        ${{ vars.DOCKER_NETWORK }}
           V_CONTAINER:      ${{ vars.CONTAINER_NAME }}
           V_CRON_CONTAINER: ${{ vars.CRON_CONTAINER_NAME }}
+          V_START_CRON:     ${{ vars.START_CRON }}
           V_HOST_PORT:      ${{ vars.HOST_PORT }}
           V_ENV_PARAM:      ${{ vars.ENV_PARAM }}
           V_SHARED_ENV:     ${{ vars.SHARED_ENV }}
@@ -139,6 +140,9 @@ jobs:
           # repository of its own: a second repo needs `ecr:CreateRepository` on the OIDC
           # role, and this image is alpine + curl + supercronic + the crontab.
           out cron_container "${V_CRON_CONTAINER:-cheapestgo-v2-cron}"
+          # Opt-in, and deliberately NOT in the production required-vars list above: an
+          # unset value must mean "do not run the scheduler", never a failed deploy.
+          out start_cron     "${V_START_CRON:-false}"
           out host_port      "${V_HOST_PORT:-4041}"
           out env_param      "${V_ENV_PARAM:-/forhu-dev/cheapestgo-v2-api/env}"
           out shared_env     "${V_SHARED_ENV:-/opt/forhu-dev/credentials/cheapestgo.env}"
@@ -339,14 +343,33 @@ jobs:
             "docker pull --platform ${{ steps.cfg.outputs.platform }} ${IMAGE}"
             "docker rm -f ${{ steps.cfg.outputs.container }} 2>/dev/null || true"
             "docker run -d --name ${{ steps.cfg.outputs.container }} --restart unless-stopped --platform ${{ steps.cfg.outputs.platform }} --network ${{ steps.cfg.outputs.network }} --env-file ${{ steps.cfg.outputs.merged_env }} -p 127.0.0.1:${{ steps.cfg.outputs.host_port }}:${{ env.APP_PORT }} ${IMAGE}"
-            "docker pull --platform ${{ steps.cfg.outputs.platform }} ${CRON_IMAGE}"
-            "docker rm -f ${{ steps.cfg.outputs.cron_container }} 2>/dev/null || true"
-            # APP_URL is set here rather than taken from the env file: the jobs call the API
-            # over the Docker network by container name, never back out through the public
-            # hostname, so the cron endpoints need no public exposure. No trailing slash —
-            # the crontab appends the path.
-            "docker run -d --name ${{ steps.cfg.outputs.cron_container }} --restart unless-stopped --platform ${{ steps.cfg.outputs.platform }} --network ${{ steps.cfg.outputs.network }} --env-file ${{ steps.cfg.outputs.merged_env }} -e APP_URL=http://${{ steps.cfg.outputs.container }}:${{ env.APP_PORT }} ${CRON_IMAGE}"
           )
+
+          # The scheduler is opt-in, via START_CRON on the target environment.
+          #
+          # Default false. While v2 runs beside v1 on the production box, both
+          # schedulers hold the same supplier credentials: v2's flight warming
+          # competes with v1's live customer searches for one Duffel rate limit,
+          # and on 2026-10-28 v1's app was taking 429s while this ran. Nothing a
+          # parallel deployment does should be able to degrade the live system.
+          #
+          # Set START_CRON=true on the environment at cutover, once v1's own
+          # scheduler is stopped.
+          if [ "${{ steps.cfg.outputs.start_cron }}" = "true" ]; then
+            COMMANDS+=(
+              "docker pull --platform ${{ steps.cfg.outputs.platform }} ${CRON_IMAGE}"
+              "docker rm -f ${{ steps.cfg.outputs.cron_container }} 2>/dev/null || true"
+              # APP_URL is set here rather than taken from the env file: the jobs call the API
+              # over the Docker network by container name, never back out through the public
+              # hostname, so the cron endpoints need no public exposure. No trailing slash —
+              # the crontab appends the path.
+              "docker run -d --name ${{ steps.cfg.outputs.cron_container }} --restart unless-stopped --platform ${{ steps.cfg.outputs.platform }} --network ${{ steps.cfg.outputs.network }} --env-file ${{ steps.cfg.outputs.merged_env }} -e APP_URL=http://${{ steps.cfg.outputs.container }}:${{ env.APP_PORT }} ${CRON_IMAGE}"
+            )
+          else
+            # Authoritative, not merely "do not create": a container from an earlier
+            # deploy keeps running under --restart unless-stopped, so it is removed.
+            COMMANDS+=( "docker rm -f ${{ steps.cfg.outputs.cron_container }} 2>/dev/null || true" )
+          fi
 
           # jq builds the JSON, so a quote inside any command cannot break it.
           PARAMS=$(printf '%s\n' "${COMMANDS[@]}" | jq -R . | jq -sc '{commands: .}')
