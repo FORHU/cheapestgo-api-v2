@@ -21,8 +21,9 @@ import supportRoutes       from './support.route';
 import adminSupportRoutes  from './admin-support.route';
 import autocompleteRoutes  from './autocomplete.route';
 import googleRoutes        from './google.route';
+import emailRoutes         from './email.route';
 
-const router = Router();
+const router: Router = Router();
 
 router.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
@@ -48,6 +49,7 @@ router.use('/support',        supportRoutes);
 router.use('/admin/support',  adminSupportRoutes);
 router.use('/autocomplete',   autocompleteRoutes);
 router.use('/google',         googleRoutes);
+router.use('/email',          emailRoutes);
 
 // NOTE: /webhooks is mounted directly on the Express app (in app.ts) BEFORE
 // the global JSON body parser, so it does NOT appear here.

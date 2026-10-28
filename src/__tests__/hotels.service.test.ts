@@ -80,7 +80,7 @@ vi.mock('crypto', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────────────
 
 import { runTgxSearch } from '@/lib/hotels/search';
-import { quoteTgx, bookTgx, cancelTgx } from '@/lib/hotels/travelgatex';
+import { bookTgx, cancelTgx } from '@/lib/hotels/travelgatex';
 import { stripe } from '@/lib/stripe';
 import { HotelsService } from '@/services/hotels.service';
 import { prisma } from '@/lib/prisma';
@@ -141,17 +141,22 @@ describe('HotelsService.search()', () => {
     it('returns the search results', async () => {
         vi.mocked(runTgxSearch).mockResolvedValue(MOCK_SEARCH_RESULT as any);
 
-        const result = await service.search(SEARCH_PARAMS);
+        const result: any = await service.search(SEARCH_PARAMS);
 
-        expect(result).toEqual(MOCK_SEARCH_RESULT);
+        // The supplier's listing comes back as it was, with the whole stay added beside the
+        // nightly rate: 120 a night over the four nights of the stay.
+        expect(result.totalCount).toBe(MOCK_SEARCH_RESULT.totalCount);
+        expect(result.data).toEqual([
+            { ...MOCK_SEARCH_RESULT.data[0], stayTotal: 480, nights: 4 },
+        ]);
     });
 
     it('records demand even if demand recording fails', async () => {
         vi.mocked(runTgxSearch).mockResolvedValue(MOCK_SEARCH_RESULT as any);
 
-        const result = await service.search(SEARCH_PARAMS);
+        const result: any = await service.search(SEARCH_PARAMS);
 
-        expect(result).toEqual(MOCK_SEARCH_RESULT);
+        expect(result.totalCount).toBe(MOCK_SEARCH_RESULT.totalCount);
     });
 });
 
@@ -375,6 +380,8 @@ describe('HotelsService.confirmBooking()', () => {
         expect(stripe.paymentIntents.capture).toHaveBeenCalledWith(
             PI_ID,
             expect.objectContaining({ expand: ['latest_charge.balance_transaction'] }),
+            // Keyed per booking, so a replayed capture returns the first rather than failing.
+            { idempotencyKey: `hotel-capture-${BOOKING_REF}` },
         );
     });
 
@@ -614,6 +621,23 @@ describe('HotelsService.cancelBooking()', () => {
             where: { booking_id: BOOKING_REF },
             data:  expect.objectContaining({ status: 'cancelled_refunded' }),
         }));
+    });
+});
+
+describe('HotelsService.createPayment() — the reference the browser can ask about', () => {
+    it('returns the booking reference, so a lost confirm response can still be followed up', async () => {
+        vi.mocked((service as any).repo.findPrebookQuote).mockResolvedValue({
+            gross: 300, currency: 'USD', expires_at: new Date(Date.now() + 600_000),
+        });
+        vi.mocked(stripe.paymentIntents.create).mockResolvedValue({ id: 'pi_new', client_secret: 'cs_new' } as any);
+
+        const out: any = await service.createPayment({
+            userId: USER_ID, prebookId: 'TGX:b260901!~|c260905!~|d10000352!~|hUS', amount: 300, currency: 'USD',
+        });
+
+        expect(out.data.bookingReference).toMatch(/^(CG|GG)-[0-9A-HJKMNP-TV-Z]{6}$/);
+        const metadata = vi.mocked(stripe.paymentIntents.create).mock.calls[0][0].metadata as Record<string, string>;
+        expect(out.data.bookingReference).toBe(metadata.bookingReference);
     });
 });
 

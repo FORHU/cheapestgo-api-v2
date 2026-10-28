@@ -1,0 +1,803 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - link [ref=e5] [cursor=pointer]:
+        - /url: /templates/lumera
+        - img "Lumera" [ref=e7]
+      - navigation [ref=e8]:
+        - link "About" [ref=e9] [cursor=pointer]:
+          - /url: "#about"
+        - link "Features" [ref=e13] [cursor=pointer]:
+          - /url: "#lumera-features"
+        - link "Properties" [ref=e17] [cursor=pointer]:
+          - /url: "#project"
+        - link "Locations" [ref=e21] [cursor=pointer]:
+          - /url: "#highlights"
+  - generic [ref=e27]:
+    - generic:
+      - generic:
+        - img "Lumera Heights luxury residences in Dubai"
+    - heading "Exceptional Living In Dubai Scroll to about section" [level=1] [ref=e31]:
+      - generic [ref=e32]: Exceptional
+      - generic [ref=e33]:
+        - generic [ref=e34]: Living In Dubai
+        - link "Scroll to about section" [ref=e35] [cursor=pointer]:
+          - /url: "#about"
+    - generic [ref=e36]:
+      - paragraph [ref=e40]: A curated collection of remarkable residences across Dubai's most sought-after addresses, selected for their design, location and way of life.
+      - generic [ref=e44]:
+        - generic [ref=e45]:
+          - paragraph [ref=e46]:
+            - generic [ref=e47]:
+              - generic [ref=e49]:
+                - generic [ref=e50]: "0"
+                - generic [ref=e51]: "1"
+                - generic [ref=e52]: "2"
+                - generic [ref=e53]: "3"
+                - generic [ref=e54]: "4"
+                - generic [ref=e55]: "5"
+                - generic [ref=e56]: "6"
+                - generic [ref=e57]: "7"
+                - generic [ref=e58]: "8"
+                - generic [ref=e59]: "9"
+              - generic [ref=e60]: .
+              - generic [ref=e62]:
+                - generic [ref=e63]: "0"
+                - generic [ref=e64]: "1"
+                - generic [ref=e65]: "2"
+                - generic [ref=e66]: "3"
+                - generic [ref=e67]: "4"
+                - generic [ref=e68]: "5"
+                - generic [ref=e69]: "6"
+                - generic [ref=e70]: "7"
+                - generic [ref=e71]: "8"
+                - generic [ref=e72]: "9"
+              - generic [ref=e73]: M
+              - generic [ref=e74]: +
+            - generic [ref=e75]: /AED
+          - paragraph [ref=e76]: Starting Price
+        - generic [ref=e77]:
+          - paragraph [ref=e78]:
+            - generic [ref=e79]:
+              - generic [ref=e81]:
+                - generic [ref=e82]: "0"
+                - generic [ref=e83]: "1"
+                - generic [ref=e84]: "2"
+                - generic [ref=e85]: "3"
+                - generic [ref=e86]: "4"
+                - generic [ref=e87]: "5"
+                - generic [ref=e88]: "6"
+                - generic [ref=e89]: "7"
+                - generic [ref=e90]: "8"
+                - generic [ref=e91]: "9"
+              - generic [ref=e93]:
+                - generic [ref=e94]: "0"
+                - generic [ref=e95]: "1"
+                - generic [ref=e96]: "2"
+                - generic [ref=e97]: "3"
+                - generic [ref=e98]: "4"
+                - generic [ref=e99]: "5"
+                - generic [ref=e100]: "6"
+                - generic [ref=e101]: "7"
+                - generic [ref=e102]: "8"
+                - generic [ref=e103]: "9"
+              - generic [ref=e104]: +
+          - paragraph [ref=e105]: Stories
+        - generic [ref=e106]:
+          - paragraph [ref=e107]:
+            - generic [ref=e108]:
+              - generic [ref=e110]:
+                - generic [ref=e111]: "0"
+                - generic [ref=e112]: "1"
+                - generic [ref=e113]: "2"
+                - generic [ref=e114]: "3"
+                - generic [ref=e115]: "4"
+                - generic [ref=e116]: "5"
+                - generic [ref=e117]: "6"
+                - generic [ref=e118]: "7"
+                - generic [ref=e119]: "8"
+                - generic [ref=e120]: "9"
+              - generic [ref=e121]: ","
+              - generic [ref=e123]:
+                - generic [ref=e124]: "0"
+                - generic [ref=e125]: "1"
+                - generic [ref=e126]: "2"
+                - generic [ref=e127]: "3"
+                - generic [ref=e128]: "4"
+                - generic [ref=e129]: "5"
+                - generic [ref=e130]: "6"
+                - generic [ref=e131]: "7"
+                - generic [ref=e132]: "8"
+                - generic [ref=e133]: "9"
+              - generic [ref=e135]:
+                - generic [ref=e136]: "0"
+                - generic [ref=e137]: "1"
+                - generic [ref=e138]: "2"
+                - generic [ref=e139]: "3"
+                - generic [ref=e140]: "4"
+                - generic [ref=e141]: "5"
+                - generic [ref=e142]: "6"
+                - generic [ref=e143]: "7"
+                - generic [ref=e144]: "8"
+                - generic [ref=e145]: "9"
+              - generic [ref=e147]:
+                - generic [ref=e148]: "0"
+                - generic [ref=e149]: "1"
+                - generic [ref=e150]: "2"
+                - generic [ref=e151]: "3"
+                - generic [ref=e152]: "4"
+                - generic [ref=e153]: "5"
+                - generic [ref=e154]: "6"
+                - generic [ref=e155]: "7"
+                - generic [ref=e156]: "8"
+                - generic [ref=e157]: "9"
+              - generic [ref=e158]: F
+              - generic [ref=e159]: T
+              - generic [ref=e160]: +
+          - paragraph [ref=e161]: Sky Elevation
+        - generic [ref=e162]:
+          - paragraph [ref=e163]:
+            - generic [ref=e164]:
+              - generic [ref=e165]: Q
+              - generic [ref=e167]:
+                - generic [ref=e168]: "0"
+                - generic [ref=e169]: "1"
+                - generic [ref=e170]: "2"
+                - generic [ref=e171]: "3"
+                - generic [ref=e172]: "4"
+                - generic [ref=e173]: "5"
+                - generic [ref=e174]: "6"
+                - generic [ref=e175]: "7"
+                - generic [ref=e176]: "8"
+                - generic [ref=e177]: "9"
+              - generic [ref=e179]:
+                - generic [ref=e180]: "0"
+                - generic [ref=e181]: "1"
+                - generic [ref=e182]: "2"
+                - generic [ref=e183]: "3"
+                - generic [ref=e184]: "4"
+                - generic [ref=e185]: "5"
+                - generic [ref=e186]: "6"
+                - generic [ref=e187]: "7"
+                - generic [ref=e188]: "8"
+                - generic [ref=e189]: "9"
+              - generic [ref=e191]:
+                - generic [ref=e192]: "0"
+                - generic [ref=e193]: "1"
+                - generic [ref=e194]: "2"
+                - generic [ref=e195]: "3"
+                - generic [ref=e196]: "4"
+                - generic [ref=e197]: "5"
+                - generic [ref=e198]: "6"
+                - generic [ref=e199]: "7"
+                - generic [ref=e200]: "8"
+                - generic [ref=e201]: "9"
+              - generic [ref=e203]:
+                - generic [ref=e204]: "0"
+                - generic [ref=e205]: "1"
+                - generic [ref=e206]: "2"
+                - generic [ref=e207]: "3"
+                - generic [ref=e208]: "4"
+                - generic [ref=e209]: "5"
+                - generic [ref=e210]: "6"
+                - generic [ref=e211]: "7"
+                - generic [ref=e212]: "8"
+                - generic [ref=e213]: "9"
+              - generic [ref=e215]:
+                - generic [ref=e216]: "0"
+                - generic [ref=e217]: "1"
+                - generic [ref=e218]: "2"
+                - generic [ref=e219]: "3"
+                - generic [ref=e220]: "4"
+                - generic [ref=e221]: "5"
+                - generic [ref=e222]: "6"
+                - generic [ref=e223]: "7"
+                - generic [ref=e224]: "8"
+                - generic [ref=e225]: "9"
+          - paragraph [ref=e226]: Handover
+  - generic [ref=e228]:
+    - generic [ref=e229]:
+      - heading "Real Estate, Considered Differently" [level=2] [ref=e231]: Real Estate,Considered Differently
+      - generic [ref=e232]:
+        - paragraph [ref=e234]: We believe finding the right home begins with understanding how you want to live.
+        - paragraph [ref=e236]: From waterfront residences to private villas and landmark penthouses, we bring together exceptional properties with thoughtful guidance to make every decision feel considered, personal and effortless.
+    - generic [ref=e238]:
+      - generic [ref=e239]:
+        - generic [ref=e240]: Architectural Identity, slide 3 of 7
+        - generic [ref=e241]:
+          - generic [ref=e242]:
+            - img "Waterfront Landmark"
+          - generic [ref=e243]:
+            - img "Serene Interiors"
+          - generic [ref=e244]:
+            - img "Architectural Identity"
+          - generic [ref=e245]:
+            - img "Wellness Retreat"
+          - generic [ref=e246]:
+            - img "Poolside Living"
+          - generic [ref=e247]:
+            - img "Private Beach"
+          - generic [ref=e248]:
+            - img "Water Pavilion"
+        - button "Previous slide" [ref=e249]
+        - button "Next slide" [ref=e253]
+      - generic [ref=e258]:
+        - paragraph [ref=e259]: Architectural Identity
+        - paragraph [ref=e260]: A bold modern structure designed to define the Manhattan skyline with elegance and strength.
+  - generic [ref=e263]:
+    - heading "Life above the City, Where Every Moment is Framed by Sweeping Skyline Views and Natural Light." [level=2] [ref=e266]
+    - article [ref=e267]:
+      - img "The Palm Residence" [ref=e269]
+      - generic [ref=e270]:
+        - generic [ref=e271]:
+          - paragraph [ref=e272]: "01"
+          - heading "The Palm Residence" [level=3] [ref=e273]
+          - paragraph [ref=e274]: A contemporary beachfront villa shaped around open spaces, uninterrupted sea views and effortless indoor-outdoor living.
+          - generic [ref=e275]:
+            - generic [ref=e276]:
+              - paragraph [ref=e277]: 12,400 sq. ft.
+              - paragraph [ref=e278]: Living Area
+            - generic [ref=e279]:
+              - paragraph [ref=e281]: "06"
+              - paragraph [ref=e282]: Bedrooms
+            - generic [ref=e283]:
+              - paragraph [ref=e285]: "08"
+              - paragraph [ref=e286]: Bathrooms
+            - generic [ref=e287]:
+              - paragraph [ref=e289]: AED 48,000,000
+              - paragraph [ref=e290]: Price
+        - generic [ref=e291]:
+          - generic [ref=e292]:
+            - img "The Palm Residence preview 1" [ref=e294]
+            - img "The Palm Residence preview 2" [ref=e296]
+            - img "The Palm Residence preview 3" [ref=e298]
+            - img "The Palm Residence preview 4" [ref=e300]
+          - link "View Residence" [ref=e301] [cursor=pointer]:
+            - /url: "#"
+    - article [ref=e305]:
+      - img "Skyline Crest Penthouse" [ref=e307]
+      - generic [ref=e308]:
+        - generic [ref=e309]:
+          - paragraph [ref=e310]: "02"
+          - heading "Skyline Crest Penthouse" [level=3] [ref=e311]
+          - paragraph [ref=e312]: An expansive penthouse retreat with wraparound terraces, double-height entertaining spaces and panoramic city views in every direction.
+          - generic [ref=e313]:
+            - generic [ref=e314]:
+              - paragraph [ref=e315]: 9,850 sq. ft.
+              - paragraph [ref=e316]: Living Area
+            - generic [ref=e317]:
+              - paragraph [ref=e319]: "05"
+              - paragraph [ref=e320]: Bedrooms
+            - generic [ref=e321]:
+              - paragraph [ref=e323]: "07"
+              - paragraph [ref=e324]: Bathrooms
+            - generic [ref=e325]:
+              - paragraph [ref=e327]: AED 36,500,000
+              - paragraph [ref=e328]: Price
+        - generic [ref=e329]:
+          - generic [ref=e330]:
+            - img "Skyline Crest Penthouse preview 1" [ref=e332]
+            - img "Skyline Crest Penthouse preview 2" [ref=e334]
+            - img "Skyline Crest Penthouse preview 3" [ref=e336]
+            - img "Skyline Crest Penthouse preview 4" [ref=e338]
+          - link "Explore Penthouse" [ref=e339] [cursor=pointer]:
+            - /url: "#"
+    - article [ref=e343]:
+      - img "Lagoon Courtyard Villa" [ref=e345]
+      - generic [ref=e346]:
+        - generic [ref=e347]:
+          - paragraph [ref=e348]: "03"
+          - heading "Lagoon Courtyard Villa" [level=3] [ref=e349]
+          - paragraph [ref=e350]: A tranquil villa collection centered around private gardens, water-facing lounges and refined interiors crafted for everyday ease.
+          - generic [ref=e351]:
+            - generic [ref=e352]:
+              - paragraph [ref=e353]: 10,200 sq. ft.
+              - paragraph [ref=e354]: Living Area
+            - generic [ref=e355]:
+              - paragraph [ref=e357]: "05"
+              - paragraph [ref=e358]: Bedrooms
+            - generic [ref=e359]:
+              - paragraph [ref=e361]: "06"
+              - paragraph [ref=e362]: Bathrooms
+            - generic [ref=e363]:
+              - paragraph [ref=e365]: AED 29,900,000
+              - paragraph [ref=e366]: Price
+        - generic [ref=e367]:
+          - generic [ref=e368]:
+            - img "Lagoon Courtyard Villa preview 1" [ref=e370]
+            - img "Lagoon Courtyard Villa preview 2" [ref=e372]
+            - img "Lagoon Courtyard Villa preview 3" [ref=e374]
+            - img "Lagoon Courtyard Villa preview 4" [ref=e376]
+          - link "Discover Villa" [ref=e377] [cursor=pointer]:
+            - /url: "#"
+    - article [ref=e381]:
+      - img "Marina Horizon Estate" [ref=e383]
+      - generic [ref=e384]:
+        - generic [ref=e385]:
+          - paragraph [ref=e386]: "04"
+          - heading "Marina Horizon Estate" [level=3] [ref=e387]
+          - paragraph [ref=e388]: A statement residence overlooking the water, pairing spa-style amenities, curated entertaining zones and a seamless resort atmosphere.
+          - generic [ref=e389]:
+            - generic [ref=e390]:
+              - paragraph [ref=e391]: 14,100 sq. ft.
+              - paragraph [ref=e392]: Living Area
+            - generic [ref=e393]:
+              - paragraph [ref=e395]: "07"
+              - paragraph [ref=e396]: Bedrooms
+            - generic [ref=e397]:
+              - paragraph [ref=e399]: "09"
+              - paragraph [ref=e400]: Bathrooms
+            - generic [ref=e401]:
+              - paragraph [ref=e403]: AED 54,000,000
+              - paragraph [ref=e404]: Price
+        - generic [ref=e405]:
+          - generic [ref=e406]:
+            - img "Marina Horizon Estate preview 1" [ref=e408]
+            - img "Marina Horizon Estate preview 2" [ref=e410]
+            - img "Marina Horizon Estate preview 3" [ref=e412]
+            - img "Marina Horizon Estate preview 4" [ref=e414]
+          - link "See Estate" [ref=e415] [cursor=pointer]:
+            - /url: "#"
+  - generic [ref=e420]:
+    - generic [ref=e424]:
+      - link "Download Brochure" [ref=e426] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Floor Plan" [ref=e429] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Payment Plan" [ref=e432] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Architectural Drawings" [ref=e435] [cursor=pointer]:
+        - /url: "#"
+      - link "View Amenities" [ref=e438] [cursor=pointer]:
+        - /url: "#"
+      - link "Schedule a Visit" [ref=e441] [cursor=pointer]:
+        - /url: "#"
+      - link "Contact Sales Team" [ref=e444] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Brochure" [ref=e447] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Floor Plan" [ref=e450] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Payment Plan" [ref=e453] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Architectural Drawings" [ref=e456] [cursor=pointer]:
+        - /url: "#"
+      - link "View Amenities" [ref=e459] [cursor=pointer]:
+        - /url: "#"
+      - link "Schedule a Visit" [ref=e462] [cursor=pointer]:
+        - /url: "#"
+      - link "Contact Sales Team" [ref=e465] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Brochure" [ref=e468] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Floor Plan" [ref=e471] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Payment Plan" [ref=e474] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Architectural Drawings" [ref=e477] [cursor=pointer]:
+        - /url: "#"
+      - link "View Amenities" [ref=e480] [cursor=pointer]:
+        - /url: "#"
+      - link "Schedule a Visit" [ref=e483] [cursor=pointer]:
+        - /url: "#"
+      - link "Contact Sales Team" [ref=e486] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Brochure" [ref=e489] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Floor Plan" [ref=e492] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Payment Plan" [ref=e495] [cursor=pointer]:
+        - /url: "#"
+      - link "Download Architectural Drawings" [ref=e498] [cursor=pointer]:
+        - /url: "#"
+      - link "View Amenities" [ref=e501] [cursor=pointer]:
+        - /url: "#"
+      - link "Schedule a Visit" [ref=e504] [cursor=pointer]:
+        - /url: "#"
+      - link "Contact Sales Team" [ref=e507] [cursor=pointer]:
+        - /url: "#"
+    - generic [ref=e512]:
+      - generic [ref=e513]:
+        - img "RELAXATION LOUNGE" [ref=e514]
+        - paragraph [ref=e516]: RELAXATION LOUNGE
+      - generic [ref=e517]:
+        - img "65 Foot Lap Pool" [ref=e518]
+        - paragraph [ref=e520]: 65 Foot Lap Pool
+      - generic [ref=e521]:
+        - img "Spa and Wellness" [ref=e522]
+        - paragraph [ref=e524]: Spa and Wellness
+      - generic [ref=e525]:
+        - img "Fire Place" [ref=e526]
+        - paragraph [ref=e528]: Fire Place
+      - generic [ref=e529]:
+        - img "Wine Cellar" [ref=e530]
+        - paragraph [ref=e532]: Wine Cellar
+  - generic [ref=e534]:
+    - heading "Lumera Heights is defined by bold architectural expression , where structure, form, and light come together to create a timeless vertical icon." [level=2] [ref=e537]
+    - generic [ref=e538]:
+      - generic [ref=e539]:
+        - generic [ref=e540]:
+          - generic [ref=e541]:
+            - img "work-img-5" [ref=e543]
+            - generic [ref=e544]:
+              - text: Living Room
+              - paragraph [ref=e548]: 792 x 530
+          - paragraph [ref=e551]: Every residence is thoughtfully crafted around light, proportion, and timeless materials. From expansive living spaces to serene private retreats, each detail creates an atmosphere of effortless sophistication above it.
+        - generic [ref=e552]:
+          - img "work-img-1" [ref=e554]
+          - generic [ref=e555]:
+            - text: Kitchen
+            - paragraph [ref=e559]: 493 x 686
+      - generic [ref=e561]:
+        - generic [ref=e562]:
+          - img "work-img-2" [ref=e564]
+          - generic [ref=e565]:
+            - text: Bedroom
+            - paragraph [ref=e569]: 880 x 627
+        - paragraph [ref=e572]: From bespoke finishes to panoramic city views, every space is designed to elevate the everyday. Warm materials, considered proportions, and refined craftsmanship come together to create residences that feel as exceptional as the city beyond them.
+      - generic [ref=e573]:
+        - generic [ref=e574]:
+          - img "work-img-4" [ref=e576]
+          - generic [ref=e577]:
+            - text: Bedroom
+            - paragraph [ref=e581]: 792 x 530
+        - generic [ref=e583]:
+          - generic [ref=e584]:
+            - img "work-img-3" [ref=e586]
+            - generic [ref=e587]:
+              - text: Bathroom
+              - paragraph [ref=e591]: 493 x 686
+          - paragraph [ref=e594]: Thoughtful interiors, refined materials, and breathtaking views come together in spaces designed for modern living at its highest level.
+    - heading "LUMERA HEIGHTS" [level=2] [ref=e597]
+  - generic [ref=e598]:
+    - generic [ref=e599]:
+      - heading "A World of Refinement" [level=2] [ref=e601]
+      - paragraph [ref=e607]: Immerse yourself in the stylish allure of Lumera Heights, where every corner exudes sophistication. This is not just a residence, it's a mark of distinction that embodies the luxurious lifestyle you've always craved.
+    - generic [ref=e611]:
+      - img "interior-img-1" [ref=e614]
+      - img "interior-img-2" [ref=e617]
+      - img "interior-img-3" [ref=e620]
+      - img "interior-img-4" [ref=e623]
+      - img "interior-img-5" [ref=e626]
+      - img "interior-img-6" [ref=e629]
+  - generic [ref=e633]:
+    - generic [ref=e634]:
+      - heading "At the Heart of Dubai Living" [level=2] [ref=e636]: At the Heart ofDubai Living
+      - generic [ref=e639]:
+        - paragraph [ref=e640]: "NearbyLandmarks:"
+        - generic [ref=e641]:
+          - paragraph [ref=e642]: Burj Khalifa
+          - paragraph [ref=e644]: Dubai Mall
+          - paragraph [ref=e646]: Downtown Dubai
+          - paragraph [ref=e648]: Palm Jumeirah
+    - paragraph [ref=e651]: Perfectly located in one of Dubai's most prestigious districts, Lumera Heights offers unmatched access to culture, business, and lifestyle destinations.
+  - generic [ref=e653]:
+    - heading "Core Features" [level=2] [ref=e655]
+    - paragraph [ref=e657]: The interiors of Lumera Heights reflect a refined balance of modern luxury and functional elegance.
+    - generic [ref=e659]:
+      - generic [ref=e661]:
+        - generic [ref=e663] [cursor=pointer]:
+          - img "Entrance Lobby" [ref=e666]
+          - heading "Entrance Lobby" [level=4] [ref=e667]
+        - generic [ref=e670] [cursor=pointer]:
+          - img "Feature Staircase" [ref=e673]
+          - heading "Feature Staircase" [level=4] [ref=e674]
+        - generic [ref=e677] [cursor=pointer]:
+          - img "Private Master Living Room" [ref=e680]
+          - heading "Private Master Living Room" [level=4] [ref=e681]
+        - generic [ref=e684] [cursor=pointer]:
+          - img "Private Study / Cigar Bar" [ref=e687]
+          - heading "Private Study / Cigar Bar" [level=4] [ref=e688]
+        - generic [ref=e691] [cursor=pointer]:
+          - img "Water Pavilion" [ref=e694]
+          - heading "Water Pavilion" [level=4] [ref=e695]
+      - img "Core feature preview" [ref=e699]
+      - generic [ref=e701]:
+        - generic [ref=e703] [cursor=pointer]:
+          - img "Spa" [ref=e706]
+          - heading "Spa" [level=4] [ref=e707]
+        - generic [ref=e710] [cursor=pointer]:
+          - img "Sunken Sun Bed Deck" [ref=e713]
+          - heading "Sunken Sun Bed Deck" [level=4] [ref=e714]
+        - generic [ref=e717] [cursor=pointer]:
+          - img "Beach Lounge & Fireplace" [ref=e720]
+          - heading "Beach Lounge & Fireplace" [level=4] [ref=e721]
+        - generic [ref=e724] [cursor=pointer]:
+          - img "Pool & Beach Shower" [ref=e727]
+          - heading "Pool & Beach Shower" [level=4] [ref=e728]
+        - generic [ref=e731] [cursor=pointer]:
+          - img "Private Beach" [ref=e734]
+          - heading "Private Beach" [level=4] [ref=e735]
+  - generic [ref=e741]:
+    - paragraph [ref=e743]: Better Way To
+    - paragraph [ref=e745]: Experience
+    - paragraph [ref=e750]: Dubai Property
+  - paragraph [ref=e753]: We look beyond the listing to understand what makes a property worth considering - from its location and layout to its condition, positioning and long-term relevance. The result is a more focused property journey, built around better information and fewer distractions.
+  - generic [ref=e758]:
+    - generic [ref=e761]:
+      - paragraph [ref=e762]: 25+ Years Of Experience
+      - generic:
+        - img "Lumera Heights architectural detail"
+    - generic [ref=e766]:
+      - paragraph [ref=e767]: 50K+ Home
+      - generic:
+        - img "Lumera Heights completed home interior"
+      - paragraph [ref=e768]: Delivered
+    - generic [ref=e772]:
+      - paragraph [ref=e773]: 20+
+      - generic:
+        - img "Lumera Heights luxury project exterior"
+      - paragraph [ref=e774]: Luxury Projects
+  - generic [ref=e777]:
+    - heading "FAQs" [level=2] [ref=e779]
+    - generic [ref=e781]:
+      - button [expanded] [ref=e782] [cursor=pointer]:
+        - generic [ref=e784]: Where is Lumera Heights located?
+        - region "Where is Lumera Heights located? Lumera Heights is located in Business Bay, Dubai, offering convenient access to Downtown Dubai, Dubai Mall, Burj Khalifa and the city’s major business and lifestyle destinations." [ref=e790]:
+          - paragraph [ref=e793]: Lumera Heights is located in Business Bay, Dubai, offering convenient access to Downtown Dubai, Dubai Mall, Burj Khalifa and the city’s major business and lifestyle destinations.
+      - button "What types of residences are available? The development offers a collection of 1, 2 and 3-bedroom apartments, along with a limited selection of penthouses, designed with spacious layouts, floor-to-ceiling windows and contemporary finishes." [ref=e794] [cursor=pointer]:
+        - generic [ref=e795]: What types of residences are available?
+        - region "What types of residences are available? The development offers a collection of 1, 2 and 3-bedroom apartments, along with a limited selection of penthouses, designed with spacious layouts, floor-to-ceiling windows and contemporary finishes.":
+          - paragraph [ref=e803]: The development offers a collection of 1, 2 and 3-bedroom apartments, along with a limited selection of penthouses, designed with spacious layouts, floor-to-ceiling windows and contemporary finishes.
+      - button "What amenities are available to residents? Residents can enjoy a 65-foot lap pool, wellness spa, fully equipped fitness studio, relaxation lounge, landscaped terrace, residents’ lounge and dedicated children’s play area." [ref=e804] [cursor=pointer]:
+        - generic [ref=e805]: What amenities are available to residents?
+        - region "What amenities are available to residents? Residents can enjoy a 65-foot lap pool, wellness spa, fully equipped fitness studio, relaxation lounge, landscaped terrace, residents’ lounge and dedicated children’s play area.":
+          - paragraph [ref=e813]: Residents can enjoy a 65-foot lap pool, wellness spa, fully equipped fitness studio, relaxation lounge, landscaped terrace, residents’ lounge and dedicated children’s play area.
+      - button "What is the starting price? Residences at Lumera Heights start from AED 1.85 million, with pricing varying according to residence type, floor level, size and view." [ref=e814] [cursor=pointer]:
+        - generic [ref=e815]: What is the starting price?
+        - region "What is the starting price? Residences at Lumera Heights start from AED 1.85 million, with pricing varying according to residence type, floor level, size and view.":
+          - paragraph [ref=e823]: Residences at Lumera Heights start from AED 1.85 million, with pricing varying according to residence type, floor level, size and view.
+      - button "Is there a payment plan available? Yes. Lumera Heights offers a flexible 60/40 payment plan, with 60% payable during construction and the remaining 40% due upon handover." [ref=e824] [cursor=pointer]:
+        - generic [ref=e825]: Is there a payment plan available?
+        - region "Is there a payment plan available? Yes. Lumera Heights offers a flexible 60/40 payment plan, with 60% payable during construction and the remaining 40% due upon handover.":
+          - paragraph [ref=e833]: Yes. Lumera Heights offers a flexible 60/40 payment plan, with 60% payable during construction and the remaining 40% due upon handover.
+  - generic [ref=e834]:
+    - heading "Nearby Highlights" [level=2] [ref=e837]
+    - generic [ref=e841]:
+      - generic [ref=e843]:
+        - img "Palm Jumeirah" [ref=e844]
+        - generic [ref=e845]:
+          - paragraph [ref=e846]: 5km away from
+          - paragraph [ref=e847]: Palm Jumeirah
+      - generic [ref=e849]:
+        - img "Dubai Marina" [ref=e850]
+        - generic [ref=e851]:
+          - paragraph [ref=e852]: 10km away from
+          - paragraph [ref=e853]: Dubai Marina
+      - generic [ref=e855]:
+        - img "Business Bay" [ref=e856]
+        - generic [ref=e857]:
+          - paragraph [ref=e858]: 2km away from
+          - paragraph [ref=e859]: Business Bay
+      - generic [ref=e861]:
+        - img "Burj Khalifa" [ref=e862]
+        - generic [ref=e863]:
+          - paragraph [ref=e864]: 1.5km away from
+          - paragraph [ref=e865]: Burj Khalifa
+  - generic [ref=e869]:
+    - generic [ref=e870]:
+      - heading "Invest in Dubai's Next Landmark" [level=2] [ref=e872]
+      - paragraph [ref=e874]: Own a residence where architectural distinction, prime location, and elevated living come together. Lumera Heights offers a compelling opportunity for those seeking long-term value in the heart of Dubai.
+    - generic [ref=e876]:
+      - generic [ref=e877]:
+        - paragraph [ref=e878]:
+          - generic [ref=e879]:
+            - generic [ref=e881]:
+              - generic [ref=e882]: "0"
+              - generic [ref=e883]: "1"
+              - generic [ref=e884]: "2"
+              - generic [ref=e885]: "3"
+              - generic [ref=e886]: "4"
+              - generic [ref=e887]: "5"
+              - generic [ref=e888]: "6"
+              - generic [ref=e889]: "7"
+              - generic [ref=e890]: "8"
+              - generic [ref=e891]: "9"
+            - generic [ref=e892]: .
+            - generic [ref=e894]:
+              - generic [ref=e895]: "0"
+              - generic [ref=e896]: "1"
+              - generic [ref=e897]: "2"
+              - generic [ref=e898]: "3"
+              - generic [ref=e899]: "4"
+              - generic [ref=e900]: "5"
+              - generic [ref=e901]: "6"
+              - generic [ref=e902]: "7"
+              - generic [ref=e903]: "8"
+              - generic [ref=e904]: "9"
+            - generic [ref=e906]:
+              - generic [ref=e907]: "0"
+              - generic [ref=e908]: "1"
+              - generic [ref=e909]: "2"
+              - generic [ref=e910]: "3"
+              - generic [ref=e911]: "4"
+              - generic [ref=e912]: "5"
+              - generic [ref=e913]: "6"
+              - generic [ref=e914]: "7"
+              - generic [ref=e915]: "8"
+              - generic [ref=e916]: "9"
+            - generic [ref=e917]: M
+          - generic [ref=e918]: /AED
+        - paragraph [ref=e919]: Starting Price
+      - generic [ref=e920]:
+        - paragraph [ref=e921]:
+          - generic [ref=e922]:
+            - generic [ref=e924]:
+              - generic [ref=e925]: "0"
+              - generic [ref=e926]: "1"
+              - generic [ref=e927]: "2"
+              - generic [ref=e928]: "3"
+              - generic [ref=e929]: "4"
+              - generic [ref=e930]: "5"
+              - generic [ref=e931]: "6"
+              - generic [ref=e932]: "7"
+              - generic [ref=e933]: "8"
+              - generic [ref=e934]: "9"
+            - generic [ref=e936]:
+              - generic [ref=e937]: "0"
+              - generic [ref=e938]: "1"
+              - generic [ref=e939]: "2"
+              - generic [ref=e940]: "3"
+              - generic [ref=e941]: "4"
+              - generic [ref=e942]: "5"
+              - generic [ref=e943]: "6"
+              - generic [ref=e944]: "7"
+              - generic [ref=e945]: "8"
+              - generic [ref=e946]: "9"
+            - generic [ref=e947]: /
+            - generic [ref=e949]:
+              - generic [ref=e950]: "0"
+              - generic [ref=e951]: "1"
+              - generic [ref=e952]: "2"
+              - generic [ref=e953]: "3"
+              - generic [ref=e954]: "4"
+              - generic [ref=e955]: "5"
+              - generic [ref=e956]: "6"
+              - generic [ref=e957]: "7"
+              - generic [ref=e958]: "8"
+              - generic [ref=e959]: "9"
+            - generic [ref=e961]:
+              - generic [ref=e962]: "0"
+              - generic [ref=e963]: "1"
+              - generic [ref=e964]: "2"
+              - generic [ref=e965]: "3"
+              - generic [ref=e966]: "4"
+              - generic [ref=e967]: "5"
+              - generic [ref=e968]: "6"
+              - generic [ref=e969]: "7"
+              - generic [ref=e970]: "8"
+              - generic [ref=e971]: "9"
+        - paragraph [ref=e972]: Payment Plan
+      - generic [ref=e973]:
+        - paragraph [ref=e974]:
+          - generic [ref=e975]:
+            - generic [ref=e977]:
+              - generic [ref=e978]: "0"
+              - generic [ref=e979]: "1"
+              - generic [ref=e980]: "2"
+              - generic [ref=e981]: "3"
+              - generic [ref=e982]: "4"
+              - generic [ref=e983]: "5"
+              - generic [ref=e984]: "6"
+              - generic [ref=e985]: "7"
+              - generic [ref=e986]: "8"
+              - generic [ref=e987]: "9"
+            - generic [ref=e988]: "-"
+            - generic [ref=e990]:
+              - generic [ref=e991]: "0"
+              - generic [ref=e992]: "1"
+              - generic [ref=e993]: "2"
+              - generic [ref=e994]: "3"
+              - generic [ref=e995]: "4"
+              - generic [ref=e996]: "5"
+              - generic [ref=e997]: "6"
+              - generic [ref=e998]: "7"
+              - generic [ref=e999]: "8"
+              - generic [ref=e1000]: "9"
+            - generic [ref=e1001]: B
+            - generic [ref=e1002]: H
+            - generic [ref=e1003]: K
+        - paragraph [ref=e1004]: Residences
+      - generic [ref=e1005]:
+        - paragraph [ref=e1006]:
+          - generic [ref=e1007]:
+            - generic [ref=e1008]: Q
+            - generic [ref=e1010]:
+              - generic [ref=e1011]: "0"
+              - generic [ref=e1012]: "1"
+              - generic [ref=e1013]: "2"
+              - generic [ref=e1014]: "3"
+              - generic [ref=e1015]: "4"
+              - generic [ref=e1016]: "5"
+              - generic [ref=e1017]: "6"
+              - generic [ref=e1018]: "7"
+              - generic [ref=e1019]: "8"
+              - generic [ref=e1020]: "9"
+            - generic [ref=e1022]:
+              - generic [ref=e1023]: "0"
+              - generic [ref=e1024]: "1"
+              - generic [ref=e1025]: "2"
+              - generic [ref=e1026]: "3"
+              - generic [ref=e1027]: "4"
+              - generic [ref=e1028]: "5"
+              - generic [ref=e1029]: "6"
+              - generic [ref=e1030]: "7"
+              - generic [ref=e1031]: "8"
+              - generic [ref=e1032]: "9"
+            - generic [ref=e1034]:
+              - generic [ref=e1035]: "0"
+              - generic [ref=e1036]: "1"
+              - generic [ref=e1037]: "2"
+              - generic [ref=e1038]: "3"
+              - generic [ref=e1039]: "4"
+              - generic [ref=e1040]: "5"
+              - generic [ref=e1041]: "6"
+              - generic [ref=e1042]: "7"
+              - generic [ref=e1043]: "8"
+              - generic [ref=e1044]: "9"
+            - generic [ref=e1046]:
+              - generic [ref=e1047]: "0"
+              - generic [ref=e1048]: "1"
+              - generic [ref=e1049]: "2"
+              - generic [ref=e1050]: "3"
+              - generic [ref=e1051]: "4"
+              - generic [ref=e1052]: "5"
+              - generic [ref=e1053]: "6"
+              - generic [ref=e1054]: "7"
+              - generic [ref=e1055]: "8"
+              - generic [ref=e1056]: "9"
+            - generic [ref=e1058]:
+              - generic [ref=e1059]: "0"
+              - generic [ref=e1060]: "1"
+              - generic [ref=e1061]: "2"
+              - generic [ref=e1062]: "3"
+              - generic [ref=e1063]: "4"
+              - generic [ref=e1064]: "5"
+              - generic [ref=e1065]: "6"
+              - generic [ref=e1066]: "7"
+              - generic [ref=e1067]: "8"
+              - generic [ref=e1068]: "9"
+        - paragraph [ref=e1069]: Expected Handover
+  - generic [ref=e1071]:
+    - generic [ref=e1072]:
+      - heading "Some Properties Need to be Experienced in Person" [level=2] [ref=e1074]
+      - paragraph [ref=e1076]: Tell us what you are looking for and our team will introduce you to residences that fit your lifestyle, priorities and ambitions in Dubai.
+    - generic [ref=e1080]:
+      - img "Lumera Heights living room interior" [ref=e1082]
+      - img "Lumera Heights kitchen interior" [ref=e1084]
+      - img "Lumera Heights bedroom interior" [ref=e1086]
+      - img "Lumera Heights building exterior" [ref=e1088]
+  - contentinfo [ref=e1090]:
+    - generic [ref=e1091]:
+      - generic [ref=e1092]:
+        - generic [ref=e1093]:
+          - link "Facebook" [ref=e1094] [cursor=pointer]:
+            - /url: "#"
+            - img "Facebook" [ref=e1096]
+          - link "Twitter" [ref=e1097] [cursor=pointer]:
+            - /url: "#"
+            - img "Twitter" [ref=e1099]
+          - link "Instagram" [ref=e1100] [cursor=pointer]:
+            - /url: "#"
+            - img "Instagram" [ref=e1102]
+          - link "LinkedIn" [ref=e1103] [cursor=pointer]:
+            - /url: "#"
+            - img "LinkedIn" [ref=e1105]
+        - link [ref=e1107] [cursor=pointer]:
+          - /url: /
+          - img "Lumera" [ref=e1108]
+        - link "Scroll Top" [ref=e1110] [cursor=pointer]:
+          - /url: "#"
+      - generic [ref=e1116]:
+        - link "+1 (212) 555-0186" [ref=e1118] [cursor=pointer]:
+          - /url: tel:+12125550186
+        - link "hello@example.com" [ref=e1123] [cursor=pointer]:
+          - /url: mailto:hello@example.com
+      - generic [ref=e1127]:
+        - paragraph [ref=e1129]:
+          - link "©" [ref=e1130] [cursor=pointer]:
+            - /url: https://vault.hyperiux.com/
+          - text: 2026 Lumera. All Rights Reserved
+        - paragraph [ref=e1132]: Sheikh Mohammed Bin Rashid Blvd Dubai, United Arab Emirates
+        - link "Privacy Policy" [ref=e1133] [cursor=pointer]:
+          - /url: "#"

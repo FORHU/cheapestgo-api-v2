@@ -1,0 +1,68 @@
+- generic [active] [ref=f6e1]:
+  - generic [ref=f6e4]:
+    - banner [ref=f6e5]:
+      - generic [ref=f6e6]:
+        - link [ref=f6e7] [cursor=pointer]:
+          - /url: /
+          - heading "CheapestGo" [level=1] [ref=f6e8]
+        - navigation [ref=f6e9]:
+          - button "Select currency" [ref=f6e11] [cursor=pointer]:
+            - generic [ref=f6e12]: ₩
+            - generic [ref=f6e13]: KRW
+          - link "Trips" [ref=f6e16] [cursor=pointer]:
+            - /url: /trips
+          - button [ref=f6e17]
+          - button "Sign in" [ref=f6e20]
+    - main [ref=f6e21]:
+      - generic [ref=f6e22]:
+        - generic [ref=f6e23]: Limited-time offers
+        - heading "Today's Best Hotel Deals" [level=1] [ref=f6e27]
+        - paragraph [ref=f6e28]: Handpicked deals with the lowest prices we could find. Prices update frequently — book early to lock in your rate.
+    - contentinfo [ref=f6e110]:
+      - generic [ref=f6e111]:
+        - generic [ref=f6e112]:
+          - generic [ref=f6e113]: CheapestGo
+          - paragraph [ref=f6e118]:
+            - text: Engineered for the discerning traveler. Precision data. Zero compromise.
+            - generic [ref=f6e119]: Powered by Duffel & TravelgateX.
+        - generic [ref=f6e120]:
+          - generic [ref=f6e121]:
+            - generic [ref=f6e122]: Module
+            - generic [ref=f6e123]:
+              - link "Flights" [ref=f6e124] [cursor=pointer]:
+                - /url: /flights/search
+              - link "Hotels" [ref=f6e125] [cursor=pointer]:
+                - /url: /search
+              - link "Cars" [ref=f6e126] [cursor=pointer]:
+                - /url: "#"
+          - generic [ref=f6e127]:
+            - generic [ref=f6e128]: Company
+            - generic [ref=f6e129]:
+              - link "About Us" [ref=f6e130] [cursor=pointer]:
+                - /url: "#"
+              - link "Enterprise" [ref=f6e131] [cursor=pointer]:
+                - /url: "#"
+              - link "Support" [ref=f6e132] [cursor=pointer]:
+                - /url: mailto:support@cheapestgo.com
+          - generic [ref=f6e133]:
+            - generic [ref=f6e134]: Network
+            - generic [ref=f6e135]:
+              - generic [ref=f6e136]: Flights API
+              - generic [ref=f6e138]: Payment Gateway
+      - generic [ref=f6e140]:
+        - generic [ref=f6e141]: © 2026 FORHU Inc. All rights reserved.
+        - generic [ref=f6e142]:
+          - link "Terms" [ref=f6e143] [cursor=pointer]:
+            - /url: /terms
+          - link "Privacy" [ref=f6e144] [cursor=pointer]:
+            - /url: /privacy
+          - link "Cookies" [ref=f6e145] [cursor=pointer]:
+            - /url: /cookies
+          - link "Contact" [ref=f6e146] [cursor=pointer]:
+            - /url: mailto:support@cheapestgo.com
+  - navigation "Preview brand" [ref=f6e147]:
+    - generic [ref=f6e148]: Preview
+    - button "CheapestGo" [pressed] [ref=f6e149]
+    - button "AirangGo" [ref=f6e150]
+  - region "Notifications alt+T"
+  - alert [ref=f6e151]

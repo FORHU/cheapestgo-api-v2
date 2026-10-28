@@ -22,7 +22,7 @@ import { getSupportHours, saveSupportHours } from '@/lib/support/availability';
  * to every Agent, writing is limited to whoever holds the chat, and assigning is an admin's
  * alone (ADR-0041).
  */
-const router = Router();
+const router: Router = Router();
 const svc = new SupportService();
 
 router.use(requireAuth);

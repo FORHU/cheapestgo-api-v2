@@ -7,7 +7,7 @@
 //   OVERLAP   — do the groups a hotel matched to share photos anyway? Correct
 //               matching still looks broken when the supplier ships the same shots.
 import { prisma } from '@/lib/prisma';
-import { matchEtgRoomGroup, type EtgGroup } from '@/lib/hotels/roomMatch';
+import { matchEtgRoomGroupForCatalog, type EtgGroup } from '@/lib/hotels/roomMatch';
 
 async function main() {
     const rows = await prisma.$queryRaw<{ hotel_id: string; room_groups: any }[]>`
@@ -34,7 +34,7 @@ async function main() {
         for (const g of groups) {
             if (!g?.name) continue;
             descs++;
-            const m = matchEtgRoomGroup(g.name, groups);
+            const m = matchEtgRoomGroupForCatalog(g.name, groups);
             if (!m.matchedName) { noMatch++; continue; }
             matched++;
             const list = byGroup.get(m.matchedName) ?? [];

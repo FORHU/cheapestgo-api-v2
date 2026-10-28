@@ -5,10 +5,14 @@ import { HotelsService } from '@/services/hotels.service';
 import { getPlaceDetails, geocode as geoCodePlace } from '@/lib/google/places';
 import { config } from '@/config';
 import { nightsBetween } from '@/lib/hotels/nights';
+import { attachStayTotals } from '@/lib/hotels/stayTotal';
 import { fetchHotelContentPatches } from '@/lib/hotels/contentPatches';
-import { getInstantHotelCatalog, runTgxSearch } from '@/lib/hotels/search';
+import { getInstantHotelCatalog } from '@/lib/hotels/search';
+import { getHotelProvider } from '@/lib/hotels/providers/factory';
+import { resolveStayDates } from '@/lib/hotels/property';
 import { CITY_ALIASES } from '@/lib/cityAliases';
 import { DestinationsService } from '@/services/destinations.service';
+import { logger } from '@/lib/logger';
 
 /**
  * How long a first pass must take before it is worth asking again.
@@ -127,11 +131,13 @@ export class HotelsController {
             const { checkIn, checkOut, adults, children } = z.object({
                 checkIn:  z.string().optional(),
                 checkOut: z.string().optional(),
-                adults:   z.coerce.number().optional().default(2),
-                children: z.coerce.number().optional().default(0),
+                adults:   z.coerce.number().int().min(1).optional(),
+                children: z.coerce.number().int().min(0).optional(),
             }).parse(req.query);
+
+            const stay = resolveStayDates(checkIn, checkOut);
             const [result, maintenance] = await Promise.all([
-                svc.getProperty(id, { checkIn, checkOut, adults, children }),
+                svc.getProperty(id, { ...stay, adults, children }),
                 svc.staysUnderMaintenance(),
             ]);
             // Carried on the response rather than short-circuiting it: the hotel's photos,
@@ -161,11 +167,15 @@ export class HotelsController {
             }).parse(req.query);
 
             const key = config.GOOGLE_PLACES_API_KEY;
-            if (!key) return res.json({ features: [] });
+            if (!key) {
+                logger.error('[hotels/nearby] GOOGLE_PLACES_API_KEY is not configured');
+                return next(new AppError(503, 'Nearby places unavailable', 'UPSTREAM_UNAVAILABLE'));
+            }
 
             const TYPE_MAP: Record<string, string[]> = {
                 all:        ['tourist_attraction', 'restaurant', 'park', 'museum'],
                 restaurant: ['restaurant', 'cafe', 'bakery', 'bar'],
+                cafe:       ['cafe', 'bakery'],
                 attraction: ['tourist_attraction', 'museum', 'art_gallery', 'amusement_park', 'zoo', 'aquarium'],
                 grocery:    ['supermarket', 'grocery_or_supermarket', 'convenience_store'],
                 medical:    ['hospital', 'pharmacy', 'doctor', 'dentist'],
@@ -173,28 +183,41 @@ export class HotelsController {
             };
             const types = TYPE_MAP[category] ?? TYPE_MAP['all'];
 
-            const results = await Promise.all(
-                types.map(async (type) => {
-                    const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=${type}&key=${key}&language=en`;
-                    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
-                    const d = await r.json() as { status: string; results?: any[] };
-                    if (d.status !== 'OK') return [];
-                    return (d.results ?? []).map((place: any) => ({
-                        type: 'Feature',
-                        geometry: { type: 'Point', coordinates: [place.geometry.location.lng, place.geometry.location.lat] },
-                        properties: {
-                            name:            place.name,
-                            place_id:        place.place_id,
-                            category:        place.types?.[0] || type,
-                            rating:          place.rating,
-                            userRatingsTotal: place.user_ratings_total,
-                            vicinity:        place.vicinity,
-                            photoReference:  place.photos?.[0]?.photo_reference ?? null,
-                            source:          'google',
-                        },
-                    }));
-                })
-            );
+            let results: any[][];
+            try {
+                results = await Promise.all(
+                    types.map(async (type) => {
+                        const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=${type}&key=${key}&language=en`;
+                        const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+                        if (!r.ok) throw new Error(`Google Places HTTP ${r.status}`);
+                        const d = await r.json() as { status: string; error_message?: string; results?: any[] };
+                        if (d.status === 'ZERO_RESULTS') return [];
+                        if (d.status !== 'OK') {
+                            if (d.status === 'REQUEST_DENIED') {
+                                logger.error('[hotels/nearby] Google REQUEST_DENIED', { status: d.status, error_message: d.error_message });
+                            }
+                            throw new Error(`Google Places status ${d.status}`);
+                        }
+                        return (d.results ?? []).map((place: any) => ({
+                            type: 'Feature',
+                            geometry: { type: 'Point', coordinates: [place.geometry.location.lng, place.geometry.location.lat] },
+                            properties: {
+                                name:            place.name,
+                                place_id:        place.place_id,
+                                category:        place.types?.[0] || type,
+                                rating:          place.rating,
+                                userRatingsTotal: place.user_ratings_total,
+                                vicinity:        place.vicinity,
+                                photoReference:  place.photos?.[0]?.photo_reference ?? null,
+                                source:          'google',
+                            },
+                        }));
+                    })
+                );
+            } catch (e) {
+                logger.warn('[hotels/nearby] upstream failure', { message: e instanceof Error ? e.message : String(e) });
+                return next(new AppError(502, 'Nearby places unavailable', 'UPSTREAM_ERROR'));
+            }
 
             const unique = new Map<string, any>();
             results.flat().forEach((f) => {
@@ -245,6 +268,9 @@ export class HotelsController {
                 roomName: z.string().optional(),
                 adults:   z.coerce.number().int().min(1).optional(),
                 children: z.coerce.number().int().min(0).optional(),
+                // The room's stay total, in `currency`, as the traveller was last shown it. When it
+                // has moved the response carries `priceChange` so the checkout can say so.
+                expectedTotal: z.coerce.number().positive().optional(),
             }).parse(req.body);
             const result = await svc.preBook(body);
             res.json(result);
@@ -258,12 +284,26 @@ export class HotelsController {
                 amount:         z.coerce.number().positive(),
                 currency:       z.string().length(3),
                 holderEmail:    z.string().email().optional(),
+                holderPhone:    z.string().max(40).optional(),
                 propertyName:   z.string().optional(),
                 roomName:       z.string().optional(),
                 checkIn:        z.string().optional(),
                 checkOut:       z.string().optional(),
                 bundleFlightId: z.string().optional(),
                 displayedTotal: z.coerce.number().positive().optional(),
+                // What the confirmation will need, if the traveller has already said. Optional and
+                // additive: with these, a booking can be finished from the payment event alone.
+                holder:         z.object({ firstName: z.string(), lastName: z.string(), email: z.string().email() }).optional(),
+                guests:         z.array(z.object({ firstName: z.string(), lastName: z.string(), age: z.number().optional() })).optional(),
+                adults:         z.coerce.number().int().min(1).optional(),
+                children:       z.coerce.number().int().min(0).optional(),
+                propertyImage:  z.string().optional(),
+                specialRequests: z.string().optional(),
+                voucherCode:    z.string().optional(),
+                discountAmount: z.coerce.number().optional(),
+                cancellationPolicies: z.any().optional(),
+                quotedPrice:    z.coerce.number().optional(),
+                board:          z.string().max(120).optional(),
             }).parse(req.body);
             const result = await svc.createPayment({ ...body, userId: req.user!.sub });
             res.json(result);
@@ -285,6 +325,7 @@ export class HotelsController {
                 adults:                z.coerce.number().int().min(1).optional(),
                 children:              z.coerce.number().int().min(0).optional(),
                 currency:              z.string().length(3).optional(),
+                holderPhone:           z.string().max(40).optional(),
                 specialRequests:       z.string().optional(),
                 voucherCode:           z.string().optional(),
                 discountAmount:        z.coerce.number().optional(),
@@ -294,6 +335,20 @@ export class HotelsController {
             }).parse(req.body);
             const result = await svc.confirmBooking({ ...body, userId: req.user!.sub });
             res.json(result);
+        } catch (err) { next(err); }
+    };
+
+    bookingStatus = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { reference } = z.object({ reference: z.string().min(1).max(64) }).parse(req.params);
+            res.json(await svc.getBookingStatus(reference, req.user!.sub));
+        } catch (err) { next(err); }
+    };
+
+    cancelPreview = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { reference } = z.object({ reference: z.string().min(1).max(64) }).parse(req.params);
+            res.json(await svc.getCancelPreview(reference, req.user!.sub));
         } catch (err) { next(err); }
     };
 
@@ -489,6 +544,13 @@ export class HotelsController {
         let closed = false;
         req.on('close', () => { closed = true; });
 
+        // The provider decides where hotels and their content come from. A supplier with no
+        // content of its own (TravelgateX) is shown through the catalog first; one that is the
+        // authority (the mock) is not, because catalog rows it cannot price would only be
+        // removed again a moment later.
+        const provider   = getHotelProvider();
+        const useCatalog = !provider.capabilities.providesContent;
+
         try {
             // ── Phase 1: instant catalog ──────────────────────────────────────────
             const catalogParams: any = {
@@ -509,10 +571,12 @@ export class HotelsController {
                 lat:         body.lat,
                 lng:         body.lng,
             };
-            const catalogHotels = await Promise.race([
-                getInstantHotelCatalog(catalogParams),
-                new Promise<any[]>(resolve => setTimeout(() => resolve([]), 8000)),
-            ]);
+            const catalogHotels: any[] = useCatalog
+                ? await Promise.race([
+                    getInstantHotelCatalog(catalogParams),
+                    new Promise<any[]>(resolve => setTimeout(() => resolve([]), 8000)),
+                ])
+                : [];
 
             if (!closed && catalogHotels.length > 0) {
                 // `allMappable` used to ride along here as a filtered copy of `data` —
@@ -559,7 +623,7 @@ export class HotelsController {
                 bbox:        body.bbox,
             };
             const firstPassStarted = Date.now();
-            const tgxResult = await runTgxSearch({
+            const tgxResult = await provider.searchHotels({
                 cityName:    body.cityName ?? body.destination,
                 checkin:     body.checkin  ?? body.checkIn,
                 checkout:    body.checkout ?? body.checkOut,
@@ -582,20 +646,12 @@ export class HotelsController {
             const firstPassMs = Date.now() - firstPassStarted;
 
             /**
-             * Per night, because that is what a card says.
-             *
-             * TGX quotes the **whole stay**, and every price surface in the storefront prints
-             * "/ night" beside the number. Sending the stay total and trusting each of them to
-             * divide is what v1 stopped doing: the search card and the deals row never got the
-             * memo, so a three-night stay was advertised at three times its nightly rate.
-             *
-             * Done once, here, for the same reason v1 does it here — every list below is
-             * derived from this array, so dividing at the source is the only version that
-             * cannot be half-applied.
+             * Already per night — the provider's contract is that a listing carries the Nightly
+             * Rate (ADR-0020). Dividing here as well advertised `total / nights²` on every stay
+             * of more than one night, once `buildCityResults` began dividing at the source.
              */
             const stayNights = nightsBetween(body.checkin ?? body.checkIn, body.checkout ?? body.checkOut);
-            const tgxHotels: any[]   = (Array.isArray(tgxResult.data) ? tgxResult.data : [])
-                .map((h: any) => ({ ...h, price: (h.price ?? 0) / stayNights }));
+            const tgxHotels: any[]   = attachStayTotals(Array.isArray(tgxResult.data) ? tgxResult.data : [], stayNights);
             const tgxHotelIdSet      = new Set(tgxHotels.map((h: any) => h.hotelId || h.id));
             const newTgxHotels       = tgxHotels.filter((h: any) => !catalogIdSet.has(h.hotelId || h.id));
 
@@ -603,6 +659,7 @@ export class HotelsController {
                 const prices = tgxHotels.map((h: any) => ({
                     hotelId:       h.hotelId || h.id,
                     price:         h.price,
+                    stayTotal:    h.stayTotal,
                     currency:      h.currency,
                     offerId:       h.offerId,
                     refundableTag: h.refundableTag,
@@ -670,7 +727,7 @@ export class HotelsController {
              * catalog is complete makes no content call at all.
              */
             const needsImages = (h: any) => !(h.images?.length) && !h.image;
-            const missingNow  = [...catalogHotels, ...tgxHotels]
+            const missingNow  = (useCatalog ? [...catalogHotels, ...tgxHotels] : [])
                 .filter(needsImages)
                 .map((h: any) => String(h.hotelId || h.id))
                 .filter(Boolean);
@@ -699,14 +756,14 @@ export class HotelsController {
                 const t0 = Date.now();
                 // A plain repeat: the in-flight dedup entry for the first pass is gone by now,
                 // so this is a fresh call rather than a join onto the one that just finished.
-                const second = await runTgxSearch(searchArgs)
+                const second = await provider.searchHotels(searchArgs)
                     .catch((err: any) => {
                         // Nothing is owed here: the traveller already has the first answer.
                         console.warn(`[stream] Second pass failed for "${city}": ${err?.message}`);
                         return { data: [] as any[], allMappable: [] as any[], totalCount: 0, truncated: false };
                     });
 
-                const secondHotels: any[] = Array.isArray(second.data) ? second.data : [];
+                const secondHotels: any[] = attachStayTotals(Array.isArray(second.data) ? second.data : [], stayNights);
                 const known = new Set([...tgxHotelIdSet, ...catalogIdSet]);
                 extraHotels = secondHotels.filter((h: any) => !known.has(h.hotelId || h.id));
                 console.log(`[stream] Second pass: ${secondHotels.length} hotels in ${Date.now() - t0}ms, ${extraHotels.length} of them new`);
@@ -719,6 +776,7 @@ export class HotelsController {
                         data: extraHotels.map((h: any) => ({
                             hotelId:       h.hotelId || h.id,
                             price:         h.price,
+                            stayTotal:    h.stayTotal,
                             currency:      h.currency,
                             offerId:       h.offerId,
                             refundableTag: h.refundableTag,
@@ -731,7 +789,7 @@ export class HotelsController {
                     // Phase B: pictures for the ones the collecting pass just added. After
                     // their cards, never before — a card with no photo is worth more than no
                     // card, and this call must not hold the hotels up.
-                    const missingLate = extraHotels
+                    const missingLate = (useCatalog ? extraHotels : [])
                         .filter((h: any) => !(h.images?.length) && !h.image)
                         .map((h: any) => String(h.hotelId || h.id))
                         .filter(Boolean);

@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { AppError } from '@/middleware/error.middleware';
 import { trip_type } from '@prisma/client';
 
-const router = Router();
+const router: Router = Router();
 router.use(requireAuth);
 
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {

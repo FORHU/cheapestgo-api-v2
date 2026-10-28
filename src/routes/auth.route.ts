@@ -13,7 +13,7 @@ import { config } from '@/config';
 import { BASE_COOKIE_OPTIONS, SESSION_COOKIE, SESSION_MAX_AGE_MS } from '@/lib/auth/cookie';
 import { originOfRequest, resolveReturnOrigin } from '@/lib/auth/returnOrigin';
 
-const router = Router();
+const router: Router = Router();
 
 /**
  * Where Google sends the browser back, quoted identically by both legs of the exchange.
@@ -32,7 +32,7 @@ const controller = new AuthController();
 
 router.post('/register', authRateLimit, controller.register);
 router.post('/login',    authRateLimit, controller.login);
-router.post('/logout',   authenticate,  controller.logout);
+router.post('/logout',                  controller.logout);
 router.post('/refresh',  authRateLimit, controller.refresh);
 router.get('/me',        authenticate,  controller.me);
 
@@ -212,7 +212,7 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
  * - Upserts the user in the DB
  * - Issues a JWT access_token cookie and redirects to SITE_URL
  */
-router.get('/google/callback', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/google/callback', async (req: Request, res: Response) => {
     const { code, state, error: oauthErr } = req.query as Record<string, string>;
 
     const failRedirect = (reason: string) =>

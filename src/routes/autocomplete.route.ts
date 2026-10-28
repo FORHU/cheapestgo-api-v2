@@ -3,7 +3,7 @@ import { config } from '@/config';
 import { tgxGraphQL, getTgxConfig } from '@/lib/hotels/travelgatex';
 import { searchRateLimit } from '@/middleware/rate-limit.middleware';
 
-const router = Router();
+const router: Router = Router();
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

@@ -5,6 +5,13 @@ import { FlightsService } from '@/services/flights.service';
 
 const svc = new FlightsService();
 
+/**
+ * The currency the traveller picked, as the pricing function wants it. Optional — left out, a
+ * flight is priced in the airline's own currency — and a code, not free text: it goes straight
+ * to the exchange-rate lookup and on to Stripe.
+ */
+const displayCurrency = z.string().regex(/^[A-Za-z]{3}$/).transform((c) => c.toUpperCase()).optional();
+
 const searchSchema = z.object({
     origin:        z.string(),
     destination:   z.string(),
@@ -42,9 +49,24 @@ export class FlightsController {
         } catch (err) { next(err); }
     };
 
+    /** The offer being bought, for the checkout's summary of the flight. */
+    offer = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const offerId  = z.string().min(1).parse(req.params.offerId);
+            const tripType = z.enum(['one-way', 'round-trip', 'multi-city']).optional().parse(req.query.tripType);
+            const currency = displayCurrency.parse(req.query.currency);
+            res.json(await svc.getOffer(offerId, tripType, currency));
+        } catch (err) { next(err); }
+    };
+
     book = async (req: Request, res: Response, next: NextFunction) => {
         try {
-            const result = await svc.book({ ...req.body, userId: req.user!.sub });
+            const result = await svc.book({
+                ...req.body,
+                // Validated here, since the body is otherwise handed on as it came.
+                displayCurrency: displayCurrency.parse(req.body?.displayCurrency),
+                userId: req.user!.sub,
+            });
             res.json(result);
         } catch (err) { next(err); }
     };
@@ -55,8 +77,7 @@ export class FlightsController {
                 paymentIntentId: z.string(),
                 sessionId:       z.string(),
             }).parse(req.body);
-            const baseUrl = `${req.protocol}://${req.get('host')}`;
-            const result = await svc.confirm(paymentIntentId, sessionId, req.user!.sub, baseUrl);
+            const result = await svc.confirm(paymentIntentId, sessionId, req.user!.sub);
             res.json(result);
         } catch (err) { next(err); }
     };

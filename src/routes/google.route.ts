@@ -3,7 +3,7 @@ import { placeAutocomplete } from '@/lib/google/places';
 import { config } from '@/config';
 import { redis } from '@/lib/redis';
 
-const router = Router();
+const router: Router = Router();
 
 // ─── Geocode ─────────────────────────────────────────────────────────────────
 

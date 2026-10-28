@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { config } from '@/config';
 
-const chatRouter = Router();
+const chatRouter: Router = Router();
 
 // In-memory map: client conversationId → forhu.ai session_id
 const sessionMap = new Map<string, string>();

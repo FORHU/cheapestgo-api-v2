@@ -6,7 +6,7 @@ import { prisma } from '@/lib/prisma';
 import { tgxGraphQL, getTgxConfig } from '@/lib/hotels/travelgatex';
 import { CITY_ALIASES } from '@/lib/cityAliases';
 
-const router = Router();
+const router: Router = Router();
 const ctrl   = new HotelsController();
 
 // ── Hotel photo proxy ─────────────────────────────────────────────────────────
@@ -325,5 +325,13 @@ router.post('/property/:id/reviews', async (req: Request, res: Response) => {
 router.post('/create-payment',  requireAuth, ctrl.createPayment);
 router.post('/confirm',         requireAuth, ctrl.confirmBooking);
 router.post('/cancel',          requireAuth, ctrl.cancelBooking);
+
+// Where a booking is: for polling after payment and for a confirmation page that survives
+// a refresh. Scoped to the caller — another traveller's reference is a 404.
+router.get( '/bookings/:reference', requireAuth, ctrl.bookingStatus);
+
+// What cancelling would return, from the recorded terms and by the same engine that will
+// decide the cancellation. Read-only: nothing is cancelled and no supplier is asked.
+router.get( '/bookings/:reference/cancel-preview', requireAuth, ctrl.cancelPreview);
 
 export default router;

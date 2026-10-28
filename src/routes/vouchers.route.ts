@@ -12,7 +12,7 @@ import { requireAuth } from '@/middleware/auth.middleware';
 import { AppError } from '@/middleware/error.middleware';
 import { prisma } from '@/lib/prisma';
 
-const router = Router();
+const router: Router = Router();
 
 // ── In-memory sliding-window rate limiter (validation endpoint only) ──────────
 // 10 attempts per minute per user — prevents brute-forcing voucher codes.
@@ -57,7 +57,7 @@ router.post('/validate', requireAuth, async (req: Request, res: Response, next: 
             throw new AppError(429, 'Too many attempts. Please wait a minute before trying again.', 'RATE_LIMITED');
         }
 
-        const { code, bookingPrice, currency, hotelId } = req.body as {
+        const { code, bookingPrice, hotelId } = req.body as {
             code: string;
             bookingPrice: number;
             currency?: string;
