@@ -49,6 +49,16 @@ describe('FlightsService.getOffer() when the price cannot be quoted', () => {
         expect(offer).not.toHaveProperty('quote');
     });
 
+    it('prices in the currency asked for, and in the airline\'s own when none is', async () => {
+        charge.priceFlightCharge.mockResolvedValue({ chargeCurrency: 'usd', fare: 100, serviceFee: 11.6, total: 111.6 });
+
+        await new FlightsService().getOffer('off-abc', 'one-way', 'USD');
+        expect(charge.priceFlightCharge).toHaveBeenLastCalledWith(expect.anything(), { displayCurrency: 'USD' });
+
+        await new FlightsService().getOffer('off-abc');
+        expect(charge.priceFlightCharge).toHaveBeenLastCalledWith(expect.anything(), { displayCurrency: undefined });
+    });
+
     it('quotes in the figures the pricing function gave, upper-casing the currency', async () => {
         charge.priceFlightCharge.mockResolvedValue({ chargeCurrency: 'php', fare: 5800, serviceFee: 637.6, total: 6437.6 });
 

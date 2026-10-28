@@ -91,7 +91,12 @@ export class FlightsService {
      *
      * Without the raw Duffel payload: that is the server's, and the browser has no use for it.
      */
-    async getOffer(offerId: string, tripType: 'one-way' | 'round-trip' | 'multi-city' = 'one-way'): Promise<FlightOffer> {
+    async getOffer(
+        offerId: string,
+        tripType: 'one-way' | 'round-trip' | 'multi-city' = 'one-way',
+        /** The currency the traveller is looking at; the airline's own when left out. */
+        displayCurrency?: string,
+    ): Promise<FlightOffer> {
         let raw: any;
         try {
             raw = await getDuffelOffer(offerId);
@@ -108,7 +113,7 @@ export class FlightsService {
         // cost of the offer itself: this read also draws the receipt, and a quote that cannot be
         // made (rates down for a non-USD fare) leaves the page showing the fare alone.
         try {
-            const charge = await priceFlightCharge(raw);
+            const charge = await priceFlightCharge(raw, { displayCurrency });
             return {
                 ...offer,
                 quote: {
