@@ -39,6 +39,7 @@ import { startSupplierAttempt, finishSupplierAttempt } from '@/lib/hotels/suppli
 import { makeStrictConverter } from '@/lib/payments/convertStrict';
 import { applyMarkup, FLIGHT_MARKUP_SPEC, getFlightPriceTolerance } from '@/lib/pricing';
 import type { FlightBookingStatus, LifecycleActor } from '@/lib/flights/lifecycle/stateMachine';
+import { isSameAttempt, type AttemptTerms } from '@/lib/flights/lifecycle/sameAttempt';
 import { FlightBookingLifecycleRepository, type FlightLifecycleRecord } from '@/repositories/flightBookingLifecycle.repository';
 import { FlightsRepository } from '@/repositories/flights.repository';
 import { ExchangeRatesService } from '@/services/exchange-rates.service';
@@ -55,6 +56,7 @@ const OFFER_GONE  = `This fare is no longer available. ${NOT_CHARGED} Please sea
 const STILL_CONFIRMING = 'Your booking is still being confirmed with the airline. You have not been charged twice — please check your trips shortly.';
 const UNDER_REVIEW = 'Your booking is being confirmed by our team. Please do not pay again — check your trips shortly, and we will email you once it is settled.';
 const NOT_COMPLETED = `This booking could not be completed. ${NOT_CHARGED}`;
+const SUPERSEDED = `This payment was replaced by a newer one for the same flight. ${NOT_CHARGED}`;
 
 export type CompletionOutcome =
     | { kind: 'confirmed'; bookingId: string; pnr: string; status: string }
@@ -62,6 +64,20 @@ export type CompletionOutcome =
     | { kind: 'pending'; needsReview: boolean; message: string };
 
 export type VoidOutcome = 'voided' | 'already_void' | 'captured' | 'failed';
+
+/** An attempt at an offer whose card is already held: `book` answers with it and opens nothing. */
+export interface PaidAttempt {
+    sessionId:   string;
+    needsReview: boolean;
+    message:     string;
+}
+
+export type Resumption =
+    | { kind: 'reuse'; sessionId: string; paymentIntentId: string; clientSecret: string }
+    | ({ kind: 'paid' } & PaidAttempt);
+
+/** Stripe statuses in which a PaymentIntent can still be paid — nothing is held on it yet. */
+const PAYABLE = new Set(['requires_payment_method', 'requires_confirmation', 'requires_action']);
 
 export interface SweepReport {
     scanned:   number;
@@ -96,8 +112,28 @@ interface Attempt {
 
 const sleep = (ms: number) => (ms > 0 ? new Promise<void>((r) => setTimeout(r, ms)) : Promise.resolve());
 
+const pendingMessage = (needsReview: boolean) => (needsReview ? UNDER_REVIEW : STILL_CONFIRMING);
+
 const pending = (needsReview: boolean): CompletionOutcome =>
-    ({ kind: 'pending', needsReview, message: needsReview ? UNDER_REVIEW : STILL_CONFIRMING });
+    ({ kind: 'pending', needsReview, message: pendingMessage(needsReview) });
+
+function paidAttemptOf(record: FlightLifecycleRecord): PaidAttempt {
+    const needsReview = record.status === 'NEEDS_REVIEW';
+    return { sessionId: record.sessionId, needsReview, message: pendingMessage(needsReview) };
+}
+
+/** What an earlier attempt asked for, from its session and the payment opened for it. */
+function termsOf(session: Record<string, any>, intent: { amount: number; currency: string; metadata?: Record<string, string> | null }): AttemptTerms {
+    return {
+        passengers:     session.passengers,
+        contact:        session.contact,
+        seatServiceIds: session.seat_service_ids ?? [],
+        bagServiceIds:  session.bag_service_ids ?? [],
+        bundleHotelId:  intent.metadata?.bundleHotelId,
+        amountMinor:    intent.amount,
+        currency:       intent.currency,
+    };
+}
 
 /**
  * What to capture for an order the airline priced at `finalBase`, against a hold computed from
@@ -163,6 +199,78 @@ export class FlightBookingLifecycleService {
     /** Where an attempt is. Null when there is none, or the lifecycle is not there yet. */
     find(sessionId: string): Promise<FlightLifecycleRecord | null> {
         return this.repo.findBySession(sessionId);
+    }
+
+    // ── Booking the same offer again ────────────────────────────────────────
+    //
+    // A traveller who goes back from a slow confirm and submits again used to get a second
+    // session and a second hold, and paying it ordered a second ticket: the duplicate-departure
+    // check reads `flight_bookings`, which is not written until the first order is captured.
+    // `book` asks here before it opens anything.
+
+    /**
+     * The traveller's attempt at this offer that is already paid for — authorised, with the
+     * airline, or with a person — or null. Read from the record alone, before `book` fetches the
+     * offer again: once an order exists the offer may be gone, and "this fare is no longer
+     * available" would send the traveller to search and pay again.
+     */
+    async paidAttempt(userId: string, offerId: string): Promise<PaidAttempt | null> {
+        const open = await this.repo.findOpenForOffer(userId, offerId);
+        const paid = open.find((r) => r.status !== 'PAYMENT_PENDING');
+        return paid ? paidAttemptOf(paid) : null;
+    }
+
+    /**
+     * What `book` does with the traveller's unpaid attempts at this offer, once it has priced the
+     * new one (`wanted`):
+     *
+     * - one asks for exactly the same, its payment can still be paid and its session has not
+     *   expired → `reuse`: `book` hands it back, and a double submit pays one hold;
+     * - Stripe already holds the card for one, or one was claimed since `paidAttempt` →
+     *   `paid`, and nothing is released;
+     * - any other → released, and null: `book` opens a new one. The attempt is closed before
+     *   its payment is voided, never after — a claim taken between a void and a close would
+     *   order on a hold that no longer exists.
+     */
+    async resumeUnpaid(userId: string, offerId: string, wanted: AttemptTerms, now: Date = new Date()): Promise<Resumption | null> {
+        const open = await this.repo.findOpenForOffer(userId, offerId);
+        const claimed = open.find((r) => r.status !== 'PAYMENT_PENDING');
+        if (claimed) return { kind: 'paid', ...paidAttemptOf(claimed) };
+
+        // Every payment read before any is touched: a card held on any of them releases none.
+        const unpaid = await Promise.all(open.map(async (record) => ({
+            record,
+            intent: record.paymentIntentId ? await stripe.paymentIntents.retrieve(record.paymentIntentId) : null,
+        })));
+        const held = unpaid.find(({ intent }) => intent && intent.status !== 'canceled' && !PAYABLE.has(intent.status));
+        if (held) return { kind: 'paid', sessionId: held.record.sessionId, needsReview: false, message: pendingMessage(false) };
+
+        let reuse: Resumption | null = null;
+        for (const { record, intent } of unpaid) {
+            if (!reuse && intent && PAYABLE.has(intent.status)) {
+                const session: any = await this.sessions.getBookingSession(record.sessionId);
+                if (session && new Date(session.expires_at).getTime() > now.getTime() && isSameAttempt(termsOf(session, intent), wanted)) {
+                    reuse = { kind: 'reuse', sessionId: record.sessionId, paymentIntentId: intent.id, clientSecret: intent.client_secret! };
+                    continue;
+                }
+            }
+
+            const moved = await this.repo.transition(record.sessionId, 'PAYMENT_PENDING', 'EXPIRED', {
+                actor: 'browser', reason: 'replaced by a new submission for the same offer',
+                patch: { failureCode: 'SUPERSEDED', failureMessage: SUPERSEDED },
+            });
+            if (moved === 'lost') {
+                // Claimed in the moment between — or closed by the sweeper, which is no payment.
+                const current = await this.repo.findBySession(record.sessionId);
+                if (current && current.status !== 'EXPIRED' && current.status !== 'FAILED') return { kind: 'paid', ...paidAttemptOf(current) };
+                continue;
+            }
+            if (moved !== 'applied') continue;
+            if (intent) await this.voidAuthorisation(intent.id);
+            await this.sessions.setSessionStatus(record.sessionId, 'expired')
+                .catch((err: any) => console.error(`[flight-lifecycle] could not mark ${record.sessionId} expired: ${err?.message}`));
+        }
+        return reuse;
     }
 
     // ── Completion ──────────────────────────────────────────────────────────

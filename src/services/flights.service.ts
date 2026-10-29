@@ -31,7 +31,7 @@ import { fromStripeAmount, FLIGHT_MARKUP_SPEC, getFlightPriceTolerance } from '@
 import { orderPhoneNumber } from '@/lib/flights/orderPassengers';
 import { priceFlightCharge } from '@/lib/flights/flightCharge';
 import { awaitBookingRow } from '@/lib/flights/awaitBookingRow';
-import { FlightBookingLifecycleService } from '@/services/flightBookingLifecycle.service';
+import { FlightBookingLifecycleService, type PaidAttempt } from '@/services/flightBookingLifecycle.service';
 import { completeDuffelBooking } from '@/services/flightBookingCompletion';
 
 /**
@@ -45,10 +45,20 @@ const CONFIRM_FAILURES: Record<string, { status: number; code?: string }> = {
     PRICE_CHANGED:          { status: 409 },
     OFFER_EXPIRED:          { status: 410 },
     ABANDONED:              { status: 410, code: 'BOOKING_EXPIRED' },
+    // Released by `book` when the traveller submitted again with other details.
+    SUPERSEDED:             { status: 410, code: 'BOOKING_EXPIRED' },
     INVALID_PHONE:          { status: 400 },
     DUFFEL_ORDER_FAILED:    { status: 400 },
     UPSTREAM_UNAVAILABLE:   { status: 503 },
 };
+
+/**
+ * `book`'s answer for an offer whose card is already held: the same `BOOKING_PROCESSING` that
+ * `confirm` gives, so the client sends the traveller to their trips rather than to pay again.
+ */
+const processing = (attempt: PaidAttempt) => new AppError(409, attempt.message, 'BOOKING_PROCESSING', {
+    pending: true, needsReview: attempt.needsReview, sessionId: attempt.sessionId,
+});
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
@@ -195,6 +205,13 @@ export class FlightsService {
 
         const duffelToken = config.DUFFEL_ACCESS_TOKEN;
         if (!duffelToken) throw new AppError(503, 'Duffel not configured.', 'PROVIDER_UNAVAILABLE');
+
+        // ── Already paid for? ──────────────────────────────────────────────────
+        //
+        // Before the offer is fetched again: once the airline has ordered it the offer may be
+        // gone, and "this fare is no longer available" would send the traveller to pay again.
+        const paid = await this.lifecycle.paidAttempt(userId, offerId);
+        if (paid) throw processing(paid);
 
         /**
          * The offer, as Duffel holds it now.
@@ -367,6 +384,31 @@ export class FlightsService {
             + `→ ${chargePrice} ${chargeInCurrency}`,
         );
 
+        // What the card is held for, in the currency it is held in. The page shows these and
+        // nothing it worked out itself.
+        const held = {
+            amount:     charge.total,
+            currency:   chargeInCurrency.toUpperCase(),
+            fare:       charge.fare,
+            serviceFee: charge.serviceFee,
+        };
+
+        // ── The same again? ────────────────────────────────────────────────────
+        //
+        // An unpaid attempt at this offer asking for exactly this is handed back, so a double
+        // submit or a step back pays one hold; any other is released before this one opens.
+        const earlier = await this.lifecycle.resumeUnpaid(userId, rawOffer.id, {
+            passengers, contact, bundleHotelId,
+            seatServiceIds: seatServiceIds ?? [],
+            bagServiceIds:  bagServiceIds ?? [],
+            amountMinor:    stripeAmount,
+            currency:       chargeInCurrency,
+        });
+        if (earlier?.kind === 'paid') throw processing(earlier);
+        if (earlier?.kind === 'reuse') {
+            return { clientSecret: earlier.clientSecret, sessionId: earlier.sessionId, paymentIntentId: earlier.paymentIntentId, ...held };
+        }
+
         // ── Create booking session ─────────────────────────────────────────────
         const sanitizedFlight: any = { ...flight, _offerId: rawOffer.id };
         delete sanitizedFlight.rawOffer;
@@ -445,17 +487,7 @@ export class FlightsService {
 
         await this.lifecycle.open(sessionId);
 
-        return {
-            clientSecret: paymentIntent.client_secret!,
-            sessionId,
-            paymentIntentId: paymentIntent.id,
-            // What the card is held for, in the currency it is held in. The page shows these
-            // and nothing it worked out itself.
-            amount:     charge.total,
-            currency:   chargeInCurrency.toUpperCase(),
-            fare:       charge.fare,
-            serviceFee: charge.serviceFee,
-        };
+        return { clientSecret: paymentIntent.client_secret!, sessionId, paymentIntentId: paymentIntent.id, ...held };
     }
 
     // ── Confirm ───────────────────────────────────────

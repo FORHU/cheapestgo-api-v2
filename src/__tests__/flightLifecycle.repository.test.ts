@@ -284,3 +284,32 @@ describe('the sweeper\'s queries', () => {
         expect(await repo.events(SESSION)).toEqual([]);
     });
 });
+
+describe('a traveller\'s open attempts at an offer (what `book` checks before opening another)', () => {
+    it('finds this traveller\'s attempts at this offer that are not finished, newest first', async () => {
+        db.$queryRawUnsafe.mockResolvedValueOnce([{ ...ROW, lifecycle_status: 'SUPPLIER_BOOKING' }, ROW]);
+
+        const out = await repo.findOpenForOffer('u-1', 'off_1');
+
+        expect(out.map((r) => r.status)).toEqual(['SUPPLIER_BOOKING', 'PAYMENT_PENDING']);
+        const [statement, ...values] = db.$queryRawUnsafe.mock.calls[0] as [string, ...unknown[]];
+        expect(values).toEqual(['u-1', 'off_1']);
+        expect(statement).toMatch(/s\.user_id = \$1::uuid/);
+        expect(statement).toMatch(/s\.flight ->> '_offerId' = \$2/);
+        expect(statement).toMatch(/'PAYMENT_PENDING', 'PAYMENT_AUTHORIZED', 'SUPPLIER_BOOKING', 'NEEDS_REVIEW'/);
+        expect(statement).toMatch(/ORDER BY s\.created_at DESC/);
+    });
+
+    it('only looks at sessions the new flow wrote — an automatic-capture session is not an attempt it can resume', async () => {
+        db.$queryRawUnsafe.mockResolvedValueOnce([]);
+        await repo.findOpenForOffer('u-1', 'off_1');
+        const statement = db.$queryRawUnsafe.mock.calls[0][0] as string;
+        expect(statement).toMatch(/s\.provider = 'duffel'/);
+        expect(statement).toMatch(/s\.capture_method = 'manual'/);
+    });
+
+    it('returns an empty list, never throws, when the read fails', async () => {
+        db.$queryRawUnsafe.mockRejectedValue(MISSING_COLUMN);
+        expect(await repo.findOpenForOffer('u-1', 'off_1')).toEqual([]);
+    });
+});
