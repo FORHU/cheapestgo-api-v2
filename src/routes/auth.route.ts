@@ -10,6 +10,8 @@ import { AppError } from '@/middleware/error.middleware';
 import { prisma } from '@/lib/prisma';
 import { redis } from '@/lib/redis';
 import { config } from '@/config';
+import { BASE_COOKIE_OPTIONS, SESSION_COOKIE, SESSION_MAX_AGE_MS } from '@/lib/auth/cookie';
+import { originOfRequest, resolveReturnOrigin } from '@/lib/auth/returnOrigin';
 
 const router: Router = Router();
 
@@ -145,11 +147,12 @@ router.put('/reset-password', async (req: Request, res: Response, next: NextFunc
 
 // ─── Google OAuth ────────────────────────────────────────────────────────────
 
+// `lax`, not `strict`, and this is the door that needs it: the browser arrives here on a
+// top-level navigation from Google, and a strict cookie set on that response is not sent
+// on the hop that follows. The password door uses `strict`. See `lib/auth/cookie.ts`.
 const COOKIE_OPTIONS = {
-    httpOnly: true,
-    secure:   config.NODE_ENV === 'production',
+    ...BASE_COOKIE_OPTIONS,
     sameSite: 'lax' as const,
-    path:     '/',
 };
 
 /**
@@ -167,8 +170,14 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
 
         const state = crypto.randomUUID();
 
-        // Store state in Redis (10 min TTL) to survive cross-server redirects
-        await redis.set(`oauth:state:${state}`, '1', 'EX', 600);
+        // Store state in Redis (10 min TTL) to survive cross-server redirects.
+        //
+        // The value is the origin this sign-in began on, not a placeholder `1`: the staff
+        // host and the storefront are different origins, and the callback has to know which
+        // one to hand the session back to. It is still validated against an allowlist when
+        // it is read — Redis says what was asked for, not what is permitted.
+        const startedOn = originOfRequest(req.headers) ?? '';
+        await redis.set(`oauth:state:${state}`, startedOn || '1', 'EX', 600);
 
         // Also cookie-store so the callback can find it on the same server
         res.cookie('oauth_state', state, { ...COOKIE_OPTIONS, maxAge: 600_000 });
@@ -232,6 +241,12 @@ router.get('/google/callback', async (req: Request, res: Response) => {
             console.error('[OAuth/google] State mismatch — possible CSRF');
             return failRedirect('oauth_state');
         }
+
+        // Where this sign-in began, as recorded when the state was issued. Falls back to
+        // the request's own origin when the cookie path was used instead of Redis.
+        const returnOrigin = resolveReturnOrigin(
+            redisOk && redisOk !== '1' ? redisOk : originOfRequest(req.headers),
+        );
 
         // Consume the state so it can't be replayed
         if (redisOk) await redis.del(redisKey);
@@ -307,12 +322,12 @@ router.get('/google/callback', async (req: Request, res: Response) => {
             expiresIn: config.JWT_EXPIRES_IN as any,
         });
 
-        res.cookie('access_token', accessToken, {
+        res.cookie(SESSION_COOKIE, accessToken, {
             ...COOKIE_OPTIONS,
-            maxAge: 86400_000, // 1 day
+            maxAge: SESSION_MAX_AGE_MS,
         });
 
-        return res.redirect(config.SITE_URL);
+        return res.redirect(returnOrigin);
     } catch (err: any) {
         console.error('[OAuth/google] Callback error:', err.message);
         return failRedirect('oauth_failed');

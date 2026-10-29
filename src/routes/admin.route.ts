@@ -572,6 +572,18 @@ router.get('/tgx-health', async (_req: Request, res: Response, next: NextFunctio
 });
 
 /**
+ * Run the supplier canary now, from the settings screen's "Check now".
+ *
+ * The same check the scheduled job runs, reached with a session instead of the cron secret —
+ * which is why the probe lives in the service rather than in either route. It can switch
+ * stays maintenance on or off, so the response carries the resulting flag.
+ */
+router.get('/supplier-health', async (_req: Request, res: Response, next: NextFunction) => {
+    try { res.json(await adminSettingsService.runSupplierHealthCheck()); }
+    catch (err) { next(err); }
+});
+
+/**
  * POST /api/v2/admin/brand  { brand }
  *
  * Which brand's data the back office is looking at. The queue and the booking lists are
