@@ -11,7 +11,7 @@ import { prisma } from '@/lib/prisma';
 import { redis } from '@/lib/redis';
 import { config } from '@/config';
 import { BASE_COOKIE_OPTIONS, SESSION_COOKIE, SESSION_MAX_AGE_MS } from '@/lib/auth/cookie';
-import { originOfRequest, resolveReturnOrigin } from '@/lib/auth/returnOrigin';
+import { originOfRequest, resolveCallbackOrigin, resolveReturnOrigin } from '@/lib/auth/returnOrigin';
 
 const router: Router = Router();
 
@@ -24,9 +24,14 @@ const router: Router = Router();
  *
  * The router mounts at /api/v2, so the callback lives there too; building this without the
  * version prefix points Google at a path that 404s.
+ *
+ * The origin follows the request rather than being baked: the callback is where the session
+ * cookie is set, and `__Host-` scopes it to that host alone, so a sign-in begun on the staff
+ * host has to come back to the staff host, or the session lands somewhere the staff host
+ * cannot read and `/admin` bounces to `/login` forever. `resolveCallbackOrigin` allowlists it.
  */
-function googleRedirectUri(): string {
-    return `${config.API_URL}/api/v2/auth/google/callback`;
+function googleRedirectUri(req: Request): string {
+    return `${resolveCallbackOrigin(originOfRequest(req.headers))}/api/v2/auth/google/callback`;
 }
 const controller = new AuthController();
 
@@ -201,7 +206,7 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
 
         const params = new URLSearchParams({
             client_id:     config.GOOGLE_CLIENT_ID,
-            redirect_uri:  googleRedirectUri(),
+            redirect_uri:  googleRedirectUri(req),
             response_type: 'code',
             scope:         'openid email profile',
             state,
@@ -230,8 +235,12 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
 router.get('/google/callback', async (req: Request, res: Response) => {
     const { code, state, error: oauthErr } = req.query as Record<string, string>;
 
+    // The sign-in page on the host this sign-in was happening on, not a baked one: the
+    // callback now runs on the staff host when the flow began there, and sending a staff
+    // failure to the storefront leaves them on a site with no back office on it. Falls back
+    // to SITE_URL exactly as before when the origin is not allowlisted.
     const failRedirect = (reason: string) =>
-        res.redirect(`${config.SITE_URL}/login?error=${reason}`);
+        res.redirect(`${resolveReturnOrigin(originOfRequest(req.headers))}/login?error=${reason}`);
 
     try {
         if (!config.GOOGLE_CLIENT_ID || !config.GOOGLE_CLIENT_SECRET) {
@@ -283,7 +292,7 @@ router.get('/google/callback', async (req: Request, res: Response) => {
                 code,
                 client_id:     config.GOOGLE_CLIENT_ID,
                 client_secret: config.GOOGLE_CLIENT_SECRET,
-                redirect_uri:  googleRedirectUri(),
+                redirect_uri:  googleRedirectUri(req),
                 grant_type:    'authorization_code',
             }),
         });

@@ -17,7 +17,10 @@ function configured(): string[] {
         .split(',')
         .map(s => s.trim())
         .filter(Boolean);
-    return [config.SITE_URL, ...extra].map(normalise).filter((o): o is string => o !== null);
+    // `API_URL` is here because the OAuth callback is served from it — `resolveCallbackOrigin`
+    // matches against this same list. Both are our own origins, so neither widens what an
+    // unrecognised candidate can reach.
+    return [config.SITE_URL, config.API_URL, ...extra].map(normalise).filter((o): o is string => o !== null);
 }
 
 /** An origin with no trailing slash and a lowercase host, or null if it is not one. */
@@ -61,4 +64,27 @@ export function originOfRequest(headers: {
     const proto = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(',')[0]?.trim()
         ?? (config.NODE_ENV === 'production' ? 'https' : 'http');
     return normalise(`${proto}://${host}`);
+}
+
+/**
+ * The origin to serve the Google callback from, given where the sign-in began.
+ *
+ * `redirect_uri` was one baked `API_URL`, so a sign-in started on the staff host was sent
+ * back to the storefront — and the callback is where `res.cookie` runs, so the session was
+ * set on the storefront whatever `resolveReturnOrigin` then decided. The staff host was
+ * redirected to with no cookie on it, and `/admin` bounced to `/login` forever. Carrying the
+ * return origin fixed where you land; this fixes where the session lands.
+ *
+ * Allowlisted for the same reason as the return origin: the candidate comes from a Host
+ * header, which is a request rather than a permission. Google rejects a redirect_uri it has
+ * not been given, so this is the second lock rather than the only one.
+ *
+ * Both legs of the exchange must name an identical redirect_uri or Google refuses the token
+ * call. They do: the authorize leg reads the host the browser called, and the callback leg
+ * reads the host Google sent it to — which is that same origin.
+ */
+export function resolveCallbackOrigin(candidate: string | null | undefined): string {
+    const wanted = normalise(candidate);
+    if (wanted && configured().includes(wanted)) return wanted;
+    return normalise(config.API_URL) ?? config.API_URL;
 }
