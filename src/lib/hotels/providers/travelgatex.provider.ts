@@ -35,6 +35,14 @@ import {
 
 const PREFIX = 'TGX:';
 
+/**
+ * How many times prebook re-asks for availability before calling it unavailable.
+ *
+ * Three rather than one because the supplier's empty answer is usually momentary, and rather
+ * than many because a traveller is waiting on the other end of it with a form already filled in.
+ */
+const PREBOOK_SEARCH_ATTEMPTS = 3;
+
 export interface TravelgateXProviderOptions {
     /** OTV needs a moment to propagate a freshly searched option into its valuation cache. */
     propagationDelayMs?: number;
@@ -218,24 +226,52 @@ export class TravelgateXProvider implements HotelProvider {
         }
 
         console.log(`[prebook/tgx] Fresh search: hotel=${hotelCode} ${checkIn}→${checkOut} adults=${input.adults}`);
-        let fresh: HotelSearchResult;
-        try {
-            fresh = await runTgxSearch({
-                hotelCode,
-                checkin:  checkIn,
-                checkout: checkOut,
-                adults:   input.adults,
-                children: input.children,
-                currency: input.currency,
-                guest_nationality: nationality,
-            });
-        } catch (err) {
-            throw classifyTgxFailure(err, false);
+
+        // Retried, because an empty answer here is usually not an empty hotel.
+        //
+        // The supplier intermittently serves no availability at all — an empty set with a
+        // success status and no error, for every hotel and every date. The windows are short
+        // and the empty answer arrives in well under a second, where a real search takes
+        // several, so retrying costs little and frequently lands once it reopens.
+        let freshRooms: any[] = [];
+        for (let attempt = 1; attempt <= PREBOOK_SEARCH_ATTEMPTS; attempt++) {
+            let fresh: HotelSearchResult;
+            try {
+                fresh = await runTgxSearch({
+                    hotelCode,
+                    checkin:  checkIn,
+                    checkout: checkOut,
+                    adults:   input.adults,
+                    children: input.children,
+                    currency: input.currency,
+                    guest_nationality: nationality,
+                });
+            } catch (err) {
+                throw classifyTgxFailure(err, false);
+            }
+
+            freshRooms = fresh?.data?.[0]?.roomTypes || [];
+            if (freshRooms.length) break;
+
+            if (attempt < PREBOOK_SEARCH_ATTEMPTS) {
+                console.warn(`[prebook/tgx] Empty availability for hotel=${hotelCode} (attempt ${attempt}/${PREBOOK_SEARCH_ATTEMPTS}) — retrying`);
+                await sleep(attempt * 600);
+            }
         }
 
-        const freshRooms: any[] = fresh?.data?.[0]?.roomTypes || [];
         if (!freshRooms.length) {
-            throw new HotelProviderError('SOLD_OUT', 'Room is no longer available for the selected dates', { provider: 'travelgatex' });
+            // `UNAVAILABLE`, not `SOLD_OUT`. SOLD_OUT is documented as definitive and maps to a
+            // 409 the checkout presents as "this room is gone, retrying cannot help" — but a
+            // sold-out room and a supplier serving nothing are indistinguishable from here, and
+            // during a blackout every hotel answers this way. Calling it definitive strands the
+            // traveller on a dead checkout; calling it a supplier problem routes them to the
+            // panel that offers to try again, which is what usually works.
+            console.warn(`[prebook/tgx] No availability after ${PREBOOK_SEARCH_ATTEMPTS} attempts — hotel=${hotelCode} ${checkIn}→${checkOut}`);
+            throw new HotelProviderError(
+                'UNAVAILABLE',
+                'Availability for this room could not be confirmed. Please try again in a moment.',
+                { provider: 'travelgatex' },
+            );
         }
 
         const wanted = input.roomName || '';

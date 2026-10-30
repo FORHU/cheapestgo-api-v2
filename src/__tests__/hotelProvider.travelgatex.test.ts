@@ -180,13 +180,33 @@ describe('TravelgateXProvider — prebook', () => {
         expect(out.roomSubstituted).toBe(true);
     });
 
-    it('is SOLD_OUT when the fresh search has no rooms', async () => {
+    it('re-asks before accepting that there is no availability', async () => {
+        // The supplier's empty answer is usually momentary, so one of them is not a verdict.
+        vi.mocked(runTgxSearch)
+            .mockResolvedValueOnce({ data: [{ roomTypes: [] }] } as never)
+            .mockResolvedValueOnce({ data: [{ roomTypes: [] }] } as never)
+            .mockResolvedValue(freshRooms('Deluxe Room') as never);
+        vi.mocked(quoteTgx).mockResolvedValue(quote() as never);
+
+        const out = await provider.prebook({ ...prebookInput, roomName: 'Deluxe Room' });
+
+        expect(vi.mocked(runTgxSearch)).toHaveBeenCalledTimes(3);
+        expect(out.roomName).toBe('Deluxe Room');
+    }, 20_000);
+
+    it('is UNAVAILABLE, not SOLD_OUT, when availability never comes back', async () => {
+        // SOLD_OUT is documented as definitive and reaches the checkout as "this room is gone,
+        // retrying cannot help". A sold-out room and a supplier serving nothing are
+        // indistinguishable from here, and during a blackout every hotel answers this way — so
+        // this has to be the code that routes the traveller to a retry instead of a dead end.
         vi.mocked(runTgxSearch).mockResolvedValue({ data: [{ roomTypes: [] }] } as never);
+
         const err = await provider.prebook(prebookInput).catch((e) => e);
+
         expect(err).toBeInstanceOf(HotelProviderError);
-        expect(err.code).toBe('SOLD_OUT');
-        expect(err.message).toBe('Room is no longer available for the selected dates');
-    });
+        expect(err.code).toBe('UNAVAILABLE');
+        expect(err.message).toBe('Availability for this room could not be confirmed. Please try again in a moment.');
+    }, 20_000);
 
     it('is SOLD_OUT when no candidate can be quoted', async () => {
         vi.mocked(runTgxSearch).mockResolvedValue(freshRooms('Deluxe Room') as never);

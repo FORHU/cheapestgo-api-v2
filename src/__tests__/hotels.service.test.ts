@@ -252,11 +252,11 @@ describe('HotelsService.createPayment()', () => {
             expect.objectContaining({
                 currency:       'usd',
                 capture_method: 'manual',
-                // 300 + 5.9% + $0.40 = 318.10. Pinned rather than expect.any(Number): the
-                // amount is the only thing on this call the customer feels, and a
-                // rate that silently reverts to a flat 5% is exactly the change that
-                // would otherwise pass every test in this file.
-                amount:         31810,
+                // 300 + a flat $0.37 = 300.37. Pinned rather than expect.any(Number): the
+                // amount is the only thing on this call the customer feels, and a rate that
+                // silently reappears is exactly the change that would otherwise pass every
+                // test in this file.
+                amount:         30037,
                 metadata:       expect.objectContaining({ userId: USER_ID, type: 'hotel' }),
             }),
             expect.objectContaining({ idempotencyKey: expect.stringContaining(`hotel-pi-${USER_ID}`) })
@@ -276,7 +276,7 @@ describe('HotelsService.createPayment()', () => {
 
         expect(stripe.paymentIntents.create).toHaveBeenCalledWith(
             expect.objectContaining({
-                amount:   31810,
+                amount:   30037,
                 metadata: expect.objectContaining({ type: 'hotel_bundle', bundleFlightId: 'FLT-123' }),
             }),
             expect.anything()

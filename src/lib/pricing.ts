@@ -96,10 +96,25 @@ export const FLIGHT_MARKUP_SPEC: MarkupSpec = {
     cap:  parseMarkupEnv('MARKUP_CAP', 0.12),
 };
 
-/** 5.9% + $0.40, capped at 12%. The flat part covers Stripe's $0.30 per charge. */
+/**
+ * $0.37 per booking — about ₩500. No proportional component, capped at 12%.
+ *
+ * Hotels are priced off what a guest will tolerate seeing rather than off Platform Cost. The
+ * supplier's price is shown as it comes back and this is the only thing added to it, because
+ * on the markets served the same rooms are sold elsewhere at our own net rate — anything
+ * larger reads as a surcharge for booking with us.
+ *
+ * **It recovers none of Stripe, and is not meant to.** Stripe's cut is proportional and this
+ * is not, so every hotel booking loses money from the first night, and the loss grows with the
+ * booking. That is a deliberate acquisition subsidy, not an oversight.
+ *
+ * Kept identical to v1's `HOTEL_MARKUP_SPEC` on purpose: the two storefronts quote the same
+ * supplier, and a guest who sees one price in v1 and another in v2 has caught us charging for
+ * which page they happened to land on.
+ */
 export const HOTEL_MARKUP_SPEC: MarkupSpec = {
-    rate: parseMarkupEnv('HOTEL_MARKUP_PERCENTAGE', 0.059),
-    flat: parseFlatEnv('HOTEL_MARKUP_FLAT_USD', 0.40),
+    rate: parseMarkupEnv('HOTEL_MARKUP_PERCENTAGE', 0),
+    flat: parseFlatEnv('HOTEL_MARKUP_FLAT_USD', 0.37),
     cap:  parseMarkupEnv('MARKUP_CAP', 0.12),
 };
 
@@ -167,7 +182,13 @@ export const FLIGHT_PRICE_TOLERANCE_SANDBOX = 10.00;
  * At 5.9% the buffer is ~1.19%, and 0.3% keeps the same 28% share the original design
  * intended while staying wide enough that ordinary rate movement never interrupts checkout.
  *
- * A function of STRIPE_RATE and the hotel rate. Change either and recompute it.
+ * **No longer a share of the margin, because there is no margin.** The hotel fee became a
+ * flat $0.37 and Stripe's cut is proportional, so every hotel booking is sold at a loss by
+ * choice. Kept at 0.3% and re-based on what the band actually buys: below it the displayed
+ * price is honoured, above it the traveller is asked to approve a new total. On a $300 room
+ * that is ninety cents of drift absorbed against a subsidy of thirteen dollars already
+ * accepted — and a checkout interrupted over ninety cents costs more in abandonment than the
+ * ninety cents. Widen it and the subsidy grows; narrow it and the prompts do.
  */
 export const HOTEL_FX_DISPLAY_TOLERANCE = 0.003; // 0.3%
 
