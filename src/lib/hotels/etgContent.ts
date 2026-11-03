@@ -93,6 +93,22 @@ function etgToken(): string {
   return Buffer.from(`${keyId}:${apiKey}`).toString('base64');
 }
 
+/** Both halves, or there is no point dialling. See `ensureEtgContent`. */
+function hasEtgCredentials(): boolean {
+  return Boolean(process.env.ETG_KEY_ID && process.env.ETG_API_KEY);
+}
+
+/** Once per process: the condition is a deployment fact, not a per-hotel event. */
+let warnedNoEtgCredentials = false;
+function warnMissingEtgCredentialsOnce(): void {
+  if (warnedNoEtgCredentials) return;
+  warnedNoEtgCredentials = true;
+  console.warn(
+    '[etg-content] ETG_KEY_ID / ETG_API_KEY are not set — serving stored room content only. '
+    + 'Nothing will refresh until they are.',
+  );
+}
+
 function fromRow(row: {
   room_groups?: unknown; amenity_groups?: unknown; metapolicy_struct?: unknown;
   metapolicy_extra_info?: string | null; important_information?: string | null;
@@ -133,6 +149,14 @@ export async function ensureEtgContent(
   if (fresh && cached) return cached;
 
   if (!row.ratehawk_hid) return cached;
+
+  // Without both halves of the key the request can only come back 401, and it did: production
+  // ran without them, so every property view paid a round trip to worldota.net to be refused,
+  // and wrote a line about it. Serve what is stored and say so once rather than per hotel.
+  if (!hasEtgCredentials()) {
+    warnMissingEtgCredentialsOnce();
+    return cached;
+  }
 
   try {
     const res = await fetch('https://api.worldota.net/api/b2b/v3/hotel/info/', {

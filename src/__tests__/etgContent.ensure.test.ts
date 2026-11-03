@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@/lib/prisma', () => ({
   prisma: { hotel_content: { update: vi.fn().mockResolvedValue({}) } },
@@ -13,6 +13,14 @@ const STALE = new Date(Date.now() - 40 * 24 * 3600 * 1000);
 beforeEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  // `ensureEtgContent` will not dial without both halves of the key, so the cases below that
+  // are about the fetch have to supply them.
+  vi.stubEnv('ETG_KEY_ID', 'key-id');
+  vi.stubEnv('ETG_API_KEY', 'api-key');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('ensureEtgContent', () => {
@@ -50,6 +58,27 @@ describe('ensureEtgContent', () => {
   it('returns null when there is no ratehawk_hid to fetch with', async () => {
     const row = { hotel_id: 'H1', ratehawk_hid: null, etg_content_seeded_at: null };
     expect(await ensureEtgContent('H1', row as any)).toBeNull();
+  });
+
+  /**
+   * Production ran without ETG keys, so every property view paid a round trip to worldota.net
+   * purely to be told 401 — once per hotel, in the log and on the wire.
+   */
+  it('does not dial at all when the credentials are absent', async () => {
+    vi.stubEnv('ETG_KEY_ID', '');
+    vi.stubEnv('ETG_API_KEY', '');
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const row = {
+      hotel_id: 'H1', ratehawk_hid: 'slug_1', etg_content_seeded_at: STALE,
+      room_groups: [{ name: 'Deluxe', images: ['{size}/a.jpg'], room_amenities: [] }],
+    };
+    const out = await ensureEtgContent('H1', row as any);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // And the stored content is still served — the keys gate refreshing, not reading.
+    expect(out?.roomGroups[0].images[0]).toBe('1024x768/a.jpg');
   });
 
   it('fetches hotel/info when stale, then stores RAW blobs and returns parsed content', async () => {

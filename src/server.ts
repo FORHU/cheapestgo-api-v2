@@ -11,8 +11,11 @@ async function main() {
         .then(() => logger.info('[db] connected'))
         .catch((err: any) => logger.warn('[db] unavailable — DB-dependent routes will fail', { err: err.message }));
 
-    await redis.connect().catch((err) => {
-        logger.warn('[redis] unavailable — caching disabled', { err: err.message });
+    // Not awaited. The client retries with a backoff now, so awaiting could hold the port shut
+    // while it worked through them — and the API serves every route without a cache, just more
+    // slowly. It connects in the background and `lib/redis` logs the transition when it lands.
+    void redis.connect().catch((err) => {
+        logger.warn('[redis] unavailable — caching disabled, will keep trying', { err: err.message });
     });
 
     app.listen(config.PORT, () => {
