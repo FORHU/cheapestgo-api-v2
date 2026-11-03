@@ -43,6 +43,16 @@ const PREFIX = 'TGX:';
  */
 const PREBOOK_SEARCH_ATTEMPTS = 3;
 
+/**
+ * How many times the whole candidate sweep is re-quoted before the attempt is given up.
+ *
+ * OTV answers "Rate not found" for an option it handed us seconds earlier — its valuation cache
+ * lags its search. `propagationDelayMs` is the first guess at how long; it is not always enough,
+ * and a single failed quote used to end the checkout. A hotel with one room feels this hardest:
+ * `candidates` holds one entry, so one lagging lookup was the entire attempt.
+ */
+const PREBOOK_QUOTE_ROUNDS = 3;
+
 export interface TravelgateXProviderOptions {
     /** OTV needs a moment to propagate a freshly searched option into its valuation cache. */
     propagationDelayMs?: number;
@@ -294,32 +304,46 @@ export class TravelgateXProvider implements HotelProvider {
         let quotedToken    = candidates[0]?.offerId?.slice(PREFIX.length) ?? staleToken;
         let successfulRoom = candidates[0];
 
-        for (const room of candidates) {
-            const offerId: string = room?.offerId || '';
-            if (!offerId.startsWith(PREFIX)) continue;
-            const optionId    = offerId.slice(PREFIX.length);
-            const tgxId       = room?.rates?.[0]?._tgx?.id    || '';
-            const nativeToken = room?.rates?.[0]?._tgx?.token || '';
-            const tokensToTry = [...new Set([optionId, tgxId, nativeToken].filter(Boolean))];
-
-            for (const token of tokensToTry) {
-                console.log('[prebook/tgx] Quoting with token:', token.substring(0, 80));
-                try {
-                    optionQuote    = await quoteTgx(token);
-                    quotedToken    = token;
-                    successfulRoom = room;
-                    break;
-                } catch (e: any) {
-                    console.warn('[prebook/tgx] Quote failed:', token.substring(0, 40), '—', e.message?.substring(0, 100));
-                }
+        for (let round = 1; round <= PREBOOK_QUOTE_ROUNDS && !optionQuote; round++) {
+            if (round > 1) {
+                // Growing, because the thing being waited on is OTV's own cache catching up.
+                await sleep(this.retryDelayMs * (round - 1));
+                console.warn(`[prebook/tgx] Re-quoting hotel=${hotelCode} (round ${round}/${PREBOOK_QUOTE_ROUNDS})`);
             }
-            if (optionQuote) break;
+
+            for (const room of candidates) {
+                const offerId: string = room?.offerId || '';
+                if (!offerId.startsWith(PREFIX)) continue;
+                const optionId    = offerId.slice(PREFIX.length);
+                const tgxId       = room?.rates?.[0]?._tgx?.id    || '';
+                const nativeToken = room?.rates?.[0]?._tgx?.token || '';
+                const tokensToTry = [...new Set([optionId, tgxId, nativeToken].filter(Boolean))];
+
+                for (const token of tokensToTry) {
+                    console.log('[prebook/tgx] Quoting with token:', token.substring(0, 80));
+                    try {
+                        optionQuote    = await quoteTgx(token);
+                        quotedToken    = token;
+                        successfulRoom = room;
+                        break;
+                    } catch (e: any) {
+                        console.warn('[prebook/tgx] Quote failed:', token.substring(0, 40), '—', e.message?.substring(0, 100));
+                    }
+                }
+                if (optionQuote) break;
+            }
         }
 
         if (!optionQuote) {
+            // `UNAVAILABLE`, not `SOLD_OUT`, for the reason the empty-search branch above gives:
+            // a room that is gone and a supplier that will not valuate one are indistinguishable
+            // from here, and only one of those two readings leaves the traveller somewhere to go.
+            // "Rate not found" against a token from a search seconds old is overwhelmingly the
+            // second, so the checkout offers to try again rather than declaring the room gone.
+            console.warn(`[prebook/tgx] No quote after ${PREBOOK_QUOTE_ROUNDS} rounds — hotel=${hotelCode} ${checkIn}→${checkOut}`);
             throw new HotelProviderError(
-                'SOLD_OUT',
-                'This room is currently unavailable for booking. Please try a different hotel or check back later.',
+                'UNAVAILABLE',
+                'Availability for this room could not be confirmed. Please try again in a moment.',
                 { provider: 'travelgatex' },
             );
         }

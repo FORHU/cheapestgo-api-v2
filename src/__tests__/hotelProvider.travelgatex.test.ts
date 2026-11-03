@@ -227,12 +227,39 @@ describe('TravelgateXProvider — prebook', () => {
         expect(err.message).toBe('Availability for this room could not be confirmed. Please try again in a moment.');
     }, 20_000);
 
-    it('is SOLD_OUT when no candidate can be quoted', async () => {
+    /**
+     * Was SOLD_OUT, which the checkout presents as "this room is gone" with no way forward.
+     * OTV answers "Rate not found" for an option it returned seconds earlier — its valuation
+     * cache lags its search — so a failed quote says far more about the supplier than about the
+     * room. Same argument the empty-search branch already makes.
+     */
+    it('is UNAVAILABLE, not SOLD_OUT, when no candidate can be quoted', async () => {
         vi.mocked(runTgxSearch).mockResolvedValue(freshRooms('Deluxe Room') as never);
-        vi.mocked(quoteTgx).mockRejectedValue(new Error('boom'));
+        vi.mocked(quoteTgx).mockRejectedValue(new Error('TGX Quote errors: Rate not found'));
         const err = await provider.prebook(prebookInput).catch((e) => e);
-        expect(err.code).toBe('SOLD_OUT');
-        expect(err.message).toBe('This room is currently unavailable for booking. Please try a different hotel or check back later.');
+        expect(err.code).toBe('UNAVAILABLE');
+        expect(err.message).toBe('Availability for this room could not be confirmed. Please try again in a moment.');
+    });
+
+    it('re-quotes a lagging option rather than giving up on the first refusal', async () => {
+        vi.mocked(runTgxSearch).mockResolvedValue(freshRooms('Deluxe Room') as never);
+        vi.mocked(quoteTgx)
+            .mockRejectedValueOnce(new Error('TGX Quote errors: Rate not found'))
+            .mockResolvedValueOnce(quote() as never);
+
+        const out = await provider.prebook(prebookInput);
+
+        expect(out.prebookRef).toContain('book-token');
+        expect(vi.mocked(quoteTgx)).toHaveBeenCalledTimes(2);
+    });
+
+    it('gives the supplier a bounded number of rounds, not unlimited', async () => {
+        vi.mocked(runTgxSearch).mockResolvedValue(freshRooms('Deluxe Room') as never);
+        vi.mocked(quoteTgx).mockRejectedValue(new Error('TGX Quote errors: Rate not found'));
+        await provider.prebook(prebookInput).catch(() => undefined);
+        // One candidate carrying three distinct tokens (option id, tgx id, native), swept three
+        // times over — bounded, so a checkout cannot hang on a supplier that never recovers.
+        expect(vi.mocked(quoteTgx)).toHaveBeenCalledTimes(9);
     });
 
     it('is NOT_PAYABLE_ONLINE when the supplier collects payment itself', async () => {
