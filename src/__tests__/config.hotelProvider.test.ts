@@ -52,4 +52,37 @@ describe('config — hotel provider', () => {
         const c = await loadConfig({ NODE_ENV: 'production', HOTEL_PROVIDER: 'mock', ALLOW_MOCK_HOTEL_PROVIDER: 'true' });
         expect(c.HOTEL_PROVIDER).toBe('mock');
     });
+
+    /**
+     * The mirror. TravelgateX has no sandbox, so a booking from a laptop is a real reservation at
+     * a real hotel — and Stripe test keys authorise and capture just like live ones, so no payment
+     * guard can catch it. On 2026-11-03 that combination booked a room in Kyoto.
+     */
+    it('exits when a developer machine is pointed at the live supplier', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const exit = vi.spyOn(process, 'exit').mockImplementation((() => { throw new Error('exit'); }) as never);
+        await expect(loadConfig({ NODE_ENV: 'development', HOTEL_PROVIDER: 'travelgatex' })).rejects.toThrow('exit');
+        // And by default, since travelgatex is what HOTEL_PROVIDER falls back to.
+        await expect(loadConfig({ NODE_ENV: 'development' })).rejects.toThrow('exit');
+        expect(exit).toHaveBeenCalledWith(1);
+    });
+
+    it('lets a developer reach the live supplier only when explicitly allowed', async () => {
+        const c = await loadConfig({ NODE_ENV: 'development', HOTEL_PROVIDER: 'travelgatex', ALLOW_LIVE_HOTEL_PROVIDER: 'true' });
+        expect(c.HOTEL_PROVIDER).toBe('travelgatex');
+    });
+
+    it('leaves the mock alone on a developer machine', async () => {
+        const c = await loadConfig({ NODE_ENV: 'development', HOTEL_PROVIDER: 'mock' });
+        expect(c.HOTEL_PROVIDER).toBe('mock');
+    });
+
+    /**
+     * `test` is exempt on purpose: vitest sets it, the suite stubs the provider, and exiting the
+     * process mid-run would be a worse outcome than the risk — a CI box has no credentials.
+     */
+    it('does not refuse the live provider under NODE_ENV=test', async () => {
+        const c = await loadConfig({ NODE_ENV: 'test', HOTEL_PROVIDER: 'travelgatex' });
+        expect(c.HOTEL_PROVIDER).toBe('travelgatex');
+    });
 });
