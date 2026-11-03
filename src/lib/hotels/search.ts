@@ -1005,10 +1005,20 @@ function persistFailedDestCode(destCode: string, cityName = ''): void {
  */
 const SUPPLIER_SEARCH_TIMEOUT_MS = Number(process.env.TGX_SEARCH_TIMEOUT_MS ?? 12_000);
 
-/** HTTP aborts. Larger than the supplier budget because they also cover the response
- *  transfer: a destination search returns hundreds of hotels, a single hotel one. */
+/**
+ * HTTP aborts. Larger than the supplier budget because they also cover the response transfer.
+ *
+ * Both get the same headroom over `SUPPLIER_SEARCH_TIMEOUT_MS`. The hotel abort used to be
+ * 13s — one second of headroom against the city search's ten — on the reasoning that a
+ * destination search returns hundreds of hotels and a single-hotel search returns one hotel.
+ * It returns one *hotel* but every rate that hotel is sold at: Roynet Mapo answers with 67.
+ * The property page aborted at 13s, `getRates` swallowed it, and the page drew "no rooms"
+ * for a hotel the search had just advertised at ₱9,923 — intermittently, which is what made
+ * it look like availability rather than a deadline. The supplier's own budget is the thing
+ * that bounds how long this waits; the abort is only there to stop a hung socket.
+ */
 const ABORT_CITY_MS  = 22_000;
-const ABORT_HOTEL_MS = 13_000;
+const ABORT_HOTEL_MS = 22_000;
 
 // ─── In-flight dedup ──────────────────────────────────────────────────────────
 

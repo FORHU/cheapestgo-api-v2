@@ -209,7 +209,12 @@ export class TravelgateXProvider implements HotelProvider {
             adults:            stay.adults,
             children:          stay.children,
             currency:          stay.currency ?? 'USD',
-            guest_nationality: stay.nationality ?? 'US',
+            // Left to `runTgxSearch`'s own default when the caller names none. Defaulting to
+            // 'US' here asked the supplier a different question than the search had: rates are
+            // residency-restricted, so a hotel found for a KR guest could come back empty when
+            // its own page re-asked as a US one. The two paths have to agree or search
+            // advertises rates the property page cannot show.
+            guest_nationality: stay.nationality,
         });
         return result?.data?.[0]?.roomTypes ?? [];
     }

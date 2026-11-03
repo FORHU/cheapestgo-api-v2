@@ -109,8 +109,27 @@ describe('TravelgateXProvider — rates', () => {
         expect(out).toEqual(roomTypes);
         expect(runTgxSearch).toHaveBeenCalledWith({
             hotelCode: '10000352', checkin: '2026-11-10', checkout: '2026-11-12',
-            adults: 2, children: 1, currency: 'USD', guest_nationality: 'US',
+            adults: 2, children: 1, currency: 'USD', guest_nationality: undefined,
         });
+    });
+
+    /**
+     * Rates are residency-restricted. Defaulting to 'US' here asked the supplier a different
+     * question than the city search had — which defaults to KR — so a hotel the search
+     * advertised could answer "nothing available" when its own page re-asked.
+     */
+    it('names no nationality of its own, leaving the search default to stand', async () => {
+        vi.mocked(runTgxSearch).mockResolvedValue({ data: [{ roomTypes: [] }] } as never);
+        await provider.getRates('1', { checkIn: '2026-11-10', checkOut: '2026-11-12', adults: 2, children: 0 });
+        expect(vi.mocked(runTgxSearch).mock.calls[0][0].guest_nationality).toBeUndefined();
+    });
+
+    it('passes a caller-named nationality straight through', async () => {
+        vi.mocked(runTgxSearch).mockResolvedValue({ data: [{ roomTypes: [] }] } as never);
+        await provider.getRates('1', {
+            checkIn: '2026-11-10', checkOut: '2026-11-12', adults: 2, children: 0, nationality: 'PH',
+        });
+        expect(vi.mocked(runTgxSearch).mock.calls[0][0].guest_nationality).toBe('PH');
     });
 
     it('returns nothing when the supplier has nothing', async () => {

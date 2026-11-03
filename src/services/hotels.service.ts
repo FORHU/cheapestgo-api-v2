@@ -462,8 +462,10 @@ export class HotelsService {
                 checkOut:    stay.checkOut,
                 adults:      stay.adults ?? 2,
                 children:    stay.children ?? 0,
+                // No nationality: the provider leaves it to the search's own default, which is
+                // what the city search that led the guest here used. Naming 'US' made this page
+                // ask a question the search had not — see `getRates`.
                 currency:    'USD',
-                nationality: 'US',
             }).catch(() => null),
         ]);
 
