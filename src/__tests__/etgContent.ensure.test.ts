@@ -79,4 +79,39 @@ describe('ensureEtgContent', () => {
     const row = { hotel_id: 'H1', ratehawk_hid: 'slug_1', etg_content_seeded_at: STALE };
     expect(await ensureEtgContent('H1', row as any)).toBeNull();
   });
+
+  /**
+   * The bulk dump stamps `room_groups_seeded_at` and never `etg_content_seeded_at`, so reading
+   * only the latter treated every dump-seeded hotel as unseeded — and when the refetch then
+   * returned nothing, every room on the property page fell back to the hotel's exterior shot.
+   */
+  const dumpSeeded = (seededAt: Date) => ({
+    hotel_id: 'H1', ratehawk_hid: 'slug_1',
+    etg_content_seeded_at: null, room_groups_seeded_at: seededAt,
+    room_groups: [{ name: 'Deluxe Twin', images: ['{size}/room.jpg'], room_amenities: ['tv'] }],
+  });
+
+  it('serves dump-seeded room groups without fetching', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const out = await ensureEtgContent('H1', dumpSeeded(FRESH) as any);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(out?.roomGroups[0].name).toBe('Deluxe Twin');
+  });
+
+  it('falls back to stale room groups when the refetch fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 502 }));
+    const out = await ensureEtgContent('H1', dumpSeeded(STALE) as any);
+    expect(out?.roomGroups[0].images[0]).toBe('1024x768/room.jpg');
+  });
+
+  it('keeps stored room groups when ETG answers with an empty set', async () => {
+    const update = vi.mocked(prisma.hotel_content.update);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ data: { room_groups: [], amenity_groups: [] } }),
+    }));
+    const out = await ensureEtgContent('H1', dumpSeeded(STALE) as any);
+    expect(out?.roomGroups[0].name).toBe('Deluxe Twin');
+    expect((update.mock.calls[0][0].data as any).room_groups).toHaveLength(1);
+  });
 });
