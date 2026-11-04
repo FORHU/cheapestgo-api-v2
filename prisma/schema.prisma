@@ -444,24 +444,66 @@ model flight_segments {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model golf_courses {
-  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  slug           String   @unique
-  name           String
-  country        String
-  city           String
-  address        String?
-  description    String   @default("")
-  holes          Int
-  par            Int?
-  green_fee_from Decimal? @db.Decimal(10, 2)
-  currency       String   @default("USD") @db.Char(3)
-  image_urls     String[] @default([])
-  amenities      String[] @default([])
-  status         String   @default("draft")
-  created_at     DateTime @default(now()) @db.Timestamptz(6)
-  updated_at     DateTime @default(now()) @db.Timestamptz(6)
+  id                      String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug                    String                    @unique
+  name                    String
+  country                 String
+  city                    String
+  address                 String?
+  description             String                    @default("")
+  holes                   Int
+  par                     Int?
+  green_fee_from          Decimal?                  @db.Decimal(10, 2)
+  currency                String                    @default("USD") @db.Char(3)
+  image_urls              String[]                  @default([])
+  amenities               String[]                  @default([])
+  status                  String                    @default("draft")
+  created_at              DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime                  @default(now()) @db.Timestamptz(6)
+  timezone                String?
+  booking_window_days     Int                       @default(60)
+  golf_tee_time_schedules golf_tee_time_schedules[]
+  golf_tee_times          golf_tee_times[]
 
   @@index([status, country], map: "idx_golf_courses_status_country")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model golf_tee_time_schedules {
+  id               String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  course_id        String           @db.Uuid
+  name             String
+  days_of_week     Int[]            @db.SmallInt
+  first_tee        DateTime         @db.Time(6)
+  last_tee         DateTime         @db.Time(6)
+  interval_minutes Int
+  spots            Int              @default(4)
+  price_per_player Decimal          @db.Decimal(10, 2)
+  created_at       DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime         @default(now()) @db.Timestamptz(6)
+  golf_courses     golf_courses     @relation(fields: [course_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  golf_tee_times   golf_tee_times[]
+
+  @@index([course_id], map: "idx_golf_schedules_course")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model golf_tee_times {
+  id                      String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  course_id               String                   @db.Uuid
+  schedule_id             String?                  @db.Uuid
+  starts_at               DateTime                 @db.Timestamptz(6)
+  spots                   Int
+  spots_left              Int
+  price_per_player        Decimal                  @db.Decimal(10, 2)
+  currency                String                   @db.Char(3)
+  status                  String                   @default("open")
+  created_at              DateTime                 @default(now()) @db.Timestamptz(6)
+  golf_courses            golf_courses             @relation(fields: [course_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  golf_tee_time_schedules golf_tee_time_schedules? @relation(fields: [schedule_id], references: [id], onUpdate: NoAction)
+
+  @@unique([course_id, starts_at], map: "golf_tee_times_course_start_key")
+  @@index([schedule_id], map: "idx_golf_tee_times_schedule")
 }
 
 model hotel_content {
