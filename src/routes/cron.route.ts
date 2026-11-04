@@ -1620,4 +1620,16 @@ router.get('/supplier-health', async (_req: Request, res: Response, next: NextFu
     } catch (err) { next(err); }
 });
 
+/**
+ * Golf tee times, topped up to the end of each course's booking window (daily). Generation also runs
+ * when a schedule is added or a course's window changes; this is what moves the window forward a day
+ * at a time. Existing tee times are never touched, so running it twice is harmless.
+ */
+router.get('/golf-generate-tee-times', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { GolfTeeTimesService } = await import('@/services/golfTeeTimes.service');
+        res.json({ success: true, created: await new GolfTeeTimesService().generate() });
+    } catch (err) { next(err); }
+});
+
 export default router;

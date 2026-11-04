@@ -634,6 +634,8 @@ const RUNNABLE_CRONS = new Set([
     'etg-reviews-sync',
     'fill-dest-cache',
     'geocode-hotels',
+    // Adds missing tee times only; never changes or removes one, so a second run is a no-op.
+    'golf-generate-tee-times',
     // Both read-only reporters — they notify and stop, never repair, so running one by hand
     // is safe and is often exactly what is wanted after a suspected discrepancy.
     'hotel-reconciliation',

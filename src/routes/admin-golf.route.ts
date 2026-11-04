@@ -17,4 +17,8 @@ router.put('/courses/:id',          golf.adminUpdate);
 router.patch('/courses/:id/status', golf.adminSetStatus);
 router.delete('/courses/:id',       golf.adminDelete);
 
+router.get('/courses/:id/schedules',                golf.adminListSchedules);
+router.post('/courses/:id/schedules',               golf.adminAddSchedule);
+router.delete('/courses/:id/schedules/:scheduleId', golf.adminRemoveSchedule);
+
 export default router;

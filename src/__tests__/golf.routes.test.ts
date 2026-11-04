@@ -12,10 +12,14 @@ const svc = vi.hoisted(() => ({
     listPublished: vi.fn(), getPublished: vi.fn(), listForAdmin: vi.fn(),
     create: vi.fn(), update: vi.fn(), setStatus: vi.fn(), delete: vi.fn(),
 }));
+const teeTimes = vi.hoisted(() => ({
+    availability: vi.fn(), listSchedules: vi.fn(), addSchedule: vi.fn(), removeSchedule: vi.fn(),
+}));
 const audit = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock('@/lib/prisma', () => ({ prisma: {} }));
 vi.mock('@/services/golf.service', () => ({ GolfService: vi.fn(function () { return svc; }) }));
+vi.mock('@/services/golfTeeTimes.service', () => ({ GolfTeeTimesService: vi.fn(function () { return teeTimes; }) }));
 vi.mock('@/lib/admin/audit', () => ({ logAdminAction: audit }));
 // Who is calling comes from a header, so a test can be anyone.
 vi.mock('@/middleware/auth.middleware', async () => {
@@ -145,5 +149,67 @@ describe('admin', () => {
         svc.delete.mockResolvedValue(true);
         expect(await call('DELETE', `/admin/golf/courses/${ID}`, { role: 'admin' })).toEqual({ status: 200, body: { success: true } });
         expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'golf_course_delete', targetId: ID }));
+    });
+});
+
+describe('tee times', () => {
+    const SCHED = '0b6c7a2e-2222-4a5b-9c3d-000000000002';
+    const SCHEDULE = { name: 'Weekday mornings', daysOfWeek: [1, 2, 3, 4, 5], firstTee: '06:30', lastTee: '11:00', intervalMinutes: 8, pricePerPlayer: 85 };
+
+    it("answers a course's day, with players and currency passed down", async () => {
+        teeTimes.availability.mockResolvedValue({ date: '2026-11-15', teeTimes: [] });
+        const res = await call('GET', '/golf/courses/wack-wack/tee-times?date=2026-11-15&players=3&currency=KRW');
+        expect(res).toEqual({ status: 200, body: { success: true, data: { date: '2026-11-15', teeTimes: [] } } });
+        expect(teeTimes.availability).toHaveBeenCalledWith('wack-wack', { date: '2026-11-15', players: 3, currency: 'KRW' });
+    });
+
+    it('reads a missing or impossible party size as two players', async () => {
+        teeTimes.availability.mockResolvedValue({ teeTimes: [] });
+        await call('GET', '/golf/courses/wack-wack/tee-times?players=9');
+        expect(teeTimes.availability).toHaveBeenCalledWith('wack-wack', { date: undefined, players: 2, currency: undefined });
+    });
+
+    it('refuses a date that is not a calendar date, against the date field', async () => {
+        const res = await call('GET', '/golf/courses/wack-wack/tee-times?date=2026-02-30');
+        expect(res.status).toBe(422);
+        expect(res.body.details).toHaveProperty('date');
+        expect(teeTimes.availability).not.toHaveBeenCalled();
+    });
+
+    it('answers 404 for a course that cannot have tee times', async () => {
+        teeTimes.availability.mockResolvedValue(null);
+        expect((await call('GET', '/golf/courses/draft/tee-times')).status).toBe(404);
+    });
+
+    it("lists, adds and deletes a course's schedules for an admin only", async () => {
+        expect((await call('GET', `/admin/golf/courses/${ID}/schedules`, { role: 'user' })).status).toBe(403);
+
+        teeTimes.listSchedules.mockResolvedValue([{ id: SCHED }]);
+        expect(await call('GET', `/admin/golf/courses/${ID}/schedules`, { role: 'admin' }))
+            .toEqual({ status: 200, body: { success: true, data: [{ id: SCHED }] } });
+
+        teeTimes.addSchedule.mockResolvedValue({ schedule: { id: SCHED }, created: 120 });
+        const added = await call('POST', `/admin/golf/courses/${ID}/schedules`, { role: 'admin', body: SCHEDULE });
+        expect(added).toEqual({ status: 201, body: { success: true, data: { schedule: { id: SCHED }, created: 120 } } });
+        expect(teeTimes.addSchedule).toHaveBeenCalledWith(ID, expect.objectContaining({ name: 'Weekday mornings', spots: 4 }));
+        expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'golf_schedule_create', targetId: SCHED }));
+
+        teeTimes.removeSchedule.mockResolvedValue(true);
+        expect(await call('DELETE', `/admin/golf/courses/${ID}/schedules/${SCHED}`, { role: 'admin' }))
+            .toEqual({ status: 200, body: { success: true } });
+        expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'golf_schedule_delete', targetId: SCHED }));
+    });
+
+    it('names the schedule fields that are wrong, and 404s what is not there', async () => {
+        const bad = await call('POST', `/admin/golf/courses/${ID}/schedules`, { role: 'admin', body: { ...SCHEDULE, daysOfWeek: [] } });
+        expect(bad.status).toBe(422);
+        expect(Object.keys(bad.body.details ?? {})).toEqual(['daysOfWeek']);
+
+        teeTimes.listSchedules.mockResolvedValue(null);
+        teeTimes.addSchedule.mockResolvedValue(null);
+        teeTimes.removeSchedule.mockResolvedValue(false);
+        expect((await call('GET', `/admin/golf/courses/${ID}/schedules`, { role: 'admin' })).status).toBe(404);
+        expect((await call('POST', `/admin/golf/courses/${ID}/schedules`, { role: 'admin', body: SCHEDULE })).status).toBe(404);
+        expect((await call('DELETE', `/admin/golf/courses/${ID}/schedules/${SCHED}`, { role: 'admin' })).status).toBe(404);
     });
 });

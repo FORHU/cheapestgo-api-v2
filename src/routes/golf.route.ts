@@ -8,7 +8,8 @@ import { GolfController } from '@/controllers/golf.controller';
 const router: Router = Router();
 const golf = new GolfController();
 
-router.get('/courses',       golf.list);
-router.get('/courses/:slug', golf.get);
+router.get('/courses',                 golf.list);
+router.get('/courses/:slug',           golf.get);
+router.get('/courses/:slug/tee-times', golf.teeTimesOnDay);
 
 export default router;

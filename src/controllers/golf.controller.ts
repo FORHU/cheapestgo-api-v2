@@ -3,8 +3,12 @@ import { z } from 'zod';
 import { AppError } from '@/middleware/error.middleware';
 import { logAdminAction } from '@/lib/admin/audit';
 import { GOLF_COURSE_STATUSES, golfCourseInputSchema } from '@/lib/golf/courseInput';
+import { scheduleInputSchema } from '@/lib/golf/scheduleInput';
+import { isIsoDate } from '@/lib/golf/time';
+import { DEFAULT_PLAYERS } from '@/lib/golf/rules';
 import { SlugTakenError } from '@/repositories/golf.repository';
 import { GolfService } from '@/services/golf.service';
+import { GolfTeeTimesService } from '@/services/golfTeeTimes.service';
 
 /**
  * The golf catalogue over HTTP. Bodies are parsed here with the course schema rather than by the
@@ -18,6 +22,13 @@ const storefrontQuery = z.object({
 });
 
 const statusBody = z.object({ status: z.enum(GOLF_COURSE_STATUSES) });
+
+/** The picker's query. A party size outside 1–4 reads as the default rather than being refused. */
+const teeTimesQuery = z.object({
+    date:     z.string().trim().optional().catch(undefined),
+    players:  z.coerce.number().int().min(1).max(4).catch(DEFAULT_PLAYERS).default(DEFAULT_PLAYERS),
+    currency: z.string().trim().max(3).optional().catch(undefined),
+});
 
 const notFound = () => new AppError(404, 'Golf course not found', 'NOT_FOUND');
 
@@ -35,7 +46,47 @@ function audit(req: Request, action: string, targetId: string, details?: Record<
 }
 
 export class GolfController {
-    constructor(private readonly svc = new GolfService()) {}
+    constructor(
+        private readonly svc = new GolfService(),
+        private readonly teeTimes = new GolfTeeTimesService(),
+    ) {}
+
+    teeTimesOnDay = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { date, players, currency } = teeTimesQuery.parse(req.query);
+            if (date !== undefined && !isIsoDate(date)) {
+                throw new AppError(422, 'Invalid request data', 'VALIDATION_ERROR', { details: { date: ['A date like 2026-11-15'] } });
+            }
+            const day = await this.teeTimes.availability(req.params.slug, { date, players, currency });
+            if (!day) throw notFound();
+            res.json({ success: true, data: day });
+        } catch (err) { next(err); }
+    };
+
+    adminListSchedules = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const schedules = await this.teeTimes.listSchedules(req.params.id);
+            if (!schedules) throw notFound();
+            res.json({ success: true, data: schedules });
+        } catch (err) { next(err); }
+    };
+
+    adminAddSchedule = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const added = await this.teeTimes.addSchedule(req.params.id, scheduleInputSchema.parse(req.body ?? {}));
+            if (!added) throw notFound();
+            audit(req, 'golf_schedule_create', added.schedule.id, { courseId: req.params.id, created: added.created });
+            res.status(201).json({ success: true, data: added });
+        } catch (err) { next(err); }
+    };
+
+    adminRemoveSchedule = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            if (!(await this.teeTimes.removeSchedule(req.params.id, req.params.scheduleId))) throw notFound();
+            audit(req, 'golf_schedule_delete', req.params.scheduleId, { courseId: req.params.id });
+            res.json({ success: true });
+        } catch (err) { next(err); }
+    };
 
     list = async (req: Request, res: Response, next: NextFunction) => {
         try {
