@@ -241,7 +241,6 @@ export class TravelgateXProvider implements HotelProvider {
         }
 
         console.log(`[prebook/tgx] Fresh search: hotel=${hotelCode} ${checkIn}→${checkOut} adults=${input.adults}`);
-
         // Retried, because an empty answer here is usually not an empty hotel.
         //
         // The supplier intermittently serves no availability at all — an empty set with a

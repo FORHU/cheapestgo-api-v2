@@ -22,6 +22,8 @@ import adminSupportRoutes  from './admin-support.route';
 import autocompleteRoutes  from './autocomplete.route';
 import googleRoutes        from './google.route';
 import emailRoutes         from './email.route';
+import golfRoutes          from './golf.route';
+import adminGolfRoutes     from './admin-golf.route';
 
 const router: Router = Router();
 
@@ -37,6 +39,9 @@ router.use('/users',          usersRoutes);
 router.use('/cron',           cronRoutes);
 router.use('/internal',       internalRoutes);
 router.use('/vouchers',       voucherRoutes);
+router.use('/golf',           golfRoutes);
+// Before '/admin', so that router's guard and routes never get the first look at these.
+router.use('/admin/golf',     adminGolfRoutes);
 router.use('/admin',          adminRoutes);
 router.use('/photos',         photosRoutes);
 router.use('/chat',           chatRoutes);

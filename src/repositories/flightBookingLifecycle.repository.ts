@@ -298,6 +298,31 @@ export class FlightBookingLifecycleRepository {
         }
     }
 
+    /**
+     * The traveller's attempts at this offer that are not finished, newest first — what `book`
+     * looks at before it opens another, so going back and paying again cannot buy a second
+     * ticket. Only sessions the new flow wrote, as for the sweeper.
+     */
+    async findOpenForOffer(userId: string, offerId: string): Promise<FlightLifecycleRecord[]> {
+        try {
+            const rows = await prisma.$queryRawUnsafe<Row[]>(
+                `${SELECT}
+                  WHERE s.user_id = $1::uuid
+                    AND s.flight ->> '_offerId' = $2
+                    AND s.lifecycle_status IN ('PAYMENT_PENDING', 'PAYMENT_AUTHORIZED', 'SUPPLIER_BOOKING', 'NEEDS_REVIEW')
+                    AND s.provider = 'duffel'
+                    AND s.capture_method = 'manual'
+               ORDER BY s.created_at DESC
+                  LIMIT 20`,
+                userId, offerId,
+            );
+            return rows.map(toRecord).filter((r): r is FlightLifecycleRecord => r !== null);
+        } catch (err) {
+            unavailable('findOpenForOffer', err);
+            return [];
+        }
+    }
+
     async events(sessionId: string): Promise<FlightLifecycleEvent[]> {
         try {
             const rows = await prisma.$queryRaw<Array<{

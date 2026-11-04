@@ -693,7 +693,36 @@ function getEtgToken(): string {
     return Buffer.from(`${keyId}:${apiKey}`).toString('base64');
 }
 
-async function getEtgRegionId(cityName: string, countryCode?: string): Promise<number | null> {
+/** ETG's region type for a rung that is not a city. */
+const ETG_REGION_TYPE: Record<string, string> = { province: 'Province (State)' };
+
+interface EtgRegion { id: number; type: string; name: string; country_code: string }
+
+/**
+ * The ETG region to search, out of multicomplete's answer for `query`.
+ *
+ * The rung's own type first — a province search wants the Province (State), not a city that
+ * shares its name — then a City, then a province. With a country known, every pick is held to it:
+ * ETG answers a name with each region in the world that carries it, and the first City called
+ * "Bali" is Bali, Crete, which priced Cretan hotels for every Bali search until the bbox bounded
+ * them all away. Without a country, the first City of the name, as before.
+ */
+export function pickEtgRegion(
+    regions: EtgRegion[],
+    query: string,
+    { iso, rung }: { iso?: string | null; rung?: string },
+): number | null {
+    const q = query.toLowerCase();
+    const named = regions.filter(r =>
+        r.name?.toLowerCase().startsWith(q) && (!iso || r.country_code === iso));
+    for (const type of [rung ? ETG_REGION_TYPE[rung] : undefined, 'City', 'Province (State)']) {
+        const hit = type ? named.find(r => r.type === type) : undefined;
+        if (hit) return hit.id;
+    }
+    return null;
+}
+
+async function getEtgRegionId(cityName: string, countryCode?: string, rung?: string): Promise<number | null> {
     try {
         const token = getEtgToken();
         const query = cityName.split(',')[0].trim();
@@ -708,19 +737,7 @@ async function getEtgRegionId(cityName: string, countryCode?: string): Promise<n
         clearTimeout(t);
         if (!res.ok) return null;
         const data: any    = await res.json();
-        const regions = data?.data?.regions ?? [];
-        const iso     = resolveIsoCode(countryCode);
-        return (
-            regions.find((r: any) =>
-                r.type === 'City' &&
-                r.name.toLowerCase().startsWith(query.toLowerCase()) &&
-                (!iso || r.country_code === iso)
-            ) ??
-            regions.find((r: any) =>
-                r.type === 'City' &&
-                r.name.toLowerCase().startsWith(query.toLowerCase())
-            )
-        )?.id ?? null;
+        return pickEtgRegion(data?.data?.regions ?? [], query, { iso: resolveIsoCode(countryCode), rung });
     } catch {
         return null;
     }
@@ -759,7 +776,7 @@ async function searchEtgCity(
         if (!process.env.ETG_KEY_ID || !process.env.ETG_API_KEY) return empty;
         const token = getEtgToken();
 
-        const regionId = await getEtgRegionId(cityName, params.countryCode);
+        const regionId = await getEtgRegionId(cityName, params.countryCode, params.rung);
         if (!regionId) {
             console.warn(`[tgx-search] ETG: no region_id for "${cityName}"`);
             return empty;

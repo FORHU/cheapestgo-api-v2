@@ -87,6 +87,7 @@ function fakeLifecycle() {
         begin: vi.fn(), transition: vi.fn().mockResolvedValue('applied'), note: vi.fn().mockResolvedValue(undefined),
         findBySession: vi.fn().mockResolvedValue(record()), findByPaymentIntent: vi.fn().mockResolvedValue(record()),
         findAbandoned: vi.fn().mockResolvedValue([]), findNeedingAttention: vi.fn().mockResolvedValue([]),
+        findOpenForOffer: vi.fn().mockResolvedValue([]),
         events: vi.fn().mockResolvedValue([]),
     };
 }
@@ -672,5 +673,146 @@ describe('before the claim', () => {
 
         expect(await complete()).toEqual({ kind: 'failed', code: 'PRICE_CHANGED', message: 'The fare changed.' });
         expect(placeDuffelOrder).not.toHaveBeenCalled();
+    });
+});
+
+// ── Booking the same offer again ───────────────────────────────────────────────
+//
+// Going back from a slow confirm and paying again used to open a second hold, and the lifecycle
+// would order a second ticket for it. `book` asks here first.
+
+describe('an offer the traveller has already paid for', () => {
+    it('names the attempt that is with the airline, so `book` opens no second one', async () => {
+        lifecycle.findOpenForOffer.mockResolvedValue([record({ status: 'SUPPLIER_BOOKING' })]);
+
+        expect(await svc.paidAttempt('u-1', 'off_1')).toEqual({
+            sessionId: SESSION, needsReview: false, message: expect.stringMatching(/still being confirmed/),
+        });
+        expect(lifecycle.findOpenForOffer).toHaveBeenCalledWith('u-1', 'off_1');
+    });
+
+    it('counts an authorisation the airline has not been asked about yet', async () => {
+        lifecycle.findOpenForOffer.mockResolvedValue([record({ status: 'PAYMENT_AUTHORIZED' })]);
+        expect(await svc.paidAttempt('u-1', 'off_1')).toMatchObject({ sessionId: SESSION, needsReview: false });
+    });
+
+    it('says when a person has it', async () => {
+        lifecycle.findOpenForOffer.mockResolvedValue([record({ status: 'NEEDS_REVIEW' })]);
+        expect(await svc.paidAttempt('u-1', 'off_1')).toMatchObject({ needsReview: true, message: expect.stringMatching(/our team/) });
+    });
+
+    it('is nothing while every open attempt is unpaid — and asks Stripe nothing, before the offer is fetched', async () => {
+        lifecycle.findOpenForOffer.mockResolvedValue([record({ status: 'PAYMENT_PENDING' })]);
+        expect(await svc.paidAttempt('u-1', 'off_1')).toBeNull();
+        expect(stripe.paymentIntents.retrieve).not.toHaveBeenCalled();
+    });
+});
+
+describe('an offer the traveller has an unpaid attempt at', () => {
+    const NOW = new Date('2026-10-19T00:10:00Z');
+    const UNPAID = { ...SESSION_ROW, expires_at: new Date('2026-10-19T00:30:00Z') };
+    const PAYABLE = intent({ status: 'requires_payment_method', client_secret: 'pi_1_secret' });
+    const SAME = {
+        passengers: SESSION_ROW.passengers, contact: SESSION_ROW.contact,
+        seatServiceIds: [], bagServiceIds: [], bundleHotelId: null,
+        amountMinor: AUTHORISED, currency: 'usd',
+    };
+    const resume = (wanted: Record<string, unknown> = {}) => svc.resumeUnpaid('u-1', 'off_1', { ...SAME, ...wanted }, NOW);
+
+    beforeEach(() => {
+        lifecycle.findOpenForOffer.mockResolvedValue([record({ status: 'PAYMENT_PENDING' })]);
+        sessions.getBookingSession.mockResolvedValue(UNPAID);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue(PAYABLE as any);
+    });
+
+    it('hands back the open payment when the traveller asks for exactly the same again', async () => {
+        expect(await resume()).toEqual({ kind: 'reuse', sessionId: SESSION, paymentIntentId: PI, clientSecret: 'pi_1_secret' });
+        expect(lifecycle.findOpenForOffer).toHaveBeenCalledWith('u-1', 'off_1');
+        expect(lifecycle.transition).not.toHaveBeenCalled();
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+    });
+
+    it('says the card is already held when Stripe has authorised it, though nobody has recorded it yet', async () => {
+        // The webhook and the confirm are on their way; they will complete it.
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue(intent({ status: 'requires_capture' }) as any);
+
+        expect(await resume({ contact: { email: 'other@example.com' } })).toMatchObject({ kind: 'paid', sessionId: SESSION, needsReview: false });
+        expect(lifecycle.transition).not.toHaveBeenCalled();
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+    });
+
+    it('says so when an attempt was claimed since `book` last looked', async () => {
+        lifecycle.findOpenForOffer.mockResolvedValue([record({ status: 'SUPPLIER_BOOKING' }), record({ sessionId: 'older', status: 'PAYMENT_PENDING' })]);
+
+        expect(await resume()).toMatchObject({ kind: 'paid', sessionId: SESSION });
+        expect(lifecycle.transition).not.toHaveBeenCalled();
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+    });
+
+    it('releases the earlier payment when the details changed — closing the attempt before voiding it', async () => {
+        // In that order: a void ahead of the close could land under a claim taken in between,
+        // and the airline would order on a hold that no longer exists.
+        const out = await resume({ passengers: [{ ...SESSION_ROW.passengers[0], lastName: 'Santos' }] });
+
+        expect(out).toBeNull();
+        expect(transitions()).toEqual(['PAYMENT_PENDING→EXPIRED']);
+        expect(lastTransition()[3]).toMatchObject({ actor: 'browser', patch: { failureCode: 'SUPERSEDED' } });
+        expect(stripe.paymentIntents.cancel).toHaveBeenCalledWith(PI);
+        expect(lifecycle.transition.mock.invocationCallOrder[0])
+            .toBeLessThan(vi.mocked(stripe.paymentIntents.cancel).mock.invocationCallOrder[0]);
+        expect(sessions.setSessionStatus).toHaveBeenCalledWith(SESSION, 'expired');
+    });
+
+    it('voids nothing when the claim got there first', async () => {
+        lifecycle.transition.mockResolvedValue('lost');
+        lifecycle.findBySession.mockResolvedValue(record({ status: 'PAYMENT_AUTHORIZED' }));
+
+        expect(await resume({ amountMinor: AUTHORISED + 500 })).toMatchObject({ kind: 'paid', sessionId: SESSION });
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+        expect(sessions.setSessionStatus).not.toHaveBeenCalled();
+    });
+
+    it('carries on when the sweeper closed it first — that is not a payment', async () => {
+        lifecycle.transition.mockResolvedValue('lost');
+        lifecycle.findBySession.mockResolvedValue(record({ status: 'EXPIRED', failureCode: 'ABANDONED' }));
+
+        expect(await resume({ amountMinor: AUTHORISED + 500 })).toBeNull();
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+    });
+
+    it('voids nothing it could not first close, and leaves `book` to open a new one', async () => {
+        lifecycle.transition.mockResolvedValue('unavailable');
+
+        expect(await resume({ amountMinor: AUTHORISED + 500 })).toBeNull();
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+    });
+
+    it('opens a fresh one rather than resume a session past its expiry', async () => {
+        sessions.getBookingSession.mockResolvedValue({ ...UNPAID, expires_at: new Date('2026-10-19T00:05:00Z') });
+
+        expect(await resume()).toBeNull();
+        expect(transitions()).toEqual(['PAYMENT_PENDING→EXPIRED']);
+        expect(stripe.paymentIntents.cancel).toHaveBeenCalledWith(PI);
+    });
+
+    it('does not resume a payment that was already released', async () => {
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue(intent({ status: 'canceled' }) as any);
+
+        expect(await resume()).toBeNull();
+        expect(transitions()).toEqual(['PAYMENT_PENDING→EXPIRED']);
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+    });
+
+    it('closes an attempt whose payment was never opened, with nothing to release', async () => {
+        lifecycle.findOpenForOffer.mockResolvedValue([record({ status: 'PAYMENT_PENDING', paymentIntentId: null })]);
+
+        expect(await resume()).toBeNull();
+        expect(transitions()).toEqual(['PAYMENT_PENDING→EXPIRED']);
+        expect(stripe.paymentIntents.retrieve).not.toHaveBeenCalled();
+    });
+
+    it('is nothing when there is no open attempt', async () => {
+        lifecycle.findOpenForOffer.mockResolvedValue([]);
+        expect(await resume()).toBeNull();
     });
 });

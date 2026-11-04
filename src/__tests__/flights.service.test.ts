@@ -72,12 +72,16 @@ vi.mock('@/repositories/flights.repository', () => ({
     }),
 }));
 
-const lifecycle = vi.hoisted(() => ({ complete: vi.fn(), open: vi.fn(), find: vi.fn() }));
+const lifecycle = vi.hoisted(() => ({
+    complete: vi.fn(), open: vi.fn(), find: vi.fn(), paidAttempt: vi.fn(), resumeUnpaid: vi.fn(),
+}));
 vi.mock('@/services/flightBookingLifecycle.service', () => ({
     FlightBookingLifecycleService: vi.fn(function(this: any) {
-        this.complete = lifecycle.complete;
-        this.open     = lifecycle.open;
-        this.find     = lifecycle.find;
+        this.complete     = lifecycle.complete;
+        this.open         = lifecycle.open;
+        this.find         = lifecycle.find;
+        this.paidAttempt  = lifecycle.paidAttempt;
+        this.resumeUnpaid = lifecycle.resumeUnpaid;
     }),
 }));
 
@@ -183,6 +187,9 @@ let service: FlightsService;
 
 beforeEach(() => {
     vi.clearAllMocks();
+    // No earlier attempt at the offer, unless a test says otherwise.
+    lifecycle.paidAttempt.mockResolvedValue(null);
+    lifecycle.resumeUnpaid.mockResolvedValue(null);
     service = new FlightsService();
 });
 
@@ -380,6 +387,63 @@ describe('FlightsService.book()', () => {
         await expect(service.book({ ...BOOK_PARAMS, flight: firstSegFlight as any, acknowledgeDuplicate: true }))
             .resolves.toMatchObject({ paymentIntentId: PI_ID });
     });
+
+    // Going back from a slow confirm and paying again used to buy a second ticket.
+    describe('the same offer, submitted again', () => {
+        const EARLIER = { sessionId: 'sess-earlier', needsReview: false, message: 'Your booking is still being confirmed with the airline.' };
+
+        it('answers BOOKING_PROCESSING for an offer already paid for — before Duffel is asked, and opens nothing', async () => {
+            lifecycle.paidAttempt.mockResolvedValue(EARLIER);
+
+            await expect(service.book(BOOK_PARAMS)).rejects.toMatchObject({
+                status: 409, code: 'BOOKING_PROCESSING',
+                details: { pending: true, needsReview: false, sessionId: 'sess-earlier' },
+            });
+            expect(lifecycle.paidAttempt).toHaveBeenCalledWith(USER_ID, 'off-abc');
+            // Once ordered the offer may be gone, and "fare expired" would send them to pay again.
+            expect(getDuffelOffer).not.toHaveBeenCalled();
+            expect(repoOf().createBookingSession).not.toHaveBeenCalled();
+            expect(stripe.paymentIntents.create).not.toHaveBeenCalled();
+        });
+
+        it('hands back the payment it already opened when nothing changed — one hold however many submits', async () => {
+            lifecycle.resumeUnpaid.mockResolvedValue({
+                kind: 'reuse', sessionId: 'sess-earlier', paymentIntentId: 'pi_earlier', clientSecret: 'pi_earlier_secret',
+            });
+
+            const result = await service.book(BOOK_PARAMS);
+
+            const total = applyMarkup(100, FLIGHT_MARKUP_SPEC).chargedPrice;
+            expect(result).toMatchObject({
+                clientSecret: 'pi_earlier_secret', sessionId: 'sess-earlier', paymentIntentId: 'pi_earlier',
+                amount: total, currency: 'USD', fare: 100,
+            });
+            expect(repoOf().createBookingSession).not.toHaveBeenCalled();
+            expect(stripe.paymentIntents.create).not.toHaveBeenCalled();
+            expect(lifecycle.open).not.toHaveBeenCalled();
+        });
+
+        it('compares what is asked for now, priced from the offer Duffel holds now', async () => {
+            await service.book({ ...BOOK_PARAMS, seatServiceIds: [], bagServiceIds: [] });
+
+            expect(lifecycle.resumeUnpaid).toHaveBeenCalledWith(USER_ID, 'off-abc', {
+                passengers: BOOK_PARAMS.passengers, contact: BOOK_PARAMS.contact,
+                seatServiceIds: [], bagServiceIds: [], bundleHotelId: undefined,
+                amountMinor: toStripeAmount(applyMarkup(100, FLIGHT_MARKUP_SPEC).chargedPrice, 'usd'), currency: 'usd',
+            });
+            // Released or not, it is asked before a new session exists.
+            expect(lifecycle.resumeUnpaid.mock.invocationCallOrder[0])
+                .toBeLessThan(repoOf().createBookingSession.mock.invocationCallOrder[0]);
+        });
+
+        it('opens no second hold when Stripe already holds the card for an earlier attempt', async () => {
+            lifecycle.resumeUnpaid.mockResolvedValue({ kind: 'paid', ...EARLIER });
+
+            await expect(service.book(BOOK_PARAMS)).rejects.toMatchObject({ status: 409, code: 'BOOKING_PROCESSING' });
+            expect(repoOf().createBookingSession).not.toHaveBeenCalled();
+            expect(stripe.paymentIntents.create).not.toHaveBeenCalled();
+        });
+    });
 });
 
 // ─── confirm() ────────────────────────────────────────────────────────────────
@@ -463,6 +527,16 @@ describe('FlightsService.confirm()', () => {
         authorised();
         lifecycle.complete.mockResolvedValue({ kind: 'failed', code: 'OFFER_EXPIRED', message: 'This fare is no longer available.' });
         await expect(confirm()).rejects.toMatchObject({ status: 410, code: 'OFFER_EXPIRED' });
+    });
+
+    it('tells an old tab its payment was replaced the way it tells one its checkout expired', async () => {
+        // The traveller submitted again with different details from another tab, and `book`
+        // released this attempt: the client already knows BOOKING_EXPIRED; SUPERSEDED it does not.
+        authorised();
+        lifecycle.complete.mockResolvedValue({ kind: 'failed', code: 'SUPERSEDED', message: 'This payment was replaced by a newer one.' });
+        await expect(confirm()).rejects.toMatchObject({
+            status: 410, code: 'BOOKING_EXPIRED', message: 'This payment was replaced by a newer one.',
+        });
     });
 
     it('keeps the wire code clients know for a payment that was not authorised', async () => {
