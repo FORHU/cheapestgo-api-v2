@@ -5,7 +5,7 @@ import { fetchAmenitiesByDestination } from '@/lib/hotels/travelgatex';
 import { staysUnderMaintenance } from '@/lib/maintenance';
 import { getHotelProvider, getHotelProviderById, isKnownProviderId } from '@/lib/hotels/providers/factory';
 import { toPrebookPolicyWire, toStoredPolicyWire } from '@/lib/hotels/providers/cancellationPolicy';
-import { isHotelProviderError } from '@/lib/hotels/providers/types';
+import { HotelProviderError, isHotelProviderError } from '@/lib/hotels/providers/types';
 import type {
     BookGuest, HotelContent as ProviderHotelContent, HotelProvider, PrebookResult, ProviderBooking,
 } from '@/lib/hotels/providers/types';
@@ -1015,6 +1015,22 @@ export class HotelsService {
 
         let booking: ProviderBooking;
         try {
+            // The one lever that stops a tester's checkout becoming a real reservation at a real
+            // hotel. TravelgateX has no sandbox, so every environment holding its credentials —
+            // the dev host included — books for real, and NODE_ENV cannot tell them apart because
+            // deploy-dev writes NODE_ENV=production too. See ADR-0002.
+            //
+            // REJECTED on purpose: it is in the lifecycle's DEFINITIVE set, so the catch below
+            // releases the payment hold and records the attempt failed, rather than leaving it
+            // pending as an outcome nobody is sure of. Unset books normally, so production is
+            // untouched unless somebody sets this.
+            if (process.env.HOTEL_BOOKING_ENABLED === 'false') {
+                throw new HotelProviderError(
+                    'REJECTED',
+                    'Hotel booking is switched off in this environment.',
+                    { provider: this.provider.id },
+                );
+            }
             booking = await this.provider.book({
                 prebookRef: params.prebookId,
                 clientRef:  clientReference,

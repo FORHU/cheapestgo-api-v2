@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@/config', () => ({ config: { RESEND_API_KEY: '', SITE_URL: 'https://cheapestgo.com' } }));
 vi.mock('@/lib/hotels/search', () => ({ runTgxSearch: vi.fn() }));
@@ -627,5 +627,35 @@ describe('a card that was not authorised', () => {
         await expect(service.confirmBooking(params(await quote())))
             .rejects.toMatchObject({ status: 403, code: 'FORBIDDEN' });
         expect(bookCalls()).toBe(0);
+    });
+});
+
+/**
+ * The dev host holds live TravelgateX credentials — the supplier has no sandbox — so this switch
+ * is the only thing between a tester's checkout and a real reservation at a real hotel. It has to
+ * fail *definitively*: the hold released, the attempt filed, and the supplier never asked. An
+ * `UNAVAILABLE` here would read as "we are unsure", which leaves the traveller's money held.
+ */
+describe('the booking kill switch', () => {
+    afterEach(() => { vi.unstubAllEnvs(); });
+
+    it('refuses before the supplier is asked, and releases the hold', async () => {
+        const prebookId = await quote();
+        vi.stubEnv('HOTEL_BOOKING_ENABLED', 'false');
+
+        const out: any = await service.confirmBooking(params(prebookId));
+
+        expect(out).toMatchObject({ success: false, providerConfirmed: false });
+        expect(bookCalls()).toBe(0);
+        expect(stripe.paymentIntents.cancel).toHaveBeenCalledWith(PI);
+        expect(stripe.paymentIntents.capture).not.toHaveBeenCalled();
+        expect(repo.status(REF)).toBe('FAILED');
+    });
+
+    it('books normally when it is unset, so production is untouched', async () => {
+        const out: any = await service.confirmBooking(params(await quote()));
+
+        expect(out.success).toBe(true);
+        expect(bookCalls()).toBe(1);
     });
 });

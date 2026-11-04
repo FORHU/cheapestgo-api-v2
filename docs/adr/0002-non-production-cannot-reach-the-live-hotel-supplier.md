@@ -45,6 +45,16 @@ mid-run is a worse outcome than the risk it would remove: a CI box has no creden
 `TRAVELGATEX_*` was removed from both local `.env` files the same day, so the override has nothing to
 act on by default.
 
+**A deployment that is not production refuses to call the supplier's `book` with
+`HOTEL_BOOKING_ENABLED=false`.** The config guard above cannot cover the dev host, which runs
+`NODE_ENV=production` and holds live credentials on purpose, so that host needs a switch of its own.
+It sits at the single `provider.book` call site in `hotels.service.ts` and throws `REJECTED` — a code
+in the lifecycle's `DEFINITIVE` set, so the payment hold is released and the attempt is filed as
+failed. `UNAVAILABLE` would have been the obvious choice and is the wrong one: it means "we are not
+sure", which leaves the traveller's money held pending a review that will never resolve.
+
+Unset books normally. Production is untouched unless someone sets it.
+
 ## Alternatives considered
 
 **Capture the payment before booking, instead of booking on an authorisation.** This was the first
@@ -70,10 +80,16 @@ which means the mock has to stay good enough to develop against — it carries s
 (`MOCK_HOTEL_SCENARIO`) for this reason, and gaps in it are now blocking rather than inconvenient.
 
 `NODE_ENV` cannot distinguish the dev host from production in this estate: `deploy-dev.yml` writes
-`NODE_ENV=production` into the dev container too. The guard's real scope is therefore developer
-machines, which is where the incident happened. The dev host is covered by a different mechanism — the
-deploy workflow deliberately never publishes `TRAVELGATEX_*`, `ETG_*`, `ONDA_*` or `OTV_*` to it — and
-that omission is now load-bearing rather than merely prudent. Removing it would reopen this hole.
+`NODE_ENV=production` into the dev container too. The config guard's real scope is therefore developer
+machines, which is where the incident happened.
+
+**The dev host is a separate problem, and an earlier draft of this ADR got it wrong.** It claimed the
+deploy workflow never publishes `TRAVELGATEX_*` there. It does — `deploy-dev.yml` publishes the key and
+the code, under a comment saying so, because hotel *search* has to work for the environment to be worth
+looking at. So the dev host runs the live supplier with the config guard passing cleanly, and before
+`HOTEL_BOOKING_ENABLED` existed the only thing standing between a visitor and a real reservation was
+whether they clicked the last button. Anyone reading that paragraph and trusting it would have handed
+out the URL believing it was safe.
 
 A supplier added later with no sandbox inherits none of this automatically. The rule is about
 TravelgateX by name; the next one needs its own line.
