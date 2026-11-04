@@ -110,3 +110,16 @@ describe('listOpenTeeTimes', () => {
         expect(values(call)).toEqual([COURSE, from, to]);
     });
 });
+
+describe('firstOpenTeeTime', () => {
+    it('finds the earliest open tee time with a spot left, or nothing', async () => {
+        const from = new Date('2026-11-05T03:00:00Z');
+        const to = new Date('2027-01-04T03:00:00Z');
+        db.$queryRaw.mockResolvedValueOnce([{ starts_at: new Date('2026-11-05T22:00:00Z') }]).mockResolvedValueOnce([]);
+        expect(await repo.firstOpenTeeTime(COURSE, from, to)).toEqual(new Date('2026-11-05T22:00:00Z'));
+        expect(await repo.firstOpenTeeTime(COURSE, from, to)).toBeNull();
+        const text = sql(db.$queryRaw.mock.calls[0]);
+        expect(text).toContain("status = 'open'");
+        expect(text).toContain('LIMIT 1');
+    });
+});

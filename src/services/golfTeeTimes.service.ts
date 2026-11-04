@@ -24,7 +24,8 @@ import {
 } from '@/repositories/golfTeeTimes.repository';
 
 type TeeTimeStore = Pick<GolfTeeTimesRepository,
-    'listSchedules' | 'createSchedule' | 'deleteSchedule' | 'generationSources' | 'insertTeeTimes' | 'listOpenTeeTimes'>;
+    'listSchedules' | 'createSchedule' | 'deleteSchedule' | 'generationSources' | 'insertTeeTimes'
+    | 'listOpenTeeTimes' | 'firstOpenTeeTime'>;
 type CourseLookup = Pick<GolfRepository, 'findById' | 'findBySlug'>;
 
 const UUID     = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -126,8 +127,9 @@ export class GolfTeeTimesService {
 
     /**
      * The open tee times on one course-local date. Null for a course that is not published and
-     * bookable. A missing date means the first date there can be tee times; a date outside the range
-     * is answered for the nearer end of it.
+     * bookable. A missing date means the first date that has an open tee time (tomorrow's morning
+     * tee times are often inside the lead time, so the first date in range can be empty), or the first
+     * date in range when there are none; a date outside the range is answered for the nearer end.
      */
     async availability(
         slug: string,
@@ -139,13 +141,18 @@ export class GolfTeeTimesService {
 
         const tz = course.timezone;
         const { firstDate, lastDate } = listingRange(now, tz, course.bookingWindowDays);
-        const day = !date || date < firstDate ? firstDate : date > lastDate ? lastDate : date;
+        const earliest = now.getTime() + MIN_LEAD_HOURS * HOUR;
+        const latest   = now.getTime() + (course.bookingWindowDays + 1) * 24 * HOUR;
 
-        const from = new Date(Math.max(zonedTimeToUtc(day, '00:00', tz).getTime(), now.getTime() + MIN_LEAD_HOURS * HOUR));
-        const to   = new Date(Math.min(
-            zonedTimeToUtc(addDays(day, 1), '00:00', tz).getTime(),
-            now.getTime() + (course.bookingWindowDays + 1) * 24 * HOUR,
-        ));
+        let wanted = date;
+        if (!wanted) {
+            const first = await this.repo.firstOpenTeeTime(course.id, new Date(earliest), new Date(latest));
+            wanted = first ? localDate(first, tz) : firstDate;
+        }
+        const day = wanted < firstDate ? firstDate : wanted > lastDate ? lastDate : wanted;
+
+        const from = new Date(Math.max(zonedTimeToUtc(day, '00:00', tz).getTime(), earliest));
+        const to   = new Date(Math.min(zonedTimeToUtc(addDays(day, 1), '00:00', tz).getTime(), latest));
         const open = to > from ? await this.repo.listOpenTeeTimes(course.id, from, to) : [];
 
         const asked  = currency?.trim().toUpperCase();

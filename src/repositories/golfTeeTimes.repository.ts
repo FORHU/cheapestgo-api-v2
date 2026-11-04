@@ -174,6 +174,16 @@ export class GolfTeeTimesRepository {
         return created;
     }
 
+    /** When the earliest open tee time with a spot left starts, from `from` to `to`, if there is one. */
+    async firstOpenTeeTime(courseId: string, from: Date, to: Date): Promise<Date | null> {
+        const rows = await prisma.$queryRaw<Array<{ starts_at: Date }>>`
+            SELECT starts_at FROM golf_tee_times
+            WHERE course_id = ${courseId}::uuid AND status = 'open' AND spots_left > 0
+              AND starts_at >= ${from} AND starts_at < ${to}
+            ORDER BY starts_at LIMIT 1`;
+        return rows[0] ? new Date(rows[0].starts_at) : null;
+    }
+
     /** Open tee times with a spot left, from `from` (inclusive) to `to` (exclusive), earliest first. */
     async listOpenTeeTimes(courseId: string, from: Date, to: Date): Promise<OpenTeeTime[]> {
         const rows = await prisma.$queryRaw<Array<{

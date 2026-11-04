@@ -40,6 +40,7 @@ function fakes() {
         generationSources: vi.fn(async (_c?: string) => [] as GenerationSource[]),
         insertTeeTimes:    vi.fn(async (rows: NewTeeTime[]) => rows.length),
         listOpenTeeTimes:  vi.fn(async (_c: string, _f: Date, _t: Date) => [] as OpenTeeTime[]),
+        firstOpenTeeTime:  vi.fn(async (_c: string, _f: Date, _t: Date) => null as Date | null),
     };
     const courses = {
         findById:   vi.fn(async (_id: string) => course() as GolfCourse | null),
@@ -152,8 +153,21 @@ describe('availability', () => {
         expect(to.toISOString()).toBe('2026-11-05T16:00:00.000Z');   // midnight Manila, 6 Nov
     });
 
-    it('answers a date outside the range for the nearest end, and no date for the first', async () => {
+    it('answers a date outside the range for the nearest end', async () => {
         expect((await svc.availability('wack-wack', { date: '2030-01-01', players: 2 }, NOW))?.date).toBe('2027-01-02');
+        expect((await svc.availability('wack-wack', { date: '2026-11-01', players: 2 }, NOW))?.date).toBe('2026-11-05');
+    });
+
+    it('with no date asked, answers the first date that has an open tee time', async () => {
+        // Tomorrow's morning tee times fall inside the lead time, so the first one listable is on the 6th.
+        f.teeTimes.firstOpenTeeTime.mockResolvedValueOnce(new Date('2026-11-05T22:00:00Z')); // 06:00 on 6 Nov, Manila
+        const out = await svc.availability('wack-wack', { players: 2 }, NOW);
+        expect(out?.date).toBe('2026-11-06');
+        const [, from] = f.teeTimes.firstOpenTeeTime.mock.calls[0];
+        expect(from.toISOString()).toBe('2026-11-05T03:00:00.000Z');
+    });
+
+    it('with no date asked and no tee times at all, answers the first date in range', async () => {
         expect((await svc.availability('wack-wack', { players: 2 }, NOW))?.date).toBe('2026-11-05');
     });
 
