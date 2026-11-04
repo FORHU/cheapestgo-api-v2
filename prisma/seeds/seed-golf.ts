@@ -16,10 +16,17 @@
  *     fills in what is missing.
  *   - **`--remove` takes them out again**: exactly these slugs, and with them their schedules and
  *     tee times (both cascade).
+ *   - **`--sync-tees` brings courses already there onto the tees below**, for when those change. It
+ *     moves the schedules, deletes the future tee times they no longer make, and closes rather than
+ *     deletes any of those a booking points at. Booked or not, nothing else on the course is touched.
+ *   - **`--sync-extras` brings courses already there onto the extras below.** Bookings keep the prices
+ *     they were made at.
  *
  * Usage (from the api-v2 root; outside src/ so the nodemon dev server does not restart):
  *   npx ts-node --transpile-only -r tsconfig-paths/register prisma/seeds/seed-golf.ts
  *   npx ts-node --transpile-only -r tsconfig-paths/register prisma/seeds/seed-golf.ts --remove
+ *   npx ts-node --transpile-only -r tsconfig-paths/register prisma/seeds/seed-golf.ts --sync-tees
+ *   npx ts-node --transpile-only -r tsconfig-paths/register prisma/seeds/seed-golf.ts --sync-extras
  *
  * Photos are Unsplash's (free to use under the Unsplash licence), linked rather than copied, as an
  * admin would paste them.
@@ -28,6 +35,7 @@
 import 'dotenv/config';
 import { prisma } from '@/lib/prisma';
 import { golfCourseInputSchema, type GolfAmenity } from '@/lib/golf/courseInput';
+import { GOLF_EXTRAS, type ExtraOffer, type GolfExtraCode } from '@/lib/golf/extras';
 import { scheduleInputSchema } from '@/lib/golf/scheduleInput';
 import { GolfRepository } from '@/repositories/golf.repository';
 import { GolfService } from '@/services/golf.service';
@@ -50,6 +58,23 @@ const PHOTOS = {
 
 const WEEKDAYS = [1, 2, 3, 4, 5];
 const WEEKEND = [0, 6];
+/**
+ * How often a demo course has a tee time. Finer than anyone is shown: a party is offered these a round
+ * apart, and how long a round takes depends on its size (`spacedForParty`).
+ */
+const TEE_INTERVAL_MINUTES = 30;
+/** Per item, in each demo currency. Placeholders, editable in the admin. */
+const EXTRA_PRICES: Record<string, Record<GolfExtraCode, number>> = {
+    KRW: { club_rental: 50000, caddie: 40000, cart: 25000, lessons: 80000, range_balls: 10000 },
+    PHP: { club_rental: 1500, caddie: 600, cart: 1200, lessons: 2000, range_balls: 250 },
+    JPY: { club_rental: 5500, caddie: 4000, cart: 1500, lessons: 8000, range_balls: 1000 },
+    THB: { club_rental: 1500, caddie: 450, cart: 900, lessons: 2000, range_balls: 200 },
+    VND: { club_rental: 800000, caddie: 450000, cart: 700000, lessons: 1500000, range_balls: 150000 },
+};
+/** The amenity an extra needs: no driving range, no range balls. */
+const EXTRA_AMENITY: Record<GolfExtraCode, GolfAmenity> = {
+    club_rental: 'club_rental', caddie: 'caddie', cart: 'cart', lessons: 'lessons', range_balls: 'driving_range',
+};
 
 interface DemoCourse {
     slug: string;
@@ -65,7 +90,12 @@ interface DemoCourse {
     bookingWindowDays: number;
     amenities: GolfAmenity[];
     imageUrls: string[];
-    /** First and last tee, as "HH:MM" on the course's clock. */
+    /**
+     * First and last tee, as "HH:MM" on the course's clock. The first tee is inside the 6:00–7:30 AM
+     * most courses open at. The last tee is what lets a round finish in daylight on the darkest day of
+     * the year: 4h30 before that day's sunset, rounded down to the half hour (Fuji an hour earlier
+     * again, for the lunch its page promises). Only the two floodlit courses play later.
+     */
     tees: { first: string; last: string };
     /** Per player, in the course's currency. The weekday rate is also the "from" green fee. */
     price: { weekday: number; weekend: number };
@@ -80,7 +110,7 @@ const COURSES: DemoCourse[] = [
         holes: 18, par: 72, currency: 'KRW', timezone: 'Asia/Seoul', bookingWindowDays: 30,
         amenities: ['caddie', 'cart', 'driving_range', 'clubhouse', 'restaurant'],
         imageUrls: [PHOTOS.swingValley, PHOTOS.aerialBunkers, PHOTOS.flagAndBall],
-        tees: { first: '06:30', last: '14:30' }, price: { weekday: 180000, weekend: 240000 },
+        tees: { first: '06:30', last: '12:30' }, price: { weekday: 180000, weekend: 240000 },
     },
     {
         slug: 'yeongjong-links',
@@ -90,7 +120,7 @@ const COURSES: DemoCourse[] = [
         holes: 27, par: 108, currency: 'KRW', timezone: 'Asia/Seoul', bookingWindowDays: 21,
         amenities: ['caddie', 'cart', 'driving_range', 'putting_green', 'pro_shop'],
         imageUrls: [PHOTOS.links, PHOTOS.ballAtHole, PHOTOS.clubsInBag],
-        tees: { first: '06:00', last: '15:00' }, price: { weekday: 150000, weekend: 210000 },
+        tees: { first: '06:00', last: '12:30' }, price: { weekday: 150000, weekend: 210000 },
     },
     {
         slug: 'seoul-forest-nine',
@@ -110,7 +140,7 @@ const COURSES: DemoCourse[] = [
         holes: 18, par: 72, currency: 'PHP', timezone: 'Asia/Manila', bookingWindowDays: 30,
         amenities: ['caddie', 'cart', 'clubhouse', 'restaurant', 'putting_green'],
         imageUrls: [PHOTOS.swingHills, PHOTOS.links, PHOTOS.ballAtHole],
-        tees: { first: '05:30', last: '14:30' }, price: { weekday: 4500, weekend: 6200 },
+        tees: { first: '06:00', last: '12:30' }, price: { weekday: 4500, weekend: 6200 },
     },
     {
         slug: 'coral-bay-links',
@@ -120,7 +150,7 @@ const COURSES: DemoCourse[] = [
         holes: 18, par: 71, currency: 'PHP', timezone: 'Asia/Manila', bookingWindowDays: 45,
         amenities: ['caddie', 'cart', 'club_rental', 'restaurant', 'pro_shop'],
         imageUrls: [PHOTOS.fairwayFlag, PHOTOS.swingSunny, PHOTOS.flagAndBall],
-        tees: { first: '05:30', last: '15:00' }, price: { weekday: 5200, weekend: 6800 },
+        tees: { first: '06:00', last: '12:30' }, price: { weekday: 5200, weekend: 6800 },
     },
     {
         slug: 'pampanga-plains-golf-club',
@@ -130,7 +160,7 @@ const COURSES: DemoCourse[] = [
         holes: 36, par: 144, currency: 'PHP', timezone: 'Asia/Manila', bookingWindowDays: 60,
         amenities: ['caddie', 'cart', 'driving_range', 'putting_green', 'lessons', 'night_golf'],
         imageUrls: [PHOTOS.aerialBunkers, PHOTOS.clubAndBall, PHOTOS.swingHills],
-        tees: { first: '05:30', last: '18:00' }, price: { weekday: 3800, weekend: 5000 },
+        tees: { first: '06:00', last: '18:00' }, price: { weekday: 3800, weekend: 5000 },
     },
     {
         slug: 'fuji-lakeside-golf-club',
@@ -140,7 +170,7 @@ const COURSES: DemoCourse[] = [
         holes: 18, par: 72, currency: 'JPY', timezone: 'Asia/Tokyo', bookingWindowDays: 60,
         amenities: ['cart', 'clubhouse', 'restaurant', 'pro_shop'],
         imageUrls: [PHOTOS.swingSunny, PHOTOS.fairwayFlag, PHOTOS.clubsInBag],
-        tees: { first: '07:00', last: '13:30' }, price: { weekday: 12000, weekend: 18500 },
+        tees: { first: '07:00', last: '11:00' }, price: { weekday: 12000, weekend: 18500 },
     },
     {
         slug: 'birch-hills-golf-club',
@@ -150,7 +180,7 @@ const COURSES: DemoCourse[] = [
         holes: 18, par: 72, currency: 'JPY', timezone: 'Asia/Tokyo', bookingWindowDays: 30,
         amenities: ['cart', 'club_rental', 'clubhouse'],
         imageUrls: [PHOTOS.flagAndBall, PHOTOS.swingValley],
-        tees: { first: '06:30', last: '14:00' }, price: { weekday: 9500, weekend: 13000 },
+        tees: { first: '06:30', last: '11:30' }, price: { weekday: 9500, weekend: 13000 },
     },
     {
         slug: 'andaman-coast-golf-club',
@@ -160,7 +190,7 @@ const COURSES: DemoCourse[] = [
         holes: 18, par: 72, currency: 'THB', timezone: 'Asia/Bangkok', bookingWindowDays: 45,
         amenities: ['caddie', 'cart', 'driving_range', 'restaurant'],
         imageUrls: [PHOTOS.ballAtHole, PHOTOS.aerialBunkers, PHOTOS.swingSunny],
-        tees: { first: '06:00', last: '15:00' }, price: { weekday: 3500, weekend: 4500 },
+        tees: { first: '06:00', last: '13:30' }, price: { weekday: 3500, weekend: 4500 },
     },
     {
         slug: 'son-tra-dunes-golf-club',
@@ -170,7 +200,7 @@ const COURSES: DemoCourse[] = [
         holes: 18, par: 72, currency: 'VND', timezone: 'Asia/Ho_Chi_Minh', bookingWindowDays: 30,
         amenities: ['caddie', 'cart', 'clubhouse', 'restaurant', 'lessons'],
         imageUrls: [PHOTOS.clubsInBag, PHOTOS.links, PHOTOS.swingHills],
-        tees: { first: '06:00', last: '15:00' }, price: { weekday: 2500000, weekend: 3200000 },
+        tees: { first: '06:00', last: '12:30' }, price: { weekday: 2500000, weekend: 3200000 },
     },
 ];
 
@@ -214,8 +244,8 @@ async function seed() {
 
         let made = 0;
         for (const s of [
-            { name: 'Weekdays', daysOfWeek: WEEKDAYS, intervalMinutes: 10, pricePerPlayer: demo.price.weekday },
-            { name: 'Weekends', daysOfWeek: WEEKEND, intervalMinutes: 8, pricePerPlayer: demo.price.weekend },
+            { name: 'Weekdays', daysOfWeek: WEEKDAYS, intervalMinutes: TEE_INTERVAL_MINUTES, pricePerPlayer: demo.price.weekday },
+            { name: 'Weekends', daysOfWeek: WEEKEND, intervalMinutes: TEE_INTERVAL_MINUTES, pricePerPlayer: demo.price.weekend },
         ]) {
             const added = await teeTimes.addSchedule(course.id, scheduleInputSchema.parse({
                 ...s, firstTee: demo.tees.first, lastTee: demo.tees.last, spots: 4,
@@ -223,8 +253,63 @@ async function seed() {
             made += added?.created ?? 0;
         }
 
+        await golf.setExtras(course.id, extrasOf(demo));
         await golf.setStatus(course.id, 'published');
         console.log(`✓ ${demo.name} (${demo.city}, ${demo.country}) — /golf/${demo.slug}, ${made} tee times`);
+    }
+}
+
+/** A demo course offers the extras its amenities list, so its page and its checkout agree. */
+function extrasOf(demo: DemoCourse): ExtraOffer[] {
+    return GOLF_EXTRAS
+        .filter((code) => demo.amenities.includes(EXTRA_AMENITY[code]))
+        .map((code) => ({ code, price: EXTRA_PRICES[demo.currency][code] }));
+}
+
+async function syncExtras() {
+    const repo = new GolfRepository();
+    for (const demo of COURSES) {
+        const course = await repo.findBySlug(demo.slug);
+        if (!course) continue;
+        const saved = await repo.setExtras(course.id, extrasOf(demo));
+        console.log(`↻ ${demo.name} — ${saved.map((e) => `${e.code} ${e.price} ${demo.currency}`).join(', ')}`);
+    }
+}
+
+async function syncTees() {
+    const repo = new GolfRepository();
+    const teeTimes = new GolfTeeTimesService();
+
+    for (const demo of COURSES) {
+        const course = await repo.findBySlug(demo.slug);
+        if (!course?.timezone) continue;
+        const { id, timezone } = course;
+        const { first, last } = demo.tees;
+
+        const { closed, removed } = await prisma.$transaction(async (tx) => {
+            await tx.$executeRaw`
+                UPDATE golf_tee_time_schedules
+                SET first_tee = ${first}::time, last_tee = ${last}::time, interval_minutes = ${TEE_INTERVAL_MINUTES}::int, updated_at = now()
+                WHERE course_id = ${id}::uuid`;
+            const closed = await tx.$executeRaw`
+                UPDATE golf_tee_times t SET status = 'closed'
+                FROM golf_tee_time_schedules s
+                WHERE s.id = t.schedule_id AND t.course_id = ${id}::uuid AND t.starts_at > now() AND t.status = 'open'
+                  AND ((t.starts_at AT TIME ZONE ${timezone})::time NOT BETWEEN s.first_tee AND s.last_tee
+                       OR EXTRACT(EPOCH FROM (t.starts_at AT TIME ZONE ${timezone})::time - s.first_tee)::int % (s.interval_minutes * 60) <> 0)
+                  AND EXISTS (SELECT 1 FROM golf_bookings b WHERE b.tee_time_id = t.id)`;
+            const removed = await tx.$executeRaw`
+                DELETE FROM golf_tee_times t
+                USING golf_tee_time_schedules s
+                WHERE s.id = t.schedule_id AND t.course_id = ${id}::uuid AND t.starts_at > now()
+                  AND ((t.starts_at AT TIME ZONE ${timezone})::time NOT BETWEEN s.first_tee AND s.last_tee
+                       OR EXTRACT(EPOCH FROM (t.starts_at AT TIME ZONE ${timezone})::time - s.first_tee)::int % (s.interval_minutes * 60) <> 0)
+                  AND NOT EXISTS (SELECT 1 FROM golf_bookings b WHERE b.tee_time_id = t.id)`;
+            return { closed, removed };
+        });
+        // Times the new schedule makes that were not there before; none when it only got sparser.
+        const made = await teeTimes.generate({ courseId: id });
+        console.log(`↻ ${demo.name} — every ${TEE_INTERVAL_MINUTES} min from ${first} to ${last}: ${removed} removed, ${closed} closed, ${made} made`);
     }
 }
 
@@ -246,6 +331,8 @@ async function main() {
         throw new Error('Refusing to write demo courses to a database that is not on this machine. Pass --allow-remote if you mean it.');
     }
     if (args.has('--remove')) await remove();
+    else if (args.has('--sync-tees')) await syncTees();
+    else if (args.has('--sync-extras')) await syncExtras();
     else await seed();
 }
 

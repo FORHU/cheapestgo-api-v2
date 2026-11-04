@@ -70,9 +70,12 @@ describe('deleteSchedule', () => {
             .mockResolvedValueOnce([{ schedule_count: 1, found: true }]);
         expect(await repo.deleteSchedule(COURSE, SCHEDULE, allowAll)).toBe('deleted');
         expect(sql(db.$queryRaw.mock.calls[0])).toContain('FOR UPDATE');
-        expect(sql(db.$executeRaw.mock.calls[0])).toContain('DELETE FROM golf_tee_times');
-        expect(sql(db.$executeRaw.mock.calls[0])).toContain('starts_at > now()');
-        expect(sql(db.$executeRaw.mock.calls[1])).toContain('DELETE FROM golf_tee_time_schedules');
+        // Booked tee times stay, closed, for their bookings; the rest are deleted with the schedule.
+        expect(sql(db.$executeRaw.mock.calls[0])).toContain("SET status = 'closed'");
+        expect(sql(db.$executeRaw.mock.calls[1])).toContain('DELETE FROM golf_tee_times');
+        expect(sql(db.$executeRaw.mock.calls[1])).toContain('starts_at > now()');
+        expect(sql(db.$executeRaw.mock.calls[1])).toContain('NOT EXISTS');
+        expect(sql(db.$executeRaw.mock.calls[2])).toContain('DELETE FROM golf_tee_time_schedules');
     });
 });
 
@@ -94,19 +97,18 @@ describe('insertTeeTimes', () => {
     });
 });
 
-describe('listOpenTeeTimes', () => {
-    it('lists open tee times with spots left, between two instants', async () => {
+describe('listDayTeeTimes', () => {
+    it('lists every tee time between two instants, taken or closed, earliest first', async () => {
         const from = new Date('2026-11-14T16:00:00Z');
         const to = new Date('2026-11-15T16:00:00Z');
         db.$queryRaw.mockResolvedValueOnce([{
-            id: 't1', starts_at: new Date('2026-11-14T23:30:00Z'), spots: 4, spots_left: 3, price_per_player: '85.00', currency: 'USD',
+            id: 't1', starts_at: new Date('2026-11-14T23:30:00Z'), spots: 4, spots_left: 3, price_per_player: '85.00', currency: 'USD', status: 'closed',
         }]);
-        expect(await repo.listOpenTeeTimes(COURSE, from, to)).toEqual([{
-            id: 't1', startsAt: new Date('2026-11-14T23:30:00Z'), spots: 4, spotsLeft: 3, pricePerPlayer: 85, currency: 'USD',
+        expect(await repo.listDayTeeTimes(COURSE, from, to)).toEqual([{
+            id: 't1', startsAt: new Date('2026-11-14T23:30:00Z'), spots: 4, spotsLeft: 3, pricePerPlayer: 85, currency: 'USD', status: 'closed',
         }]);
         const call = db.$queryRaw.mock.calls[0];
-        expect(sql(call)).toContain("status = 'open'");
-        expect(sql(call)).toContain('spots_left > 0');
+        expect(sql(call)).toContain('ORDER BY starts_at');
         expect(values(call)).toEqual([COURSE, from, to]);
     });
 });

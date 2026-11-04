@@ -36,7 +36,7 @@ describe('golfCourseInputSchema', () => {
     it('accepts the least a course needs and fills in the rest', () => {
         expect(golfCourseInputSchema.parse(base)).toEqual({
             ...base, slug: null, address: null, description: '', par: null, greenFeeFrom: null,
-            currency: 'USD', imageUrls: [], amenities: [], timezone: null, bookingWindowDays: 60,
+            currency: 'USD', imageUrls: [], amenities: [], timezone: null, bookingWindowDays: 60, freeCancelHours: 48,
         });
     });
 

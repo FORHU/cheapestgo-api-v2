@@ -29,7 +29,12 @@ export type EmailType =
     | 'refund'
     | 'cancellation'
     | 'awaiting_ticket'
-    | 'price_alert';
+    | 'price_alert'
+    | 'golf_requested'
+    | 'golf_confirmed'
+    | 'golf_declined'
+    | 'golf_cancelled'
+    | 'golf_team_alert';
 
 export interface SendEmailParams {
     /** The booking this email is about. Omitted only for mail not tied to one. */

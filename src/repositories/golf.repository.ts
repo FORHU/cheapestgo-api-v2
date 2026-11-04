@@ -13,6 +13,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import type { GolfAmenity, GolfCourseInput, GolfCourseStatus } from '@/lib/golf/courseInput';
+import { byExtraOrder, type ExtraOffer, type GolfExtraCode } from '@/lib/golf/extras';
 
 export interface GolfCourse {
     id:           string;
@@ -36,6 +37,7 @@ export interface GolfCourse {
     /** IANA name; tee times are set on this clock. */
     timezone:     string | null;
     bookingWindowDays: number;
+    freeCancelHours: number;
     scheduleCount: number;
     /** A time zone and at least one schedule: the course can have tee times. */
     bookable:     boolean;
@@ -49,6 +51,14 @@ export class SlugTakenError extends Error {
     constructor(readonly slug: string) {
         super(`Another golf course already uses the slug "${slug}".`);
         this.name = 'SlugTakenError';
+    }
+}
+
+/** Customers have booked this course, and those bookings still point at it. */
+export class CourseHasBookingsError extends Error {
+    constructor() {
+        super('This course has bookings, so it cannot be deleted. Unpublish it instead.');
+        this.name = 'CourseHasBookingsError';
     }
 }
 
@@ -71,6 +81,7 @@ interface GolfCourseRow {
     updated_at:     Date;
     timezone:       string | null;
     booking_window_days: number;
+    free_cancel_hours: number;
     schedule_count: number | null;
 }
 
@@ -96,6 +107,7 @@ function toCourse(r: GolfCourseRow): GolfCourse {
         updatedAt:    new Date(r.updated_at).toISOString(),
         timezone:     r.timezone,
         bookingWindowDays: Number(r.booking_window_days),
+        freeCancelHours: Number(r.free_cancel_hours),
         scheduleCount,
         bookable:     Boolean(r.timezone) && scheduleCount > 0,
     };
@@ -105,6 +117,11 @@ function toCourse(r: GolfCourseRow): GolfCourse {
 function isUniqueViolation(err: unknown): boolean {
     const e = err as { code?: unknown; meta?: { code?: unknown }; message?: unknown } | null;
     return e?.code === 'P2002' || e?.meta?.code === '23505' || /\b23505\b/.test(String(e?.message ?? ''));
+}
+
+function isForeignKeyViolation(err: unknown): boolean {
+    const e = err as { code?: unknown; meta?: { code?: unknown }; message?: unknown } | null;
+    return e?.code === 'P2003' || e?.meta?.code === '23503' || /\b23503\b/.test(String(e?.message ?? ''));
 }
 
 /** `%` and `_` typed into the search box are text to find, not wildcards. */
@@ -172,11 +189,11 @@ export class GolfRepository {
             const rows = await prisma.$queryRaw<GolfCourseRow[]>`
                 INSERT INTO golf_courses
                     (slug, name, country, city, address, description, holes, par, green_fee_from,
-                     currency, image_urls, amenities, timezone, booking_window_days)
+                     currency, image_urls, amenities, timezone, booking_window_days, free_cancel_hours)
                 VALUES
                     (${c.slug}, ${c.name}, ${c.country}, ${c.city}, ${c.address}, ${c.description},
                      ${c.holes}::int, ${c.par}::int, ${c.greenFeeFrom}::numeric, ${c.currency},
-                     ${c.imageUrls}::text[], ${c.amenities}::text[], ${c.timezone}, ${c.bookingWindowDays}::int)
+                     ${c.imageUrls}::text[], ${c.amenities}::text[], ${c.timezone}, ${c.bookingWindowDays}::int, ${c.freeCancelHours}::int)
                 RETURNING *, 0 AS schedule_count`;
             return toCourse(rows[0]);
         } catch (err) {
@@ -195,6 +212,7 @@ export class GolfRepository {
                     par = ${c.par}::int, green_fee_from = ${c.greenFeeFrom}::numeric, currency = ${c.currency},
                     image_urls = ${c.imageUrls}::text[], amenities = ${c.amenities}::text[],
                     timezone = ${c.timezone}, booking_window_days = ${c.bookingWindowDays}::int,
+                    free_cancel_hours = ${c.freeCancelHours}::int,
                     updated_at = now()
                 WHERE id = ${id}::uuid
                 RETURNING *, (SELECT count(*)::int FROM golf_tee_time_schedules s WHERE s.course_id = golf_courses.id) AS schedule_count`;
@@ -222,7 +240,32 @@ export class GolfRepository {
 
     /** Whether there was a course to delete. Its schedules and tee times go with it. */
     async delete(id: string): Promise<boolean> {
-        const removed = await prisma.$executeRaw`DELETE FROM golf_courses WHERE id = ${id}::uuid`;
-        return removed > 0;
+        try {
+            const removed = await prisma.$executeRaw`DELETE FROM golf_courses WHERE id = ${id}::uuid`;
+            return removed > 0;
+        } catch (err) {
+            if (isForeignKeyViolation(err)) throw new CourseHasBookingsError();
+            throw err;
+        }
+    }
+
+    /** What a course offers customers to add to a tee time, at its price per item. */
+    async listExtras(courseId: string): Promise<ExtraOffer[]> {
+        const rows = await prisma.$queryRaw<Array<{ code: GolfExtraCode; price: Prisma.Decimal | string | number }>>`
+            SELECT code, price FROM golf_course_extras WHERE course_id = ${courseId}::uuid`;
+        return rows.map((r) => ({ code: r.code, price: Number(r.price) })).sort(byExtraOrder);
+    }
+
+    /** Replace what a course offers. A booking keeps the prices it was made at (`golf_booking_extras`). */
+    async setExtras(courseId: string, offers: ExtraOffer[]): Promise<ExtraOffer[]> {
+        await prisma.$transaction(async (tx) => {
+            await tx.$executeRaw`DELETE FROM golf_course_extras WHERE course_id = ${courseId}::uuid`;
+            for (const o of offers) {
+                await tx.$executeRaw`
+                    INSERT INTO golf_course_extras (course_id, code, price)
+                    VALUES (${courseId}::uuid, ${o.code}, ${o.price})`;
+            }
+        });
+        return this.listExtras(courseId);
     }
 }

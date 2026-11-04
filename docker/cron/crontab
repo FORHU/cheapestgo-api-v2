@@ -6,6 +6,7 @@
 # ── High-frequency ────────────────────────────────────────────────────────────
 * * * * * curl -sf -X GET  $APP_URL/api/v2/cron/resume-support-translations     -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 */5  * * * * curl -sf -X GET  $APP_URL/api/v2/cron/poll-pending-tickets           -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
+*/5  * * * * curl -sf -X GET  $APP_URL/api/v2/cron/golf-booking-sweep             -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 */10 * * * * curl -sf -X POST $APP_URL/api/v2/internal/auto-recover               -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 */10 * * * * curl -sf -X GET  $APP_URL/api/v2/cron/cleanup-orphaned-duffel-orders -H "Authorization: Bearer $CRON_SECRET" -o /dev/null
 # Releases flight card holds nobody finished; reports attempts stuck with the airline. Never calls Duffel.

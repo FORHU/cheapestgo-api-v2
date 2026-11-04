@@ -53,4 +53,12 @@ describe('the course fields tee times depend on', () => {
         expect(golfCourseInputSchema.safeParse({ ...course, bookingWindowDays: 0 }).success).toBe(false);
         expect(golfCourseInputSchema.safeParse({ ...course, bookingWindowDays: 91 }).success).toBe(false);
     });
+
+    it('keeps free cancellation between none at all and thirty days', () => {
+        expect(golfCourseInputSchema.parse(course).freeCancelHours).toBe(48);
+        expect(golfCourseInputSchema.parse({ ...course, freeCancelHours: '0' }).freeCancelHours).toBe(0);
+        expect(golfCourseInputSchema.parse({ ...course, freeCancelHours: 720 }).freeCancelHours).toBe(720);
+        expect(golfCourseInputSchema.safeParse({ ...course, freeCancelHours: -1 }).success).toBe(false);
+        expect(golfCourseInputSchema.safeParse({ ...course, freeCancelHours: 721 }).success).toBe(false);
+    });
 });

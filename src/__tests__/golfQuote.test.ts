@@ -52,6 +52,24 @@ describe('quoteGolf', () => {
         expect(q.rate).toBeCloseTo(1 / 0.00075, 6);
     });
 
+    it('puts the fee on green fee and extras together, and the parts add up', () => {
+        const q = quoteGolf({ greenFeeTotal: 170, extraTotals: [30, 20], currency: 'USD', chargeCurrency: 'USD', convert });
+        expect(q).toMatchObject({ greenFee: 170, extraTotals: [30, 20], extrasTotal: 50 });
+        expect(q.total).toBe(golfServiceFee(220, 'USD', convert).chargedTotal);
+        expect(q.greenFee + q.extrasTotal + q.serviceFee).toBeCloseTo(q.total, 10);
+    });
+
+    it('converts each extra on its own, every line in whole won, adding up exactly', () => {
+        const q = quoteGolf({ greenFeeTotal: 170, extraTotals: [33.33, 21.11], currency: 'USD', chargeCurrency: 'KRW', convert });
+        expect(q.extraTotals.every(Number.isInteger)).toBe(true);
+        expect(q.extraTotals[0] + q.extraTotals[1]).toBe(q.extrasTotal);
+        expect(q.greenFee + q.extrasTotal + q.serviceFee).toBe(q.total);
+    });
+
+    it('prices no extras as nothing', () => {
+        expect(quoteGolf({ greenFeeTotal: 170, currency: 'USD', convert })).toMatchObject({ extraTotals: [], extrasTotal: 0 });
+    });
+
     it('refuses to quote what it cannot convert', () => {
         expect(() => quoteGolf({ greenFeeTotal: 170, currency: 'USD', chargeCurrency: 'THB', convert })).toThrow();
     });

@@ -1632,4 +1632,16 @@ router.get('/golf-generate-tee-times', async (_req: Request, res: Response, next
     } catch (err) { next(err); }
 });
 
+/**
+ * Golf bookings nobody finished (every 5 minutes): holds whose 15 minutes ran out and requests the team
+ * did not answer in time. Their cards are released, never charged, and their spots go back on sale.
+ * Moves only bookings already past their deadline, so running it by hand is harmless.
+ */
+router.get('/golf-booking-sweep', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { GolfBookingsService } = await import('@/services/golfBookings.service');
+        res.json({ success: true, ...(await new GolfBookingsService().sweep()) });
+    } catch (err) { next(err); }
+});
+
 export default router;

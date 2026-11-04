@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import { isValidTimeZone } from '@/lib/golf/time';
-import { DEFAULT_BOOKING_WINDOW_DAYS, MAX_BOOKING_WINDOW_DAYS } from '@/lib/golf/rules';
+import { DEFAULT_BOOKING_WINDOW_DAYS, DEFAULT_FREE_CANCEL_HOURS, MAX_BOOKING_WINDOW_DAYS, MAX_FREE_CANCEL_HOURS } from '@/lib/golf/rules';
 
 /** What a course can list. Closed, because the storefront has a label for each in every language. */
 export const GOLF_AMENITIES = [
@@ -65,6 +65,10 @@ export const golfCourseInputSchema = z.object({
     bookingWindowDays: z.coerce.number().int()
         .min(1, 'At least 1 day').max(MAX_BOOKING_WINDOW_DAYS, `At most ${MAX_BOOKING_WINDOW_DAYS} days`)
         .default(DEFAULT_BOOKING_WINDOW_DAYS),
+    /** How long before a tee time a customer may still cancel for free. */
+    freeCancelHours: z.coerce.number().int()
+        .min(0, 'Cannot be negative').max(MAX_FREE_CANCEL_HOURS, `At most ${MAX_FREE_CANCEL_HOURS} hours`)
+        .default(DEFAULT_FREE_CANCEL_HOURS),
 });
 
 export type GolfCourseInput = z.infer<typeof golfCourseInputSchema>;

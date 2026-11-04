@@ -13,13 +13,13 @@ const ROW = {
     city: 'Mandaluyong', address: null, description: 'Two courses.', holes: 36, par: 72,
     green_fee_from: '85.50', currency: 'USD', image_urls: ['https://img.example/a.jpg'], amenities: ['caddie'],
     status: 'published', created_at: new Date('2026-11-01T00:00:00Z'), updated_at: new Date('2026-11-02T00:00:00Z'),
-    timezone: 'Asia/Manila', booking_window_days: 60, schedule_count: 2,
+    timezone: 'Asia/Manila', booking_window_days: 60, free_cancel_hours: 48, schedule_count: 2,
 };
 
 const RECORD: GolfCourseRecord = {
     slug: 'wack-wack', name: 'Wack Wack', country: 'Philippines', city: 'Mandaluyong', address: null,
     description: '', holes: 36, par: 72, greenFeeFrom: 85.5, currency: 'USD', imageUrls: [], amenities: [],
-    timezone: 'Asia/Manila', bookingWindowDays: 60,
+    timezone: 'Asia/Manila', bookingWindowDays: 60, freeCancelHours: 48,
 };
 
 let repo: GolfRepository;
@@ -39,7 +39,7 @@ describe('mapping', () => {
             address: null, description: 'Two courses.', holes: 36, par: 72, greenFeeFrom: 85.5, currency: 'USD',
             imageUrls: ['https://img.example/a.jpg'], amenities: ['caddie'], status: 'published',
             createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-02T00:00:00.000Z',
-            timezone: 'Asia/Manila', bookingWindowDays: 60, scheduleCount: 2, bookable: true,
+            timezone: 'Asia/Manila', bookingWindowDays: 60, freeCancelHours: 48, scheduleCount: 2, bookable: true,
         });
     });
 

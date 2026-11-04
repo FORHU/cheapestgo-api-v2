@@ -12,13 +12,14 @@
 import { AppError } from '@/middleware/error.middleware';
 import { makeStrictConverter } from '@/lib/payments/convertStrict';
 import { slugify, type GolfCourseInput, type GolfCourseStatus } from '@/lib/golf/courseInput';
+import type { ExtraOffer } from '@/lib/golf/extras';
 import { ExchangeRatesService, type RatesResult } from '@/services/exchange-rates.service';
 import { readPage, type AdminListQuery } from '@/services/adminContent.service';
 import { GolfRepository, type GolfCourse, type GolfCourseRecord } from '@/repositories/golf.repository';
 
 export type GolfStore = Pick<GolfRepository,
     'listPublished' | 'listPublishedCountries' | 'findBySlug' | 'findById' | 'listForAdmin'
-    | 'create' | 'update' | 'setStatus' | 'delete'>;
+    | 'create' | 'update' | 'setStatus' | 'delete' | 'listExtras' | 'setExtras'>;
 
 const UUID     = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CURRENCY = /^[A-Z]{3}$/;
@@ -103,6 +104,18 @@ export class GolfService {
 
     async delete(id: string): Promise<boolean> {
         return UUID.test(id) ? this.repo.delete(id) : false;
+    }
+
+    /** What a course offers customers to add to a tee time. Null when there is no such course. */
+    async listExtras(id: string): Promise<ExtraOffer[] | null> {
+        if (!UUID.test(id) || !(await this.repo.findById(id))) return null;
+        return this.repo.listExtras(id);
+    }
+
+    /** Replace what a course offers. Null when there is no such course. */
+    async setExtras(id: string, offers: ExtraOffer[]): Promise<ExtraOffer[] | null> {
+        if (!UUID.test(id) || !(await this.repo.findById(id))) return null;
+        return this.repo.setExtras(id, offers);
     }
 
     private async inCurrency(courses: GolfCourse[], currency?: string): Promise<GolfCourse[]> {

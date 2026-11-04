@@ -16,7 +16,7 @@ export const scheduleInputSchema = z.object({
         .transform((days) => [...new Set(days)].sort((a, b) => a - b)),
     firstTee:        time,
     lastTee:         time,
-    intervalMinutes: z.coerce.number().int().min(5, 'At least 5 minutes').max(60, 'At most 60 minutes'),
+    intervalMinutes: z.coerce.number().int().min(5, 'At least 5 minutes').max(300, 'At most 300 minutes'),
     spots:           z.coerce.number().int().min(1).max(4, 'At most 4 players').default(4),
     pricePerPlayer:  z.coerce.number().min(0, 'Cannot be negative').max(99_999_999.99),
 }).superRefine((s, ctx) => {

@@ -4,7 +4,7 @@ vi.mock('@/lib/prisma', () => ({ prisma: {} }));
 
 import { GolfTeeTimesService } from '@/services/golfTeeTimes.service';
 import type { GolfCourse } from '@/repositories/golf.repository';
-import type { GenerationSource, NewTeeTime, OpenTeeTime, ScheduleDeleteFacts, TeeTimeSchedule } from '@/repositories/golfTeeTimes.repository';
+import type { GenerationSource, NewTeeTime, DayTeeTime, ScheduleDeleteFacts, TeeTimeSchedule } from '@/repositories/golfTeeTimes.repository';
 import type { ScheduleInput } from '@/lib/golf/scheduleInput';
 import type { RatesResult } from '@/services/exchange-rates.service';
 import { AppError } from '@/middleware/error.middleware';
@@ -39,7 +39,7 @@ function fakes() {
         deleteSchedule:    vi.fn(async (_c: string, _s: string, _allow: (f: ScheduleDeleteFacts) => boolean) => 'deleted' as 'deleted' | 'missing' | 'refused'),
         generationSources: vi.fn(async (_c?: string) => [] as GenerationSource[]),
         insertTeeTimes:    vi.fn(async (rows: NewTeeTime[]) => rows.length),
-        listOpenTeeTimes:  vi.fn(async (_c: string, _f: Date, _t: Date) => [] as OpenTeeTime[]),
+        listDayTeeTimes:  vi.fn(async (_c: string, _f: Date, _t: Date) => [] as DayTeeTime[]),
         firstOpenTeeTime:  vi.fn(async (_c: string, _f: Date, _t: Date) => null as Date | null),
     };
     const courses = {
@@ -134,8 +134,8 @@ describe('generation', () => {
 });
 
 describe('availability', () => {
-    const teeTime = (over: Partial<OpenTeeTime> = {}): OpenTeeTime => ({
-        id: 't1', startsAt: new Date('2026-11-14T23:30:00Z'), spots: 4, spotsLeft: 3, pricePerPlayer: 85, currency: 'USD', ...over,
+    const teeTime = (over: Partial<DayTeeTime> = {}): DayTeeTime => ({
+        id: 't1', startsAt: new Date('2026-11-14T23:30:00Z'), spots: 4, spotsLeft: 3, pricePerPlayer: 85, currency: 'USD', status: 'open', ...over,
     });
 
     it('is not offered for a course that is not published and bookable', async () => {
@@ -145,12 +145,65 @@ describe('availability', () => {
         expect(await svc.availability('wack-wack', { players: 2 }, NOW)).toBeNull();
     });
 
-    it('lists the asked day on the course clock, never inside the lead time', async () => {
+    it('reads the asked day on the course clock', async () => {
         const out = await svc.availability('wack-wack', { date: '2026-11-05', players: 2 }, NOW);
         expect(out).toMatchObject({ timezone: 'Asia/Manila', date: '2026-11-05', firstDate: '2026-11-05', lastDate: '2027-01-02', players: 2 });
-        const [, from, to] = f.teeTimes.listOpenTeeTimes.mock.calls[0];
-        expect(from.toISOString()).toBe('2026-11-05T03:00:00.000Z'); // now + 24h, later than midnight Manila
+        const [, from, to] = f.teeTimes.listDayTeeTimes.mock.calls[0];
+        expect(from.toISOString()).toBe('2026-11-04T16:00:00.000Z'); // midnight Manila, 5 Nov
         expect(to.toISOString()).toBe('2026-11-05T16:00:00.000Z');   // midnight Manila, 6 Nov
+    });
+
+    it('never lists a tee time inside the lead time', async () => {
+        f.teeTimes.listDayTeeTimes.mockResolvedValueOnce([
+            teeTime({ id: 'soon', startsAt: new Date(NOW.getTime() + 3_600_000) }),
+            teeTime({ id: 'later', startsAt: new Date(NOW.getTime() + 30 * 3_600_000) }),
+        ]);
+        const out = await svc.availability('wack-wack', { date: '2026-11-05', players: 1 }, NOW);
+        expect(out!.teeTimes.map((t) => t.id)).toEqual(['later']);
+    });
+
+    describe('spacing by party', () => {
+        // A tee time every 30 minutes from 06:30 to 12:30, Manila.
+        const day = Array.from({ length: 13 }, (_, i) => teeTime({
+            id: `t${i}`, startsAt: new Date(Date.parse('2026-11-14T22:30:00Z') + i * 1_800_000),
+        }));
+        const times = async (players: number, c = course()) => {
+            f.courses.findBySlug.mockResolvedValueOnce(c);
+            f.teeTimes.listDayTeeTimes.mockResolvedValueOnce(day);
+            const out = await svc.availability('wack-wack', { date: '2026-11-15', players }, NOW);
+            return out!.teeTimes.map((t) => t.localTime);
+        };
+
+        it.each([
+            [1, ['06:30', '09:00', '11:30']],
+            [2, ['06:30', '09:30', '12:30']],
+            [3, ['06:30', '10:00']],
+            [4, ['06:30', '10:30']],
+        ])('offers a party of %i tee times a round apart', async (players, expected) => {
+            expect(await times(players)).toEqual(expected);
+        });
+
+        it('takes half as long on nine holes', async () => {
+            expect(await times(4, course({ holes: 9 }))).toEqual(['06:30', '08:30', '10:30', '12:30']);
+        });
+
+        it('takes no longer past 18 holes', async () => {
+            expect(await times(4, course({ holes: 36 }))).toEqual(['06:30', '10:30']);
+        });
+
+        it('leaves the others where they are when one is full, so times do not shift as people book', async () => {
+            f.courses.findBySlug.mockResolvedValueOnce(course());
+            f.teeTimes.listDayTeeTimes.mockResolvedValueOnce(day.map((t) => (t.id === 't5' ? { ...t, spotsLeft: 0 } : t)));
+            const out = await svc.availability('wack-wack', { date: '2026-11-15', players: 1 }, NOW);
+            expect(out!.teeTimes.map((t) => t.localTime)).toEqual(['06:30', '11:30']);
+        });
+
+        it('keeps a closed tee time in the spacing, and off the list', async () => {
+            f.courses.findBySlug.mockResolvedValueOnce(course());
+            f.teeTimes.listDayTeeTimes.mockResolvedValueOnce(day.map((t) => (t.id === 't5' ? { ...t, status: 'closed' as const } : t)));
+            const out = await svc.availability('wack-wack', { date: '2026-11-15', players: 1 }, NOW);
+            expect(out!.teeTimes.map((t) => t.localTime)).toEqual(['06:30', '11:30']);
+        });
     });
 
     it('answers a date outside the range for the nearest end', async () => {
@@ -172,7 +225,7 @@ describe('availability', () => {
     });
 
     it("prices each tee time all-in per player in the visitor's currency", async () => {
-        f.teeTimes.listOpenTeeTimes.mockResolvedValueOnce([teeTime()]);
+        f.teeTimes.listDayTeeTimes.mockResolvedValueOnce([teeTime()]);
         const out = await svc.availability('wack-wack', { date: '2026-11-15', players: 2, currency: 'KRW' }, NOW);
         const [t] = out!.teeTimes;
         expect(t).toMatchObject({ id: 't1', localTime: '07:30', spotsLeft: 3, currency: 'KRW' });
@@ -181,13 +234,13 @@ describe('availability', () => {
     });
 
     it('leaves a tee time unpriced only when its price cannot be converted', async () => {
-        f.teeTimes.listOpenTeeTimes.mockResolvedValueOnce([teeTime()]);
+        f.teeTimes.listDayTeeTimes.mockResolvedValueOnce([teeTime()]);
         const out = await svc.availability('wack-wack', { date: '2026-11-15', players: 2, currency: 'THB' }, NOW);
         expect(out!.teeTimes[0]).toMatchObject({ allInPerPlayer: null, currency: null });
     });
 
     it("prices in the course's currency when the visitor has not said", async () => {
-        f.teeTimes.listOpenTeeTimes.mockResolvedValueOnce([teeTime()]);
+        f.teeTimes.listDayTeeTimes.mockResolvedValueOnce([teeTime()]);
         const out = await svc.availability('wack-wack', { date: '2026-11-15', players: 2 }, NOW);
         expect(out!.teeTimes[0].currency).toBe('USD');
     });

@@ -3,10 +3,11 @@ import { z } from 'zod';
 import { AppError } from '@/middleware/error.middleware';
 import { logAdminAction } from '@/lib/admin/audit';
 import { GOLF_COURSE_STATUSES, golfCourseInputSchema } from '@/lib/golf/courseInput';
+import { courseExtrasSchema } from '@/lib/golf/extras';
 import { scheduleInputSchema } from '@/lib/golf/scheduleInput';
 import { isIsoDate } from '@/lib/golf/time';
 import { DEFAULT_PLAYERS } from '@/lib/golf/rules';
-import { SlugTakenError } from '@/repositories/golf.repository';
+import { CourseHasBookingsError, SlugTakenError } from '@/repositories/golf.repository';
 import { GolfService } from '@/services/golf.service';
 import { GolfTeeTimesService } from '@/services/golfTeeTimes.service';
 
@@ -36,6 +37,9 @@ const notFound = () => new AppError(404, 'Golf course not found', 'NOT_FOUND');
 function asHttp(err: unknown): unknown {
     if (err instanceof SlugTakenError) {
         return new AppError(409, err.message, 'SLUG_TAKEN', { details: { slug: [err.message] } });
+    }
+    if (err instanceof CourseHasBookingsError) {
+        return new AppError(409, err.message, 'COURSE_HAS_BOOKINGS');
     }
     return err;
 }
@@ -85,6 +89,24 @@ export class GolfController {
             if (!(await this.teeTimes.removeSchedule(req.params.id, req.params.scheduleId))) throw notFound();
             audit(req, 'golf_schedule_delete', req.params.scheduleId, { courseId: req.params.id });
             res.json({ success: true });
+        } catch (err) { next(err); }
+    };
+
+    adminListExtras = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const extras = await this.svc.listExtras(req.params.id);
+            if (!extras) throw notFound();
+            res.json({ success: true, data: extras });
+        } catch (err) { next(err); }
+    };
+
+    adminSetExtras = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { extras } = courseExtrasSchema.parse(req.body ?? {});
+            const saved = await this.svc.setExtras(req.params.id, extras);
+            if (!saved) throw notFound();
+            audit(req, 'golf_extras_update', req.params.id, { extras: saved });
+            res.json({ success: true, data: saved });
         } catch (err) { next(err); }
     };
 
@@ -142,6 +164,6 @@ export class GolfController {
             if (!(await this.svc.delete(req.params.id))) throw notFound();
             audit(req, 'golf_course_delete', req.params.id);
             res.json({ success: true });
-        } catch (err) { next(err); }
+        } catch (err) { next(asHttp(err)); }
     };
 }

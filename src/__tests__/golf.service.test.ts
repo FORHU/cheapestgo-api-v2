@@ -20,7 +20,7 @@ const course = (over: Partial<GolfCourse> = {}): GolfCourse => ({
     id: ID, slug: 'wack-wack', name: 'Wack Wack', country: 'Philippines', city: 'Mandaluyong', address: null,
     description: '', holes: 18, par: 72, greenFeeFrom: 100, currency: 'USD', imageUrls: [], amenities: [],
     status: 'published', createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-01T00:00:00.000Z',
-    timezone: 'Asia/Manila', bookingWindowDays: 60, scheduleCount: 1, bookable: true, ...over,
+    timezone: 'Asia/Manila', bookingWindowDays: 60, freeCancelHours: 48, scheduleCount: 1, bookable: true, ...over,
 });
 
 const RATES: RatesResult = {

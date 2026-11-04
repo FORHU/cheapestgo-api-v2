@@ -344,6 +344,23 @@ router.post(
                         }
                         break;
                     }
+                    // A golf booking is finished by a person, not here: the authorisation only turns
+                    // it into a request for the team to answer.
+                    if (pi.metadata?.type === 'golf') {
+                        try {
+                            const { GolfBookingsService } = await import('@/services/golfBookings.service');
+                            const booking = await new GolfBookingsService().onAuthorised(pi.id);
+                            logger.info('[webhooks/stripe] Golf payment authorised', {
+                                paymentIntentId: pi.id, reference: booking?.reference, status: booking?.status,
+                            });
+                        } catch (err: any) {
+                            // Not rethrown: the customer's page and the sweep both check Stripe again.
+                            logger.error('[webhooks/stripe] Could not record golf authorisation', {
+                                paymentIntentId: pi.id, message: err?.message,
+                            });
+                        }
+                        break;
+                    }
                     if (pi.metadata?.type !== 'hotel' && pi.metadata?.type !== 'hotel_bundle') break;
                     try {
                         const { HotelsService } = await import('@/services/hotels.service');

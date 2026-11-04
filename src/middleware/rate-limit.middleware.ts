@@ -45,6 +45,19 @@ export const invoiceRateLimit = rateLimit({
     message: { error: 'RATE_LIMITED', message: 'Too many requests. Please wait a moment.' },
 });
 
+/**
+ * Starting a golf booking takes spots and opens a Stripe payment, so it is held to what a person
+ * actually does: a few attempts a minute. Keyed on the signed-in customer.
+ */
+export const golfBookingRateLimit = rateLimit({
+    windowMs: 60 * 1000,
+    max: isDev ? 10_000 : 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => req.user?.sub ?? req.ip ?? 'unknown',
+    message: { error: 'RATE_LIMITED', message: 'Too many requests. Please wait a moment.' },
+});
+
 export const searchRateLimit = rateLimit({
     windowMs: 60 * 1000,
     max: isDev ? 10_000 : 30,

@@ -11,7 +11,7 @@ import { makeStrictConverter } from '@/lib/payments/convertStrict';
 import { roundToCurrency } from '@/lib/pricing';
 import { expandSchedule } from '@/lib/golf/schedule';
 import { addDays, localDate, localTime, zonedTimeToUtc } from '@/lib/golf/time';
-import { MIN_LEAD_HOURS, listingRange } from '@/lib/golf/rules';
+import { MIN_LEAD_HOURS, listingRange, spacedForParty } from '@/lib/golf/rules';
 import { quoteGolf } from '@/lib/golf/quote';
 import type { ScheduleInput } from '@/lib/golf/scheduleInput';
 import { ExchangeRatesService, type RatesResult } from '@/services/exchange-rates.service';
@@ -25,7 +25,7 @@ import {
 
 type TeeTimeStore = Pick<GolfTeeTimesRepository,
     'listSchedules' | 'createSchedule' | 'deleteSchedule' | 'generationSources' | 'insertTeeTimes'
-    | 'listOpenTeeTimes' | 'firstOpenTeeTime'>;
+    | 'listDayTeeTimes' | 'firstOpenTeeTime'>;
 type CourseLookup = Pick<GolfRepository, 'findById' | 'findBySlug'>;
 
 const UUID     = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -126,7 +126,8 @@ export class GolfTeeTimesService {
     }
 
     /**
-     * The open tee times on one course-local date. Null for a course that is not published and
+     * The open tee times on one course-local date, spaced for this party: a round apart, so a smaller party,
+     * who play faster, are offered more of them. Null for a course that is not published and
      * bookable. A missing date means the first date that has an open tee time (tomorrow's morning
      * tee times are often inside the lead time, so the first date in range can be empty), or the first
      * date in range when there are none; a date outside the range is answered for the nearer end.
@@ -151,9 +152,9 @@ export class GolfTeeTimesService {
         }
         const day = wanted < firstDate ? firstDate : wanted > lastDate ? lastDate : wanted;
 
-        const from = new Date(Math.max(zonedTimeToUtc(day, '00:00', tz).getTime(), earliest));
-        const to   = new Date(Math.min(zonedTimeToUtc(addDays(day, 1), '00:00', tz).getTime(), latest));
-        const open = to > from ? await this.repo.listOpenTeeTimes(course.id, from, to) : [];
+        const whole = await this.repo.listDayTeeTimes(course.id, zonedTimeToUtc(day, '00:00', tz), zonedTimeToUtc(addDays(day, 1), '00:00', tz));
+        const open = spacedForParty(whole, players, course.holes).filter((t) =>
+            t.status === 'open' && t.spotsLeft > 0 && t.startsAt.getTime() >= earliest && t.startsAt.getTime() < latest);
 
         const asked  = currency?.trim().toUpperCase();
         const charge = asked && CURRENCY.test(asked) ? asked : course.currency;

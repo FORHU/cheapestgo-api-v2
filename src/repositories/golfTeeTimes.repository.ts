@@ -41,13 +41,14 @@ export interface NewTeeTime {
     currency:       string;
 }
 
-export interface OpenTeeTime {
+export interface DayTeeTime {
     id:             string;
     startsAt:       Date;
     spots:          number;
     spotsLeft:      number;
     pricePerPlayer: number;
     currency:       string;
+    status:         'open' | 'closed';
 }
 
 /** What a delete rule is told about the course, read under the course's row lock. */
@@ -129,7 +130,16 @@ export class GolfTeeTimesRepository {
             if (!counted?.found) return 'missing';
             if (!allow({ status: course.status, scheduleCount: Number(counted.schedule_count) })) return 'refused';
 
-            await tx.$executeRaw`DELETE FROM golf_tee_times WHERE schedule_id = ${scheduleId}::uuid AND starts_at > now()`;
+            // A future tee time someone has booked stays, as the record that booking points at, but
+            // closes: it is no longer on sale once its schedule is gone.
+            await tx.$executeRaw`
+                UPDATE golf_tee_times t SET status = 'closed'
+                WHERE t.schedule_id = ${scheduleId}::uuid AND t.starts_at > now()
+                  AND EXISTS (SELECT 1 FROM golf_bookings b WHERE b.tee_time_id = t.id)`;
+            await tx.$executeRaw`
+                DELETE FROM golf_tee_times t
+                WHERE t.schedule_id = ${scheduleId}::uuid AND t.starts_at > now()
+                  AND NOT EXISTS (SELECT 1 FROM golf_bookings b WHERE b.tee_time_id = t.id)`;
             await tx.$executeRaw`DELETE FROM golf_tee_time_schedules WHERE id = ${scheduleId}::uuid`;
             return 'deleted';
         });
@@ -184,16 +194,18 @@ export class GolfTeeTimesRepository {
         return rows[0] ? new Date(rows[0].starts_at) : null;
     }
 
-    /** Open tee times with a spot left, from `from` (inclusive) to `to` (exclusive), earliest first. */
-    async listOpenTeeTimes(courseId: string, from: Date, to: Date): Promise<OpenTeeTime[]> {
+    /**
+     * Every tee time from `from` (inclusive) to `to` (exclusive), earliest first: taken and closed ones
+     * too, because what a party is offered is worked out across the whole day (`spacedForParty`).
+     */
+    async listDayTeeTimes(courseId: string, from: Date, to: Date): Promise<DayTeeTime[]> {
         const rows = await prisma.$queryRaw<Array<{
             id: string; starts_at: Date; spots: number; spots_left: number;
-            price_per_player: Prisma.Decimal | string | number; currency: string;
+            price_per_player: Prisma.Decimal | string | number; currency: string; status: 'open' | 'closed';
         }>>`
-            SELECT id, starts_at, spots, spots_left, price_per_player, currency
+            SELECT id, starts_at, spots, spots_left, price_per_player, currency, status
             FROM golf_tee_times
-            WHERE course_id = ${courseId}::uuid AND status = 'open' AND spots_left > 0
-              AND starts_at >= ${from} AND starts_at < ${to}
+            WHERE course_id = ${courseId}::uuid AND starts_at >= ${from} AND starts_at < ${to}
             ORDER BY starts_at`;
         return rows.map((r) => ({
             id:             r.id,
@@ -202,6 +214,7 @@ export class GolfTeeTimesRepository {
             spotsLeft:      Number(r.spots_left),
             pricePerPlayer: Number(r.price_per_player),
             currency:       r.currency.trim(),
+            status:         r.status,
         }));
     }
 }

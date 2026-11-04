@@ -12,9 +12,14 @@
 
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { byExtraOrder, type BookedExtra, type ExtraOffer, type GolfExtraCode } from '@/lib/golf/extras';
+import { GolfRepository } from '@/repositories/golf.repository';
+import { GolfTeeTimesRepository, type DayTeeTime } from '@/repositories/golfTeeTimes.repository';
 
-export type GolfBookingStatus = 'held' | 'requested' | 'confirmed' | 'expired' | 'declined';
-export type GolfCloseReason = 'hold_expired' | 'declined_by_team' | 'not_confirmed_in_time';
+export type GolfBookingStatus = 'held' | 'requested' | 'confirmed' | 'expired' | 'declined' | 'cancelled';
+export type GolfCloseReason =
+    | 'hold_expired' | 'declined_by_team' | 'not_confirmed_in_time'
+    | 'cancelled_by_customer' | 'cancelled_by_team';
 /** The admin screen's three lists. */
 export type GolfBookingView = 'waiting' | 'upcoming' | 'closed';
 
@@ -30,10 +35,13 @@ export interface GolfBooking {
     /** What the course asks per player, in its own currency. */
     courseCurrency:  string;
     pricePerPlayer:  number;
-    /** What the customer pays in: `greenFee + serviceFee = total`, all in this currency. */
+    /** What the customer pays in: `greenFee + extrasTotal + serviceFee = total`, all in this currency. */
     currency:        string;
     fxRate:          number;
     greenFee:        number;
+    extrasTotal:     number;
+    /** Priced at the hold: what the course changes later does not touch these. */
+    extras:          BookedExtra[];
     serviceFee:      number;
     total:           number;
     paymentIntentId: string | null;
@@ -44,6 +52,10 @@ export interface GolfBooking {
     confirmedAt:     string | null;
     closedAt:        string | null;
     closeReason:     GolfCloseReason | null;
+    /** Until when a customer may cancel for free. Written when the booking is made. */
+    freeCancelUntil: string;
+    /** What went back to the card, in `currency`. */
+    refundAmount:    number;
     createdAt:       string;
     startsAt:        string;
     course: {
@@ -68,9 +80,14 @@ export interface BookableTeeTime {
     course: {
         slug:              string;
         name:              string;
+        city:              string;
+        country:           string;
+        imageUrl:          string | null;
+        holes:             number;
         status:            'draft' | 'published';
         timezone:          string | null;
         bookingWindowDays: number;
+        freeCancelHours:   number;
     };
 }
 
@@ -87,9 +104,12 @@ export interface NewHold {
     currency:       string;
     fxRate:         number;
     greenFee:       number;
+    extrasTotal:    number;
+    extras:         BookedExtra[];
     serviceFee:     number;
     total:          number;
     holdExpiresAt:  Date;
+    freeCancelUntil: Date;
 }
 
 export type HoldOutcome =
@@ -101,11 +121,13 @@ type Row = {
     players: number; lead_name: string; contact_email: string;
     course_currency: string; price_per_player: Prisma.Decimal | string | number;
     currency: string; fx_rate: Prisma.Decimal | string | number;
-    green_fee: Prisma.Decimal | string | number; service_fee: Prisma.Decimal | string | number;
-    total: Prisma.Decimal | string | number;
+    green_fee: Prisma.Decimal | string | number; extras_total: Prisma.Decimal | string | number;
+    extras: Array<{ code: GolfExtraCode; quantity: number; unit_price: number; total: number }> | null;
+    service_fee: Prisma.Decimal | string | number; total: Prisma.Decimal | string | number;
     payment_intent_id: string | null; status: GolfBookingStatus;
     hold_expires_at: Date; requested_at: Date | null; decide_by: Date | null; confirmed_at: Date | null;
     closed_at: Date | null; close_reason: GolfCloseReason | null; created_at: Date;
+    free_cancel_until: Date; refund_amount: Prisma.Decimal | string | number;
     starts_at: Date;
     course_slug: string; course_name: string; course_city: string; course_country: string;
     course_timezone: string | null; course_image: string | null;
@@ -128,6 +150,10 @@ function toBooking(r: Row): GolfBooking {
         currency:        r.currency.trim(),
         fxRate:          Number(r.fx_rate),
         greenFee:        Number(r.green_fee),
+        extrasTotal:     Number(r.extras_total),
+        extras:          (r.extras ?? [])
+            .map((e) => ({ code: e.code, quantity: Number(e.quantity), unitPrice: Number(e.unit_price), total: Number(e.total) }))
+            .sort(byExtraOrder),
         serviceFee:      Number(r.service_fee),
         total:           Number(r.total),
         paymentIntentId: r.payment_intent_id,
@@ -138,6 +164,8 @@ function toBooking(r: Row): GolfBooking {
         confirmedAt:     iso(r.confirmed_at),
         closedAt:        iso(r.closed_at),
         closeReason:     r.close_reason,
+        freeCancelUntil: iso(r.free_cancel_until)!,
+        refundAmount:    Number(r.refund_amount),
         createdAt:       iso(r.created_at)!,
         startsAt:        iso(r.starts_at)!,
         course: {
@@ -155,7 +183,9 @@ function toBooking(r: Row): GolfBooking {
 const SELECT_BOOKING = `
     SELECT b.*, t.starts_at,
            c.slug AS course_slug, c.name AS course_name, c.city AS course_city, c.country AS course_country,
-           c.timezone AS course_timezone, c.image_urls[1] AS course_image
+           c.timezone AS course_timezone, c.image_urls[1] AS course_image,
+           (SELECT json_agg(json_build_object('code', e.code, 'quantity', e.quantity, 'unit_price', e.unit_price, 'total', e.total))
+            FROM golf_booking_extras e WHERE e.booking_id = b.id) AS extras
     FROM golf_bookings b
     JOIN golf_tee_times t ON t.id = b.tee_time_id
     JOIN golf_courses   c ON c.id = b.course_id`;
@@ -167,10 +197,12 @@ export class GolfBookingsRepository {
         const rows = await prisma.$queryRaw<Array<{
             id: string; course_id: string; starts_at: Date; spots_left: number;
             price_per_player: Prisma.Decimal | string | number; currency: string; status: 'open' | 'closed';
-            slug: string; name: string; course_status: 'draft' | 'published'; timezone: string | null; booking_window_days: number;
+            slug: string; name: string; city: string; country: string; image_url: string | null; holes: number;
+            course_status: 'draft' | 'published'; timezone: string | null; booking_window_days: number; free_cancel_hours: number;
         }>>`
             SELECT t.id, t.course_id, t.starts_at, t.spots_left, t.price_per_player, t.currency, t.status,
-                   c.slug, c.name, c.status AS course_status, c.timezone, c.booking_window_days
+                   c.slug, c.name, c.city, c.country, c.image_urls[1] AS image_url, c.holes,
+                   c.status AS course_status, c.timezone, c.booking_window_days, c.free_cancel_hours
             FROM golf_tee_times t JOIN golf_courses c ON c.id = t.course_id
             WHERE t.id = ${teeTimeId}::uuid`;
         const r = rows[0];
@@ -186,11 +218,26 @@ export class GolfBookingsRepository {
             course: {
                 slug:              r.slug,
                 name:              r.name,
+                city:              r.city,
+                country:           r.country,
+                imageUrl:          r.image_url,
+                holes:             Number(r.holes),
                 status:            r.course_status,
                 timezone:          r.timezone,
                 bookingWindowDays: Number(r.booking_window_days),
+                freeCancelHours:   Number(r.free_cancel_hours),
             },
         };
+    }
+
+    /** A course's tee times between two instants, for working out which a party may book. */
+    listDayTeeTimes(courseId: string, from: Date, to: Date): Promise<DayTeeTime[]> {
+        return new GolfTeeTimesRepository().listDayTeeTimes(courseId, from, to);
+    }
+
+    /** What a course offers to add to a tee time, at its price per item. */
+    listCourseExtras(courseId: string): Promise<ExtraOffer[]> {
+        return new GolfRepository().listExtras(courseId);
     }
 
     async findByReference(reference: string): Promise<GolfBooking | null> {
@@ -201,6 +248,18 @@ export class GolfBookingsRepository {
     async findByPaymentIntent(paymentIntentId: string): Promise<GolfBooking | null> {
         const rows = await prisma.$queryRawUnsafe<Row[]>(`${SELECT_BOOKING} WHERE b.payment_intent_id = $1`, paymentIntentId);
         return rows[0] ? toBooking(rows[0]) : null;
+    }
+
+    /**
+     * A customer's bookings, newest first. A hold that ran out is left out: nothing was paid and
+     * nothing was asked of anyone, so there is nothing for them to look back at.
+     */
+    async listForUser(userId: string): Promise<GolfBooking[]> {
+        const rows = await prisma.$queryRawUnsafe<Row[]>(
+            `${SELECT_BOOKING} WHERE b.user_id = $1::uuid AND b.status <> 'expired' ORDER BY b.created_at DESC`,
+            userId,
+        );
+        return rows.map(toBooking);
     }
 
     /** The customer's live hold on this tee time, if any (there is at most one). */
@@ -240,13 +299,18 @@ export class GolfBookingsRepository {
             const [inserted] = await tx.$queryRaw<Array<{ id: string }>>`
                 INSERT INTO golf_bookings (
                     reference, user_id, course_id, tee_time_id, players, lead_name, contact_email,
-                    course_currency, price_per_player, currency, fx_rate, green_fee, service_fee, total,
-                    status, hold_expires_at)
+                    course_currency, price_per_player, currency, fx_rate, green_fee, extras_total, service_fee, total,
+                    status, hold_expires_at, free_cancel_until)
                 VALUES (
                     ${h.reference}, ${h.userId}::uuid, ${h.courseId}::uuid, ${h.teeTimeId}::uuid, ${h.players},
                     ${h.leadName}, ${h.contactEmail}, ${h.courseCurrency}, ${h.pricePerPlayer}, ${h.currency},
-                    ${h.fxRate}, ${h.greenFee}, ${h.serviceFee}, ${h.total}, 'held', ${h.holdExpiresAt})
+                    ${h.fxRate}, ${h.greenFee}, ${h.extrasTotal}, ${h.serviceFee}, ${h.total}, 'held', ${h.holdExpiresAt}, ${h.freeCancelUntil})
                 RETURNING id`;
+            for (const e of h.extras) {
+                await tx.$executeRaw`
+                    INSERT INTO golf_booking_extras (booking_id, code, quantity, unit_price, total)
+                    VALUES (${inserted.id}::uuid, ${e.code}, ${e.quantity}, ${e.unitPrice}, ${e.total})`;
+            }
             const rows = await tx.$queryRawUnsafe<Row[]>(`${SELECT_BOOKING} WHERE b.id = $1::uuid`, inserted.id);
             return { result: 'held', booking: toBooking(rows[0]), released };
         });
@@ -277,13 +341,21 @@ export class GolfBookingsRepository {
 
     /**
      * Close a booking that is still `from`, and give its spots back to the tee time. Null when it had
-     * already moved on — someone else closed or confirmed it first.
+     * already moved on — someone else closed or confirmed it first. `refund` is what went back to the
+     * card; the caller has already sent it.
      */
-    async close(id: string, from: 'held' | 'requested', to: 'expired' | 'declined', reason: GolfCloseReason, at: Date): Promise<GolfBooking | null> {
+    async close(
+        id: string,
+        from: 'held' | 'requested' | 'confirmed',
+        to: 'expired' | 'declined' | 'cancelled',
+        reason: GolfCloseReason,
+        at: Date,
+        refund = 0,
+    ): Promise<GolfBooking | null> {
         const closed = await prisma.$transaction(async (tx) => {
             const rows = await tx.$queryRaw<Array<{ tee_time_id: string; players: number }>>`
                 UPDATE golf_bookings
-                SET status = ${to}, close_reason = ${reason}, closed_at = ${at}, updated_at = now()
+                SET status = ${to}, close_reason = ${reason}, closed_at = ${at}, refund_amount = ${refund}, updated_at = now()
                 WHERE id = ${id}::uuid AND status = ${from}
                 RETURNING tee_time_id, players`;
             if (rows.length === 0) return false;
@@ -314,6 +386,22 @@ export class GolfBookingsRepository {
     }
 
     /**
+     * Claim the unanswered requests whose deadline falls between `now` and `before`, not reminded yet.
+     * Claimed by setting `reminded_at` in one statement, so overlapping runs cannot both remind.
+     */
+    async claimReminders(now: Date, before: Date, limit: number): Promise<GolfBooking[]> {
+        const claimed = await prisma.$queryRaw<Array<{ id: string }>>`
+            UPDATE golf_bookings SET reminded_at = ${now}, updated_at = now()
+            WHERE id IN (
+                SELECT id FROM golf_bookings
+                WHERE status = 'requested' AND reminded_at IS NULL AND decide_by > ${now} AND decide_by <= ${before}
+                ORDER BY decide_by LIMIT ${limit} FOR UPDATE SKIP LOCKED)
+            RETURNING id`;
+        const found = await Promise.all(claimed.map((c) => this.findById(c.id)));
+        return found.filter((b): b is GolfBooking => b !== null);
+    }
+
+    /**
      * One of the admin screen's lists. Waiting: requests to answer, the nearest deadline first.
      * Upcoming: confirmed tee times still to be played, soonest first. Closed: everything that ended,
      * and confirmed rounds already played, latest first.
@@ -322,7 +410,7 @@ export class GolfBookingsRepository {
         const where = {
             waiting:  `b.status = 'requested'`,
             upcoming: `b.status = 'confirmed' AND t.starts_at >= $1`,
-            closed:   `(b.status IN ('expired', 'declined') OR (b.status = 'confirmed' AND t.starts_at < $1))`,
+            closed:   `(b.status IN ('expired', 'declined', 'cancelled') OR (b.status = 'confirmed' AND t.starts_at < $1))`,
         }[view];
         const order = {
             waiting:  'b.decide_by ASC',
