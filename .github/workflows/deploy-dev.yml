@@ -24,7 +24,7 @@ on:
   # dev was 24h and several merges stale while production deployed on every merge,
   # which read as "changes not propagating" rather than as a missing trigger.
   push:
-    branches: [main]
+    branches: [main, staging]
   workflow_dispatch:
     inputs:
       environment:
@@ -201,6 +201,11 @@ jobs:
           DUFFEL_ACCESS_TOKEN: ${{ secrets.DUFFEL_ACCESS_TOKEN || vars.DUFFEL_ACCESS_TOKEN }}
           DUFFEL_TOKEN: ${{ secrets.DUFFEL_TOKEN || vars.DUFFEL_TOKEN }}
           DUFFEL_WEBHOOK_SECRET: ${{ secrets.DUFFEL_WEBHOOK_SECRET || vars.DUFFEL_WEBHOOK_SECRET }}
+          # ETG/RateHawk content only — room photos, amenities, policies. No booking
+          # path touches these, so unlike TravelgateX below they carry no risk here.
+          # Absent, stored content is served and nothing refreshes.
+          ETG_API_KEY: ${{ secrets.ETG_API_KEY || vars.ETG_API_KEY }}
+          ETG_KEY_ID: ${{ secrets.ETG_KEY_ID || vars.ETG_KEY_ID }}
           EXCHANGE_RATES_API_KEY: ${{ secrets.EXCHANGE_RATES_API_KEY || vars.EXCHANGE_RATES_API_KEY }}
           FUNCTIONS_SECRET: ${{ secrets.FUNCTIONS_SECRET || vars.FUNCTIONS_SECRET }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET || vars.GOOGLE_CLIENT_SECRET }}
@@ -223,6 +228,10 @@ jobs:
           DUFFEL_BALANCE_CHECK: ${{ secrets.DUFFEL_BALANCE_CHECK || vars.DUFFEL_BALANCE_CHECK }}
           FLIGHT_PRICE_TOLERANCE: ${{ secrets.FLIGHT_PRICE_TOLERANCE || vars.FLIGHT_PRICE_TOLERANCE }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID || vars.GOOGLE_CLIENT_ID }}
+          # Set to `false` to refuse hotel booking on this host — search, prebook and
+          # the Stripe authorisation all still work, only the supplier call is blocked.
+          # Unset books for real against the live supplier.
+          HOTEL_BOOKING_ENABLED: ${{ secrets.HOTEL_BOOKING_ENABLED || vars.HOTEL_BOOKING_ENABLED }}
           INTERNAL_API_URL: ${{ secrets.INTERNAL_API_URL || vars.INTERNAL_API_URL }}
           JWT_EXPIRES_IN: ${{ secrets.JWT_EXPIRES_IN || vars.JWT_EXPIRES_IN }}
           JWT_REFRESH_EXPIRES_IN: ${{ secrets.JWT_REFRESH_EXPIRES_IN || vars.JWT_REFRESH_EXPIRES_IN }}
@@ -261,10 +270,13 @@ jobs:
           # them: on this host the instance role supplies credentials, and an
           # explicit pair makes the SDK stop walking its provider chain.
           #
-          # Hotel suppliers are deliberately absent — TRAVELGATE*, TGX_*, ETG_*,
-          # RATEHAWK_*, ONDA_*, OTV_*. Unlike Duffel and Mystifly they have no
-          # sandbox, and this codebase has no dry-run flag, so live keys would
-          # let a dev tester create a real reservation at a real hotel.
+          # The hotel suppliers ARE published here, and that is the whole exposure:
+          # TravelgateX has no sandbox, so these are live keys and `book` creates a
+          # real reservation at a real hotel with nothing marking it as a test.
+          # `NODE_ENV=production` above means config.ts's non-production guard does
+          # not fire on this host either. The lever is HOTEL_BOOKING_ENABLED=false,
+          # which refuses at the one `provider.book` call site and releases the
+          # payment hold. Set it before handing this URL to anyone. See ADR-0002.
           #
           # Written only when set. `add` returns 0 on purpose: under `set -e` a
           # bare `[ -n "$x" ] && printf ...` aborts on the first empty value.
@@ -285,12 +297,15 @@ jobs:
           add DUFFEL_BALANCE_CHECK             "${DUFFEL_BALANCE_CHECK:-}"
           add DUFFEL_TOKEN                     "${DUFFEL_TOKEN:-}"
           add DUFFEL_WEBHOOK_SECRET            "${DUFFEL_WEBHOOK_SECRET:-}"
+          add ETG_API_KEY                      "${ETG_API_KEY:-}"
+          add ETG_KEY_ID                       "${ETG_KEY_ID:-}"
           add EXCHANGE_RATES_API_KEY           "${EXCHANGE_RATES_API_KEY:-}"
           add FLIGHT_PRICE_TOLERANCE           "${FLIGHT_PRICE_TOLERANCE:-}"
           add FUNCTIONS_SECRET                 "${FUNCTIONS_SECRET:-}"
           add GOOGLE_CLIENT_ID                 "${GOOGLE_CLIENT_ID:-}"
           add GOOGLE_CLIENT_SECRET             "${GOOGLE_CLIENT_SECRET:-}"
           add GOOGLE_PLACES_API_KEY            "${GOOGLE_PLACES_API_KEY:-}"
+          add HOTEL_BOOKING_ENABLED            "${HOTEL_BOOKING_ENABLED:-}"
           add INTERNAL_API_URL                 "${INTERNAL_API_URL:-}"
           add JWT_EXPIRES_IN                   "${JWT_EXPIRES_IN:-}"
           add JWT_REFRESH_EXPIRES_IN           "${JWT_REFRESH_EXPIRES_IN:-}"

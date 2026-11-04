@@ -54,10 +54,12 @@ describe('the markup is flat plus proportional', () => {
     });
 
     it('charges a hotel the rate plus the flat component ADR-0036 set', () => {
-        // $0.40 + 5.9%. Both were decided; the flat part used to be passed as zero.
+        // $0.37 and nothing proportional: hotels are priced off what a guest will tolerate
+        // seeing rather than off Platform Cost. The same figure as v1, deliberately — the two
+        // storefronts quote the same supplier.
         const fee = hotelServiceFee(300, 'USD', (a) => a);
-        expect(fee.serviceFee).toBe(18.10);
-        expect(fee.chargedTotal).toBe(318.10);
+        expect(fee.serviceFee).toBe(0.37);
+        expect(fee.chargedTotal).toBe(300.37);
     });
 
     it('adds nothing to a zero or negative base', () => {
@@ -80,18 +82,20 @@ describe('the hotel fee a customer is shown is the fee they are charged', () => 
         from === to ? a : from === 'USD' && to === 'PHP' ? a * 58 : NaN;
 
     it('converts the flat part into the charge currency', () => {
-        // ₱0.40 would be about seven US cents; $0.40 is ₱23.20.
+        // ₱0.37 would be about half a US cent; $0.37 is ₱21.46.
         const fee = hotelServiceFee(17_400, 'PHP', pesosPerDollar);
-        expect(fee.markupFlat).toBe(23.20);
-        expect(fee.serviceFee).toBe(1049.80);    // 5.9% of 17,400 = 1,026.60, + 23.20
+        expect(fee.markupFlat).toBe(21.46);
+        expect(fee.serviceFee).toBe(21.46);      // flat only — nothing proportional to add
     });
 
     it('drops the flat part rather than refusing the sale when rates are missing', () => {
-        // Forty cents is not worth losing a booking over, and a fee shown without it is never
-        // higher than the fee charged with it.
+        // The fee is not worth losing a booking over, and a fee shown without it is never
+        // higher than the fee charged with it. Now that it is flat-only this forfeits the
+        // whole fee rather than the flat part of it — a free booking, for as long as rates
+        // are missing. The trade still holds; a run of them is worth noticing.
         const fee = hotelServiceFee(17_400, 'PHP', () => { throw new Error('no rates'); });
         expect(fee.markupFlat).toBe(0);
-        expect(fee.serviceFee).toBe(1026.60);
+        expect(fee.serviceFee).toBe(0);
     });
 
     it('is what the old hardcoded checkout percentages were not', () => {
@@ -168,13 +172,28 @@ describe('what is left after Stripe', () => {
         expect(calculateStripeFee(100)).toBe(4.70);   // 4.4% + $0.30
     });
 
-    it('leaves a hotel booking a thin but positive margin', () => {
-        // $300 hotel: $18.10 markup against $14.30 of Stripe. This is the number
-        // HOTEL_FX_DISPLAY_TOLERANCE is sized against — the tolerance must stay well under
-        // the margin, or a difference absorbed inside it turns the booking into a loss.
+    it('sells a hotel at a loss, deliberately', () => {
+        // This asserted a positive margin, which the fee no longer leaves. Hotels are now
+        // priced off what a guest will tolerate seeing — a flat $0.37 — so Stripe's
+        // proportional cut exceeds it from the first night and the gap widens with the
+        // booking. Pinned rather than deleted: the subsidy is a decision, and a decision
+        // that nothing measures is one that drifts.
         const net = estimateNetProfit(300, HOTEL_MARKUP_SPEC);
-        expect(net).toBeGreaterThan(0);
-        expect(HOTEL_FX_DISPLAY_TOLERANCE).toBeLessThan(net / (300 + 18.10));
+        expect(net).toBeLessThan(0);
+        expect(net).toBeCloseTo(-13.15, 2);
+    });
+
+    it('absorbs small FX drift rather than interrupting a checkout over it', () => {
+        // HOTEL_FX_DISPLAY_TOLERANCE used to be a share of the hotel margin. There is no
+        // margin to take a share of now, so it is re-based on what it actually buys: below
+        // this band the server honours the displayed price, above it the traveller is asked
+        // to approve a new total. On a $300 room 0.3% is $0.90 against a subsidy of $13 that
+        // was chosen on purpose — and a checkout interrupted over ninety cents costs more in
+        // abandonment than the ninety cents.
+        expect(HOTEL_FX_DISPLAY_TOLERANCE).toBe(0.003);
+        expect(300 * HOTEL_FX_DISPLAY_TOLERANCE).toBeLessThan(
+            Math.abs(estimateNetProfit(300, HOTEL_MARKUP_SPEC)),
+        );
     });
 });
 

@@ -40,34 +40,46 @@ const PAGE_SIZE = 20;
 
 router.get('/stats', async (_req: Request, res: Response, next: NextFunction) => {
     try {
-        const [bookingCount, revenueAgg, userCount] = await Promise.all([
+        const [bookingCount, userCount, hotelDeals, revenue] = await Promise.all([
             (prisma as any).bookings.count().catch(async () => {
                 const rows = await prisma.$queryRaw<{ count: bigint }[]>`SELECT COUNT(*)::int AS count FROM bookings`;
                 return Number(rows[0]?.count ?? 0);
-            }),
-
-            (prisma as any).bookings.aggregate({
-                _sum:  { total_price: true },
-                where: { status: 'confirmed' },
-            }).catch(async () => {
-                const rows = await prisma.$queryRaw<{ total: string | null }[]>`
-                    SELECT SUM(total_price)::text AS total
-                    FROM bookings
-                    WHERE status = 'confirmed'
-                `;
-                return { _sum: { total_price: rows[0]?.total ? Number(rows[0].total) : null } };
             }),
 
             (prisma as any).users.count().catch(async () => {
                 const rows = await prisma.$queryRaw<{ count: bigint }[]>`SELECT COUNT(*)::int AS count FROM users`;
                 return Number(rows[0]?.count ?? 0);
             }),
+
+            (prisma as any).hotel_deals.count().catch(async () => {
+                const rows = await prisma.$queryRaw<{ count: bigint }[]>`SELECT COUNT(*)::int AS count FROM hotel_deals`;
+                return Number(rows[0]?.count ?? 0);
+            }),
+
+            // Revenue comes from the service rather than a SUM here, because the figure has
+            // to be in one currency to mean anything. This endpoint used to return
+            // `SUM(total_price) WHERE status = 'confirmed'` across every booking regardless
+            // of what it was charged in, which added PHP to USD and called the result money.
+            // The service locks each booking to its recorded rate, reports USD, and counts
+            // the ones it could not convert instead of quietly dropping them.
+            //
+            // Degrades to zero rather than failing the whole card: a dashboard that shows no
+            // revenue is worse than one that shows none of anything.
+            adminRevenueService.read({}).catch(() => ({ stats: { totalRevenue: 0 }, currency: 'USD' })),
         ]);
 
+        // These field names are a contract, not a preference: app-v2's `AdminStats`
+        // interface in admin/(dashboard)/overview/page.tsx declares exactly these five, and
+        // the page calls `.toLocaleString()` on four of them without checking. Returning
+        // `bookingCount`/`revenue`/`userCount` — as this did — left every field undefined,
+        // and the page died on `Cannot read properties of undefined` with a 200 in the
+        // network tab. Rename either side and the overview white-screens again.
         return res.json({
-            bookingCount,
-            revenue:   revenueAgg._sum?.total_price ?? 0,
-            userCount,
+            totalBookings: bookingCount,
+            totalRevenue:  revenue.stats.totalRevenue,
+            activeUsers:   userCount,
+            hotelDeals,
+            currency:      revenue.currency,
         });
     } catch (err) {
         next(err);

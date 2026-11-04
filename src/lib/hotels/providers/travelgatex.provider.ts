@@ -35,6 +35,27 @@ import {
 
 const PREFIX = 'TGX:';
 
+<<<<<<< HEAD
+=======
+/**
+ * How many times prebook re-asks for availability before calling it unavailable.
+ *
+ * Three rather than one because the supplier's empty answer is usually momentary, and rather
+ * than many because a traveller is waiting on the other end of it with a form already filled in.
+ */
+const PREBOOK_SEARCH_ATTEMPTS = 3;
+
+/**
+ * How many times the whole candidate sweep is re-quoted before the attempt is given up.
+ *
+ * OTV answers "Rate not found" for an option it handed us seconds earlier — its valuation cache
+ * lags its search. `propagationDelayMs` is the first guess at how long; it is not always enough,
+ * and a single failed quote used to end the checkout. A hotel with one room feels this hardest:
+ * `candidates` holds one entry, so one lagging lookup was the entire attempt.
+ */
+const PREBOOK_QUOTE_ROUNDS = 3;
+
+>>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
 export interface TravelgateXProviderOptions {
     /** OTV needs a moment to propagate a freshly searched option into its valuation cache. */
     propagationDelayMs?: number;
@@ -201,7 +222,16 @@ export class TravelgateXProvider implements HotelProvider {
             adults:            stay.adults,
             children:          stay.children,
             currency:          stay.currency ?? 'USD',
+<<<<<<< HEAD
             guest_nationality: stay.nationality ?? 'US',
+=======
+            // Left to `runTgxSearch`'s own default when the caller names none. Defaulting to
+            // 'US' here asked the supplier a different question than the search had: rates are
+            // residency-restricted, so a hotel found for a KR guest could come back empty when
+            // its own page re-asked as a US one. The two paths have to agree or search
+            // advertises rates the property page cannot show.
+            guest_nationality: stay.nationality,
+>>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
         });
         return result?.data?.[0]?.roomTypes ?? [];
     }
@@ -218,6 +248,7 @@ export class TravelgateXProvider implements HotelProvider {
         }
 
         console.log(`[prebook/tgx] Fresh search: hotel=${hotelCode} ${checkIn}→${checkOut} adults=${input.adults}`);
+<<<<<<< HEAD
         let fresh: HotelSearchResult;
         try {
             fresh = await runTgxSearch({
@@ -236,6 +267,54 @@ export class TravelgateXProvider implements HotelProvider {
         const freshRooms: any[] = fresh?.data?.[0]?.roomTypes || [];
         if (!freshRooms.length) {
             throw new HotelProviderError('SOLD_OUT', 'Room is no longer available for the selected dates', { provider: 'travelgatex' });
+=======
+
+        // Retried, because an empty answer here is usually not an empty hotel.
+        //
+        // The supplier intermittently serves no availability at all — an empty set with a
+        // success status and no error, for every hotel and every date. The windows are short
+        // and the empty answer arrives in well under a second, where a real search takes
+        // several, so retrying costs little and frequently lands once it reopens.
+        let freshRooms: any[] = [];
+        for (let attempt = 1; attempt <= PREBOOK_SEARCH_ATTEMPTS; attempt++) {
+            let fresh: HotelSearchResult;
+            try {
+                fresh = await runTgxSearch({
+                    hotelCode,
+                    checkin:  checkIn,
+                    checkout: checkOut,
+                    adults:   input.adults,
+                    children: input.children,
+                    currency: input.currency,
+                    guest_nationality: nationality,
+                });
+            } catch (err) {
+                throw classifyTgxFailure(err, false);
+            }
+
+            freshRooms = fresh?.data?.[0]?.roomTypes || [];
+            if (freshRooms.length) break;
+
+            if (attempt < PREBOOK_SEARCH_ATTEMPTS) {
+                console.warn(`[prebook/tgx] Empty availability for hotel=${hotelCode} (attempt ${attempt}/${PREBOOK_SEARCH_ATTEMPTS}) — retrying`);
+                await sleep(attempt * 600);
+            }
+        }
+
+        if (!freshRooms.length) {
+            // `UNAVAILABLE`, not `SOLD_OUT`. SOLD_OUT is documented as definitive and maps to a
+            // 409 the checkout presents as "this room is gone, retrying cannot help" — but a
+            // sold-out room and a supplier serving nothing are indistinguishable from here, and
+            // during a blackout every hotel answers this way. Calling it definitive strands the
+            // traveller on a dead checkout; calling it a supplier problem routes them to the
+            // panel that offers to try again, which is what usually works.
+            console.warn(`[prebook/tgx] No availability after ${PREBOOK_SEARCH_ATTEMPTS} attempts — hotel=${hotelCode} ${checkIn}→${checkOut}`);
+            throw new HotelProviderError(
+                'UNAVAILABLE',
+                'Availability for this room could not be confirmed. Please try again in a moment.',
+                { provider: 'travelgatex' },
+            );
+>>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
         }
 
         const wanted = input.roomName || '';
@@ -253,6 +332,7 @@ export class TravelgateXProvider implements HotelProvider {
         let quotedToken    = candidates[0]?.offerId?.slice(PREFIX.length) ?? staleToken;
         let successfulRoom = candidates[0];
 
+<<<<<<< HEAD
         for (const room of candidates) {
             const offerId: string = room?.offerId || '';
             if (!offerId.startsWith(PREFIX)) continue;
@@ -279,6 +359,48 @@ export class TravelgateXProvider implements HotelProvider {
             throw new HotelProviderError(
                 'SOLD_OUT',
                 'This room is currently unavailable for booking. Please try a different hotel or check back later.',
+=======
+        for (let round = 1; round <= PREBOOK_QUOTE_ROUNDS && !optionQuote; round++) {
+            if (round > 1) {
+                // Growing, because the thing being waited on is OTV's own cache catching up.
+                await sleep(this.retryDelayMs * (round - 1));
+                console.warn(`[prebook/tgx] Re-quoting hotel=${hotelCode} (round ${round}/${PREBOOK_QUOTE_ROUNDS})`);
+            }
+
+            for (const room of candidates) {
+                const offerId: string = room?.offerId || '';
+                if (!offerId.startsWith(PREFIX)) continue;
+                const optionId    = offerId.slice(PREFIX.length);
+                const tgxId       = room?.rates?.[0]?._tgx?.id    || '';
+                const nativeToken = room?.rates?.[0]?._tgx?.token || '';
+                const tokensToTry = [...new Set([optionId, tgxId, nativeToken].filter(Boolean))];
+
+                for (const token of tokensToTry) {
+                    console.log('[prebook/tgx] Quoting with token:', token.substring(0, 80));
+                    try {
+                        optionQuote    = await quoteTgx(token);
+                        quotedToken    = token;
+                        successfulRoom = room;
+                        break;
+                    } catch (e: any) {
+                        console.warn('[prebook/tgx] Quote failed:', token.substring(0, 40), '—', e.message?.substring(0, 100));
+                    }
+                }
+                if (optionQuote) break;
+            }
+        }
+
+        if (!optionQuote) {
+            // `UNAVAILABLE`, not `SOLD_OUT`, for the reason the empty-search branch above gives:
+            // a room that is gone and a supplier that will not valuate one are indistinguishable
+            // from here, and only one of those two readings leaves the traveller somewhere to go.
+            // "Rate not found" against a token from a search seconds old is overwhelmingly the
+            // second, so the checkout offers to try again rather than declaring the room gone.
+            console.warn(`[prebook/tgx] No quote after ${PREBOOK_QUOTE_ROUNDS} rounds — hotel=${hotelCode} ${checkIn}→${checkOut}`);
+            throw new HotelProviderError(
+                'UNAVAILABLE',
+                'Availability for this room could not be confirmed. Please try again in a moment.',
+>>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
                 { provider: 'travelgatex' },
             );
         }

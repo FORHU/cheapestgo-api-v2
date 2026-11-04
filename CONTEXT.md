@@ -21,6 +21,10 @@ _Avoid_: business rules in a repository, and raw queries anywhere else.
 **Provider Client** — a supplier integration in `src/lib/` (`flights/duffel`, `flights/mystifly`, `hotels/travelgatex`, `google`, `payments`, `stripe`). Speaks the supplier's protocol and returns domain types. Holds the credentials.
 _Avoid_: calling a supplier from anywhere but a service, and letting a supplier's response shape escape into the rest of the codebase.
 
+**Definitive Refusal** — a supplier answer that settles the matter, as against one that only describes this moment. The distinction is the whole point of `HotelProviderErrorCode`: `SOLD_OUT` reaches the traveller as "this is gone, trying again cannot help", while `UNAVAILABLE` reaches them as "nothing is wrong with you, try again in a moment". The storefront routes them to different screens, only one of which offers a retry.
+_Avoid_: reporting an empty availability answer as definitive. A sold-out room and a supplier that has stopped serving availability are indistinguishable from the call site, and the supplier does the latter intermittently across every hotel and every date — so the definitive reading strands a traveller on a checkout they had already filled in, where the undefinitive one usually succeeds seconds later.
+_Avoid_: assuming one answer settles it either way. Prebook re-asks before concluding anything, because the supplier's silence is typically shorter than the retry.
+
 ## Layer Debt
 
 The contract is currently honoured by four capabilities — auth, bookings, flights, hotels — and broken elsewhere: 23 route files exist against 4 controllers, 4 services and 4 repositories, and roughly 143 raw database call sites sit directly in route files. The worst are `admin.route.ts` (37), `cron.route.ts` (30) and `internal.route.ts` (22, including a ~400-line create-booking handler).

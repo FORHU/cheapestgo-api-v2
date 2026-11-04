@@ -72,6 +72,7 @@ vi.mock('@/repositories/flights.repository', () => ({
     }),
 }));
 
+<<<<<<< HEAD
 const lifecycle = vi.hoisted(() => ({
     complete: vi.fn(), open: vi.fn(), find: vi.fn(), paidAttempt: vi.fn(), resumeUnpaid: vi.fn(),
 }));
@@ -82,6 +83,14 @@ vi.mock('@/services/flightBookingLifecycle.service', () => ({
         this.find         = lifecycle.find;
         this.paidAttempt  = lifecycle.paidAttempt;
         this.resumeUnpaid = lifecycle.resumeUnpaid;
+=======
+const lifecycle = vi.hoisted(() => ({ complete: vi.fn(), open: vi.fn(), find: vi.fn() }));
+vi.mock('@/services/flightBookingLifecycle.service', () => ({
+    FlightBookingLifecycleService: vi.fn(function(this: any) {
+        this.complete = lifecycle.complete;
+        this.open     = lifecycle.open;
+        this.find     = lifecycle.find;
+>>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
     }),
 }));
 
@@ -386,6 +395,7 @@ describe('FlightsService.book()', () => {
 
         await expect(service.book({ ...BOOK_PARAMS, flight: firstSegFlight as any, acknowledgeDuplicate: true }))
             .resolves.toMatchObject({ paymentIntentId: PI_ID });
+<<<<<<< HEAD
     });
 
     // Going back from a slow confirm and paying again used to buy a second ticket.
@@ -443,6 +453,8 @@ describe('FlightsService.book()', () => {
             expect(repoOf().createBookingSession).not.toHaveBeenCalled();
             expect(stripe.paymentIntents.create).not.toHaveBeenCalled();
         });
+=======
+>>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
     });
 });
 
@@ -529,6 +541,7 @@ describe('FlightsService.confirm()', () => {
         await expect(confirm()).rejects.toMatchObject({ status: 410, code: 'OFFER_EXPIRED' });
     });
 
+<<<<<<< HEAD
     it('tells an old tab its payment was replaced the way it tells one its checkout expired', async () => {
         // The traveller submitted again with different details from another tab, and `book`
         // released this attempt: the client already knows BOOKING_EXPIRED; SUPERSEDED it does not.
@@ -539,6 +552,8 @@ describe('FlightsService.confirm()', () => {
         });
     });
 
+=======
+>>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
     it('keeps the wire code clients know for a payment that was not authorised', async () => {
         authorised({ status: 'requires_payment_method' });
         lifecycle.complete.mockResolvedValue({ kind: 'failed', code: 'PAYMENT_NOT_AUTHORIZED', message: 'Payment not authorised' });

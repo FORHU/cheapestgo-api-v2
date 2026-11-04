@@ -11,7 +11,11 @@ import { prisma } from '@/lib/prisma';
 import { redis } from '@/lib/redis';
 import { config } from '@/config';
 import { BASE_COOKIE_OPTIONS, SESSION_COOKIE, SESSION_MAX_AGE_MS } from '@/lib/auth/cookie';
+<<<<<<< HEAD
 import { originOfRequest, resolveReturnOrigin } from '@/lib/auth/returnOrigin';
+=======
+import { originOfRequest, resolveCallbackOrigin, resolveReturnOrigin } from '@/lib/auth/returnOrigin';
+>>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
 
 const router: Router = Router();
 
@@ -24,9 +28,14 @@ const router: Router = Router();
  *
  * The router mounts at /api/v2, so the callback lives there too; building this without the
  * version prefix points Google at a path that 404s.
+ *
+ * The origin follows the request rather than being baked: the callback is where the session
+ * cookie is set, and `__Host-` scopes it to that host alone, so a sign-in begun on the staff
+ * host has to come back to the staff host, or the session lands somewhere the staff host
+ * cannot read and `/admin` bounces to `/login` forever. `resolveCallbackOrigin` allowlists it.
  */
-function googleRedirectUri(): string {
-    return `${config.API_URL}/api/v2/auth/google/callback`;
+function googleRedirectUri(req: Request): string {
+    return `${resolveCallbackOrigin(originOfRequest(req.headers))}/api/v2/auth/google/callback`;
 }
 const controller = new AuthController();
 
@@ -176,17 +185,37 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
         // host and the storefront are different origins, and the callback has to know which
         // one to hand the session back to. It is still validated against an allowlist when
         // it is read — Redis says what was asked for, not what is permitted.
+<<<<<<< HEAD
         const startedOn = originOfRequest(req.headers) ?? '';
         await redis.set(`oauth:state:${state}`, startedOn || '1', 'EX', 600);
+=======
+        //
+        // Best-effort, and that is the point. `lib/redis.ts` is configured to fail fast —
+        // `enableOfflineQueue: false` with no retries — so an unreachable Redis rejects this
+        // call instantly rather than blocking. Unhandled, that reached the error middleware
+        // as a plain Error and every Google sign-in answered 500 while the rest of the API
+        // was healthy, which is exactly what happened on v2 production. The cookies below
+        // are what the callback actually verifies against; Redis is the cross-server spare.
+        const startedOn = originOfRequest(req.headers) ?? '';
+        await redis.set(`oauth:state:${state}`, startedOn || '1', 'EX', 600).catch(() => {});
+>>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
 
         // Also cookie-store so the callback can find it on the same server
         res.cookie('oauth_state', state, { ...COOKIE_OPTIONS, maxAge: 600_000 });
         res.cookie('oauth_provider', 'google', { ...COOKIE_OPTIONS, maxAge: 600_000 });
+        // The origin, carried the same way as the state it belongs to. Without this the
+        // cookie path knows *that* a sign-in is legitimate but not *where* it began, so a
+        // staff-host sign-in completing without Redis would land on the storefront — the
+        // bug `resolveReturnOrigin` exists to prevent. Allowlisted on read, as the Redis
+        // copy is: a Host header is a request, not a permission.
+        if (startedOn) {
+            res.cookie('oauth_origin', startedOn, { ...COOKIE_OPTIONS, maxAge: 600_000 });
+        }
 
 
         const params = new URLSearchParams({
             client_id:     config.GOOGLE_CLIENT_ID,
-            redirect_uri:  googleRedirectUri(),
+            redirect_uri:  googleRedirectUri(req),
             response_type: 'code',
             scope:         'openid email profile',
             state,
@@ -215,8 +244,12 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
 router.get('/google/callback', async (req: Request, res: Response) => {
     const { code, state, error: oauthErr } = req.query as Record<string, string>;
 
+    // The sign-in page on the host this sign-in was happening on, not a baked one: the
+    // callback now runs on the staff host when the flow began there, and sending a staff
+    // failure to the storefront leaves them on a site with no back office on it. Falls back
+    // to SITE_URL exactly as before when the origin is not allowlisted.
     const failRedirect = (reason: string) =>
-        res.redirect(`${config.SITE_URL}/login?error=${reason}`);
+        res.redirect(`${resolveReturnOrigin(originOfRequest(req.headers))}/login?error=${reason}`);
 
     try {
         if (!config.GOOGLE_CLIENT_ID || !config.GOOGLE_CLIENT_SECRET) {
@@ -232,9 +265,11 @@ router.get('/google/callback', async (req: Request, res: Response) => {
             return failRedirect('oauth_missing_params');
         }
 
-        // Verify state — check Redis first, fall back to cookie
+        // Verify state — check Redis first, fall back to cookie. Swallowing the Redis error
+        // rather than letting it throw keeps a Redis outage from turning a valid sign-in
+        // into `oauth_failed`: the cookie set on the way out is sufficient on its own.
         const redisKey = `oauth:state:${state}`;
-        const redisOk  = await redis.get(redisKey);
+        const redisOk  = await redis.get(redisKey).catch(() => null);
         const cookieState = req.cookies?.oauth_state;
 
         if (!redisOk && state !== cookieState) {
@@ -242,16 +277,28 @@ router.get('/google/callback', async (req: Request, res: Response) => {
             return failRedirect('oauth_state');
         }
 
+<<<<<<< HEAD
         // Where this sign-in began, as recorded when the state was issued. Falls back to
         // the request's own origin when the cookie path was used instead of Redis.
         const returnOrigin = resolveReturnOrigin(
             redisOk && redisOk !== '1' ? redisOk : originOfRequest(req.headers),
+=======
+        // Where this sign-in began, as recorded when the state was issued: Redis if it
+        // answered, else the cookie written beside the state, else this request's own host.
+        // The last is a genuine fallback rather than a guess — it is only reached when both
+        // records are gone, and resolveReturnOrigin still allowlists whatever it is handed.
+        const returnOrigin = resolveReturnOrigin(
+            (redisOk && redisOk !== '1' ? redisOk : null)
+            ?? req.cookies?.oauth_origin
+            ?? originOfRequest(req.headers),
+>>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
         );
 
         // Consume the state so it can't be replayed
-        if (redisOk) await redis.del(redisKey);
+        if (redisOk) await redis.del(redisKey).catch(() => {});
         res.clearCookie('oauth_state', COOKIE_OPTIONS);
         res.clearCookie('oauth_provider', COOKIE_OPTIONS);
+        res.clearCookie('oauth_origin', COOKIE_OPTIONS);
 
         // Exchange authorization code for tokens
         const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
@@ -261,7 +308,7 @@ router.get('/google/callback', async (req: Request, res: Response) => {
                 code,
                 client_id:     config.GOOGLE_CLIENT_ID,
                 client_secret: config.GOOGLE_CLIENT_SECRET,
-                redirect_uri:  googleRedirectUri(),
+                redirect_uri:  googleRedirectUri(req),
                 grant_type:    'authorization_code',
             }),
         });

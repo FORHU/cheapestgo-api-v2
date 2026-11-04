@@ -1,11 +1,18 @@
 import { z } from 'zod';
 import { MOCK_SCENARIOS } from '@/lib/hotels/providers/mock/scenarios';
+import { MOCK_SCENARIOS } from '@/lib/hotels/providers/mock/scenarios';
 
 const schema = z.object({
     NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
     PORT: z.coerce.number().default(4000),
     DATABASE_URL: z.string().min(1),
     REDIS_URL: z.string().default('redis://localhost:6379'),
+    // Comma-separated allowlist. Parsed into an array because `cors` treats a
+    // string as one exact origin and echoes it back verbatim — a comma-joined
+    // string produces an Access-Control-Allow-Origin no browser will accept.
+    CORS_ORIGIN: z.string()
+        .default('http://localhost:3000')
+        .transform(v => v.split(',').map(s => s.trim()).filter(Boolean)),
     // Comma-separated allowlist. Parsed into an array because `cors` treats a
     // string as one exact origin and echoes it back verbatim — a comma-joined
     // string produces an Access-Control-Allow-Origin no browser will accept.

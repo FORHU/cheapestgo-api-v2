@@ -22,8 +22,11 @@ import adminSupportRoutes  from './admin-support.route';
 import autocompleteRoutes  from './autocomplete.route';
 import googleRoutes        from './google.route';
 import emailRoutes         from './email.route';
+<<<<<<< HEAD
 import golfRoutes          from './golf.route';
 import adminGolfRoutes     from './admin-golf.route';
+=======
+>>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
 
 const router: Router = Router();
 
