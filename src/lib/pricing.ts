@@ -103,6 +103,16 @@ export const HOTEL_MARKUP_SPEC: MarkupSpec = {
     cap:  parseMarkupEnv('MARKUP_CAP', 0.12),
 };
 
+/**
+ * Golf's fee (v1 ADR-0047). Follows HOTEL_MARKUP_* rather than copying its defaults, so a change to
+ * the hotel rate does not leave golf quietly charging the old one.
+ */
+export const GOLF_MARKUP_SPEC: MarkupSpec = {
+    rate: parseMarkupEnv('GOLF_MARKUP_PERCENTAGE', HOTEL_MARKUP_SPEC.rate),
+    flat: parseFlatEnv('GOLF_MARKUP_FLAT_USD', HOTEL_MARKUP_SPEC.flat),
+    cap:  parseMarkupEnv('MARKUP_CAP', 0.12),
+};
+
 // Logged once at module load, so a misconfigured deployment is visible in the startup log
 // rather than in a month of reconciliation.
 console.log(
@@ -271,20 +281,40 @@ export function hotelServiceFee(
     baseInChargeCurrency: number,
     currency: string,
     convert: (amount: number, from: string, to: string) => number,
-): {
+): ServiceFee {
+    return serviceFeeFor(HOTEL_MARKUP_SPEC, baseInChargeCurrency, currency, convert);
+}
+
+/** The golf twin of {@link hotelServiceFee}: the same calculation on golf's own spec. */
+export function golfServiceFee(
+    baseInChargeCurrency: number,
+    currency: string,
+    convert: (amount: number, from: string, to: string) => number,
+): ServiceFee {
+    return serviceFeeFor(GOLF_MARKUP_SPEC, baseInChargeCurrency, currency, convert);
+}
+
+export interface ServiceFee {
     serviceFee: number;
     chargedTotal: number;
     markupRate: number;
     markupFlat: number;
     capped: boolean;
-} {
+}
+
+function serviceFeeFor(
+    spec: MarkupSpec,
+    baseInChargeCurrency: number,
+    currency: string,
+    convert: (amount: number, from: string, to: string) => number,
+): ServiceFee {
     let flat = 0;
     try {
-        flat = convert(HOTEL_MARKUP_SPEC.flat, 'USD', currency);
+        flat = convert(spec.flat, 'USD', currency);
     } catch {
         flat = 0;
     }
-    const pricing = applyMarkup(baseInChargeCurrency, HOTEL_MARKUP_SPEC, flat);
+    const pricing = applyMarkup(baseInChargeCurrency, spec, flat);
     return {
         serviceFee: pricing.markupAmount,
         chargedTotal: pricing.chargedPrice,
@@ -317,6 +347,17 @@ export function toStripeAmount(price: number, currency: string): number {
     return ZERO_DECIMAL_CURRENCIES.has(currency.toLowerCase())
         ? Math.round(price)
         : Math.round(price * 100);
+}
+
+/**
+ * A price rounded to what the currency can actually express: whole units for zero-decimal
+ * currencies (KRW, JPY, …), cents for the rest. Rounding each part of a quote this way is what makes
+ * the parts add up to the total that {@link toStripeAmount} will send.
+ */
+export function roundToCurrency(amount: number, currency: string): number {
+    return ZERO_DECIMAL_CURRENCIES.has(currency.toLowerCase())
+        ? Math.round(amount)
+        : round2(amount);
 }
 
 /**
