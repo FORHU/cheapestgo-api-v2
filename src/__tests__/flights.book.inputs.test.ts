@@ -36,10 +36,15 @@ vi.mock('@/repositories/flights.repository', () => ({
         this.updateBookingSessionAudit = vi.fn().mockResolvedValue(undefined);
     }),
 }));
-const lifecycle = vi.hoisted(() => ({ complete: vi.fn(), open: vi.fn(), find: vi.fn() }));
+const lifecycle = vi.hoisted(() => ({
+    complete: vi.fn(), open: vi.fn(), find: vi.fn(),
+    // No earlier attempt at the offer.
+    paidAttempt: vi.fn().mockResolvedValue(null), resumeUnpaid: vi.fn().mockResolvedValue(null),
+}));
 vi.mock('@/services/flightBookingLifecycle.service', () => ({
     FlightBookingLifecycleService: vi.fn(function (this: any) {
         this.complete = lifecycle.complete; this.open = lifecycle.open; this.find = lifecycle.find;
+        this.paidAttempt = lifecycle.paidAttempt; this.resumeUnpaid = lifecycle.resumeUnpaid;
     }),
 }));
 vi.mock('@/services/flightBookingCompletion', () => ({ completeDuffelBooking: vi.fn() }));

@@ -57,6 +57,7 @@ nothing has been ordered and nothing authorised.
 | Check | Answer |
 |---|---|
 | Mystifly fare | `422 FARE_UNAVAILABLE` — Mystifly is not live in v2 |
+| The traveller already has an attempt at this offer that is authorised, with the airline, or under review — read from the record, **before** the offer is fetched again | `409 BOOKING_PROCESSING` with `pending`, `needsReview`, `sessionId` (§2a) |
 | The offer, **always fetched again** from Duffel by id — a browser copy is never priced from | `410 OFFER_EXPIRED` when gone, `503 UPSTREAM_UNAVAILABLE` when Duffel does not answer |
 | Duplicate departure (ADR-0011) | `409 DUPLICATE_BOOKING` unless `acknowledgeDuplicate` |
 | One traveller for every passenger the fare was priced for (none, or a different number, is refused) | `400 INVALID_PASSENGERS` |
@@ -81,6 +82,31 @@ fare) is left out and the offer is still answered. The browser works nothing out
 
 The web checkout sends the fare it showed as `confirmedPrice`, so a fare that has risen since is
 refused here (`409 PRICE_CHANGED`), before any card is held.
+
+### 2a. The same offer, submitted again
+
+Going back from a slow `confirm` (the order can take 130s) and paying again used to open a second
+session and a second hold, and the lifecycle ordered a second ticket for it: the duplicate-departure
+check reads `flight_bookings`, which is not written until the first order is captured. `book` now
+looks at the traveller's open attempts at the offer (`findOpenForOffer`: Duffel, manual capture,
+not finished) twice:
+
+- **Before the offer is fetched** (`paidAttempt`): one already paid for → `409 BOOKING_PROCESSING`,
+  nothing opened. Before, not after: once the airline has ordered, the offer may be gone, and
+  "this fare is no longer available" would send the traveller to search and pay again.
+- **After pricing** (`resumeUnpaid`), each unpaid one, by what Stripe says:
+
+| The earlier attempt | `book` |
+|---|---|
+| Stripe holds the card (`requires_capture`, `processing`), though nothing has recorded it yet | `409 BOOKING_PROCESSING`; nothing released |
+| Asks for exactly this — passengers, contact, seats, bags, bundle, amount and currency held (`isSameAttempt`) — still payable, session not expired | **Handed back**: same `sessionId`, PaymentIntent and client secret. One hold however many submits |
+| Anything else (details changed, expired, payment already released) | **Released**: `PAYMENT_PENDING → EXPIRED` (`SUPERSEDED`) **first**, then the void, then a new attempt |
+
+Closing before voiding is the point: a void ahead of the close could land under a claim taken in
+between, and the airline would order on a hold that no longer exists. A close that is `lost` was a
+claim (→ 409), or the sweeper (carry on). One that cannot be written voids nothing. An old tab that
+pays a released attempt is never ordered (its claim is lost) and its `confirm` answers
+`410 BOOKING_EXPIRED`.
 
 The session (`booking_sessions`) is written with `capture_method = 'manual'` and the pre-markup
 total in the fare's currency as `original_price`. **`capture_method = 'manual'` is what marks
@@ -188,7 +214,7 @@ order of a pending, unpaid `flight_bookings` row.
 |---|---|
 | Confirmed | `200 { bookingId, pnr, status, source: 'lifecycle' }` |
 | Not settled yet, or under review | `409 BOOKING_PROCESSING` with `pending: true`, `needsReview`, `sessionId` |
-| Refused | `PRICE_CHANGED` 409 (with prices) · `OFFER_EXPIRED` 410 · `DUFFEL_ORDER_FAILED` / `INVALID_PHONE` 400 · `UPSTREAM_UNAVAILABLE` 503 · `BOOKING_EXPIRED` 410 |
+| Refused | `PRICE_CHANGED` 409 (with prices) · `OFFER_EXPIRED` 410 · `DUFFEL_ORDER_FAILED` / `INVALID_PHONE` 400 · `UPSTREAM_UNAVAILABLE` 503 · `BOOKING_EXPIRED` 410 (abandoned, or replaced by a later submit — `SUPERSEDED`) |
 | Not paid | `402 PAYMENT_NOT_COMPLETED` |
 | Not yours / wrong payment | `403 SESSION_MISMATCH` |
 
@@ -242,7 +268,8 @@ Body is always `{ error: CODE, message, ...details }`.
 | `DUPLICATE_BOOKING` | 409 | book | Same departure already booked; `canProceed` | Warn, allow |
 | `UPSTREAM_UNAVAILABLE` / `FX_UNAVAILABLE` | 503 | book, confirm | Duffel or rates down; nothing charged | Retry |
 | `DUFFEL_ORDER_FAILED` | 400 | confirm | The airline refused; the hold was released | Show the message |
-| `BOOKING_PROCESSING` | 409 | confirm | Paid for, not settled yet; `needsReview` when a person has it | Don't pay again; link to trips |
+| `BOOKING_PROCESSING` | 409 | book, confirm | Paid for, not settled yet; `needsReview` when a person has it. From `book`: this offer is already paid for (§2a) | Don't pay again; link to trips |
+| `BOOKING_EXPIRED` | 410 | confirm | Abandoned, or released by a later submit for the same offer | Start again |
 | `PAYMENT_NOT_COMPLETED` | 402 | confirm | The card was not authorised | Back to payment |
 
 The web checkout reads these through `readFlightConfirmError`
@@ -347,6 +374,9 @@ Record what you did as an `admin` event, and move the state to `CONFIRMED` or `F
 | The one price: fare, fee, total, conversion, the invariant `fare + fee = total` | `flightCharge.test.ts` |
 | `book` reports what it holds; the offer's quote equals it to the cent | `flights.service.test.ts` › *book()*, *getOffer()* |
 | A quote that cannot be made never costs the reader the offer | `flights.getOffer.quote.test.ts` |
+| The same offer submitted again: answered, handed back, or released (close before void) | `flightLifecycle.service.test.ts` › *an offer the traveller has already paid for*, *…an unpaid attempt at*; `flights.service.test.ts` › *the same offer, submitted again* |
+| What counts as the same attempt (jsonb key order does not) | `flightLifecycle.sameAttempt.test.ts` |
+| The open-attempts query | `flightLifecycle.repository.test.ts` › *a traveller's open attempts at an offer* |
 
 The app side: `src/__tests__/checkout-flight-page.test.tsx` (the flight checkout after the card,
 through a stubbed API and Stripe) and `flight-confirm-errors.test.ts`.
@@ -379,5 +409,14 @@ timeout, capture failure, the sweeper's selectivity), with Stripe and Duffel fak
   both are the fare's currency. Charging in the traveller's selected currency would mean sending
   `displayCurrency` and quoting in it.
 - **The quote leaves out seats and bags**, which the web checkout does not offer yet.
+- **Two first submits that race both open an attempt.** §2a looks for an earlier attempt; when
+  neither exists yet, both are written. Neither holds money until it is paid, and the sweeper
+  releases the unpaid one. Paying both still takes two payments.
+- **Resubmits are matched by offer.** A traveller who searches again gets a new offer id, which
+  §2a does not see; the duplicate-departure check sees it once the first sale is written.
+- **A superseded attempt whose void failed** keeps a payable PaymentIntent on an `EXPIRED` session.
+  Paying it is never ordered, but the hold stays until Stripe lets it lapse (about seven days).
+- **The web checkout shows `BOOKING_PROCESSING` from `book` as an inline error** with its message
+  ("check your trips"), not the processing view it shows for `confirm`.
 - **Mobile shows `BOOKING_PROCESSING` as a "Booking Failed" alert** carrying the message ("check
   your trips"). It is not mistaken for a success, but the title is wrong for it.
