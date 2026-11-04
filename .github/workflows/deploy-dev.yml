@@ -356,6 +356,25 @@ jobs:
             "docker container prune -f || true"
             "docker image prune -af || true"
             "docker pull --platform ${{ steps.cfg.outputs.platform }} ${IMAGE}"
+            # Migrations, from the image just pulled, before the running container is touched.
+            #
+            # Here rather than in a workflow step because the runner cannot reach the database:
+            # it is private, the same reason the content crons fail there. The box can, so the
+            # migration runs on the box out of the deployed tag — the schema and the code that
+            # expects it are always the same build.
+            #
+            # Before `docker rm -f` on purpose: under `set -e` a failed migration aborts the
+            # whole script, so the previous container is still serving and nothing half-applied
+            # meets a half-deployed app.
+            #
+            # The URL is rebuilt rather than used as-is. DATABASE_URL carries Prisma's own query
+            # parameters, which dbmate's driver rejects, and RDS refuses a connection without
+            # sslmode — so everything after `?` is dropped and sslmode=require put back.
+            #
+            # dbmate records each version in schema_migrations and skips what is already there,
+            # so a deploy that changes no migrations is a no-op. --no-dump-schema: the schema
+            # file is a development artefact and this container is thrown away.
+            "docker run --rm --platform ${{ steps.cfg.outputs.platform }} --network ${{ steps.cfg.outputs.network }} --env-file ${{ steps.cfg.outputs.merged_env }} ${IMAGE} sh -c 'DB=\$(printf %s \"\$DATABASE_URL\" | cut -d\"?\" -f1); dbmate --no-dump-schema -u \"\$DB?sslmode=require\" up'"
             "docker rm -f ${{ steps.cfg.outputs.container }} 2>/dev/null || true"
             "docker run -d --name ${{ steps.cfg.outputs.container }} --restart unless-stopped --platform ${{ steps.cfg.outputs.platform }} --network ${{ steps.cfg.outputs.network }} --env-file ${{ steps.cfg.outputs.merged_env }} -p 127.0.0.1:${{ steps.cfg.outputs.host_port }}:${{ env.APP_PORT }} ${IMAGE}"
           )
