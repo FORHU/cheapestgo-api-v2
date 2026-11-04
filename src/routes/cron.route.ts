@@ -1620,7 +1620,6 @@ router.get('/supplier-health', async (_req: Request, res: Response, next: NextFu
     } catch (err) { next(err); }
 });
 
-<<<<<<< HEAD
 /**
  * Golf tee times, topped up to the end of each course's booking window (daily). Generation also runs
  * when a schedule is added or a course's window changes; this is what moves the window forward a day
@@ -1633,6 +1632,4 @@ router.get('/golf-generate-tee-times', async (_req: Request, res: Response, next
     } catch (err) { next(err); }
 });
 
-=======
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
 export default router;

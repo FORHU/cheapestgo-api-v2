@@ -11,11 +11,7 @@ import { prisma } from '@/lib/prisma';
 import { redis } from '@/lib/redis';
 import { config } from '@/config';
 import { BASE_COOKIE_OPTIONS, SESSION_COOKIE, SESSION_MAX_AGE_MS } from '@/lib/auth/cookie';
-<<<<<<< HEAD
-import { originOfRequest, resolveReturnOrigin } from '@/lib/auth/returnOrigin';
-=======
 import { originOfRequest, resolveCallbackOrigin, resolveReturnOrigin } from '@/lib/auth/returnOrigin';
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
 
 const router: Router = Router();
 
@@ -185,10 +181,6 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
         // host and the storefront are different origins, and the callback has to know which
         // one to hand the session back to. It is still validated against an allowlist when
         // it is read — Redis says what was asked for, not what is permitted.
-<<<<<<< HEAD
-        const startedOn = originOfRequest(req.headers) ?? '';
-        await redis.set(`oauth:state:${state}`, startedOn || '1', 'EX', 600);
-=======
         //
         // Best-effort, and that is the point. `lib/redis.ts` is configured to fail fast —
         // `enableOfflineQueue: false` with no retries — so an unreachable Redis rejects this
@@ -198,7 +190,6 @@ router.get('/google', async (req: Request, res: Response, next: NextFunction) =>
         // are what the callback actually verifies against; Redis is the cross-server spare.
         const startedOn = originOfRequest(req.headers) ?? '';
         await redis.set(`oauth:state:${state}`, startedOn || '1', 'EX', 600).catch(() => {});
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
 
         // Also cookie-store so the callback can find it on the same server
         res.cookie('oauth_state', state, { ...COOKIE_OPTIONS, maxAge: 600_000 });
@@ -277,12 +268,6 @@ router.get('/google/callback', async (req: Request, res: Response) => {
             return failRedirect('oauth_state');
         }
 
-<<<<<<< HEAD
-        // Where this sign-in began, as recorded when the state was issued. Falls back to
-        // the request's own origin when the cookie path was used instead of Redis.
-        const returnOrigin = resolveReturnOrigin(
-            redisOk && redisOk !== '1' ? redisOk : originOfRequest(req.headers),
-=======
         // Where this sign-in began, as recorded when the state was issued: Redis if it
         // answered, else the cookie written beside the state, else this request's own host.
         // The last is a genuine fallback rather than a guess — it is only reached when both
@@ -291,7 +276,6 @@ router.get('/google/callback', async (req: Request, res: Response) => {
             (redisOk && redisOk !== '1' ? redisOk : null)
             ?? req.cookies?.oauth_origin
             ?? originOfRequest(req.headers),
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
         );
 
         // Consume the state so it can't be replayed

@@ -5,11 +5,7 @@ import { fetchAmenitiesByDestination } from '@/lib/hotels/travelgatex';
 import { staysUnderMaintenance } from '@/lib/maintenance';
 import { getHotelProvider, getHotelProviderById, isKnownProviderId } from '@/lib/hotels/providers/factory';
 import { toPrebookPolicyWire, toStoredPolicyWire } from '@/lib/hotels/providers/cancellationPolicy';
-<<<<<<< HEAD
-import { isHotelProviderError } from '@/lib/hotels/providers/types';
-=======
 import { HotelProviderError, isHotelProviderError } from '@/lib/hotels/providers/types';
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
 import type {
     BookGuest, HotelContent as ProviderHotelContent, HotelProvider, PrebookResult, ProviderBooking,
 } from '@/lib/hotels/providers/types';
@@ -466,15 +462,10 @@ export class HotelsService {
                 checkOut:    stay.checkOut,
                 adults:      stay.adults ?? 2,
                 children:    stay.children ?? 0,
-<<<<<<< HEAD
-                currency:    'USD',
-                nationality: 'US',
-=======
                 // No nationality: the provider leaves it to the search's own default, which is
                 // what the city search that led the guest here used. Naming 'US' made this page
                 // ask a question the search had not — see `getRates`.
                 currency:    'USD',
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
             }).catch(() => null),
         ]);
 
@@ -1024,8 +1015,6 @@ export class HotelsService {
 
         let booking: ProviderBooking;
         try {
-<<<<<<< HEAD
-=======
             // The one lever that stops a tester's checkout becoming a real reservation at a real
             // hotel. TravelgateX has no sandbox, so every environment holding its credentials —
             // the dev host included — books for real, and NODE_ENV cannot tell them apart because
@@ -1042,7 +1031,6 @@ export class HotelsService {
                     { provider: this.provider.id },
                 );
             }
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
             booking = await this.provider.book({
                 prebookRef: params.prebookId,
                 clientRef:  clientReference,

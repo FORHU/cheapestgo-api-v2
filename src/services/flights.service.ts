@@ -15,7 +15,6 @@ import {
     getDuffelSeatMaps, getDuffelBalances, getAvailableBalance,
     createDuffelCancellationQuote, confirmDuffelCancellation, getDuffelOrder,
     refreshDuffelOffer,
-    refreshDuffelOffer,
 } from '@/lib/flights/duffel';
 import { sameItineraryOffers } from '@/lib/flights/offerItineraryMatch';
 import { mystiflyRequest } from '@/lib/flights/mystifly';
@@ -28,9 +27,6 @@ import {
 // helpers this file used to carry charged a flat 0% and knew eight zero-decimal currencies
 // against that module's sixteen — so a flight was sold at cost, and a fare in a currency
 // only the module knew about would have been charged a hundred times over.
-import { fromStripeAmount, FLIGHT_MARKUP_SPEC, getFlightPriceTolerance } from '@/lib/pricing';
-import { orderPhoneNumber } from '@/lib/flights/orderPassengers';
-import { priceFlightCharge } from '@/lib/flights/flightCharge';
 import { fromStripeAmount, FLIGHT_MARKUP_SPEC, getFlightPriceTolerance } from '@/lib/pricing';
 import { orderPhoneNumber } from '@/lib/flights/orderPassengers';
 import { priceFlightCharge } from '@/lib/flights/flightCharge';
@@ -68,7 +64,6 @@ const processing = (attempt: PaidAttempt) => new AppError(409, attempt.message, 
 
 export class FlightsService {
     private repo = new FlightsRepository();
-    private lifecycle = new FlightBookingLifecycleService(undefined, this.repo);
     private lifecycle = new FlightBookingLifecycleService(undefined, this.repo);
 
     // ── Search ────────────────────────────────────────────────────────────────
@@ -145,66 +140,7 @@ export class FlightsService {
     }
 
     // ── Book (open the payment for an attempt) ────────────────────────────────
-    // ── One offer ─────────────────────────────────────────────────────────────
 
-    /**
-     * The offer being bought, as Duffel holds it now, in the shape the results cards draw —
-     * for the checkout's summary of the flight: its segments, terminals, aircraft, bags and
-     * fare terms. Read again rather than carried in the URL or the browser's storage, which
-     * a refresh, a shared link or a new tab do not have.
-     *
-     * Without the raw Duffel payload: that is the server's, and the browser has no use for it.
-     */
-    async getOffer(
-        offerId: string,
-        tripType: 'one-way' | 'round-trip' | 'multi-city' = 'one-way',
-        /** The currency the traveller is looking at; the airline's own when left out. */
-        displayCurrency?: string,
-    ): Promise<FlightOffer> {
-        let raw: any;
-        try {
-            raw = await getDuffelOffer(offerId);
-        } catch (err: any) {
-            console.warn(`[offer] ${offerId} could not be read: ${err?.message}`);
-            throw new AppError(503, 'We could not reach the airline to check this fare. Please try again shortly.', 'UPSTREAM_UNAVAILABLE');
-        }
-        if (!raw) throw new AppError(410, 'This fare is no longer available. Please search again for current prices.', 'OFFER_EXPIRED');
-
-        const { _rawOffer, ...offer } = normalizedToFlightOffer(parseDuffelOffer(raw), tripType);
-        void _rawOffer;
-
-        // What the card would be held for, from the function `book` holds it with. Never at the
-        // cost of the offer itself: this read also draws the receipt, and a quote that cannot be
-        // made (rates down for a non-USD fare) leaves the page showing the fare alone.
-        try {
-            const charge = await priceFlightCharge(raw, { displayCurrency });
-            return {
-                ...offer,
-                quote: {
-                    currency: charge.chargeCurrency.toUpperCase(),
-                    fare: charge.fare,
-                    serviceFee: charge.serviceFee,
-                    total: charge.total,
-                },
-            };
-        } catch (err: any) {
-            console.warn(`[offer] ${offerId} could not be quoted: ${err?.message}`);
-            return offer;
-        }
-    }
-
-    // ── Book (open the payment for an attempt) ────────────────────────────────
-
-    /**
-     * Opens a booking attempt: reads the offer again, checks everything that can be checked
-     * before the card, prices it, and authorises — but does not take — the money.
-     *
-     * No airline order is placed here. It used to be, before the card was even shown, which
-     * meant a traveller could be charged for a ticket the airline then refused, and every
-     * failure after the order had to cancel a real one. The order is now placed once the card
-     * is authorised, by FlightBookingLifecycleService, and a refusal there costs nothing but
-     * a void.
-     */
     /**
      * Opens a booking attempt: reads the offer again, checks everything that can be checked
      * before the card, prices it, and authorises — but does not take — the money.
@@ -227,13 +163,10 @@ export class FlightsService {
         farePolicy?: FarePolicy;
         seatServiceIds?: string[];
         /** The browser's own figure. Stored, never charged: seats are priced from the offer. */
-        /** The browser's own figure. Stored, never charged: seats are priced from the offer. */
         seatTotal?: number;
         bagServiceIds?: string[];
         /** As `seatTotal`. */
-        /** As `seatTotal`. */
         bagTotal?: number;
-        /** The fare the traveller agreed to, in the offer's currency, after a price change. */
         /** The fare the traveller agreed to, in the offer's currency, after a price change. */
         confirmedPrice?: number;
         bundleHotelId?: string;
@@ -253,30 +186,15 @@ export class FlightsService {
         serviceFee: number;
     }> {
         const { contact, seatServiceIds, bagServiceIds, confirmedPrice, acknowledgeDuplicate, userId } = args;
-        /** What the card is held for. */
-        amount: number;
-        currency: string;
-        /** What Duffel bills for the order, and what we add to it: `fare + serviceFee = amount`. */
-        fare: number;
-        serviceFee: number;
-    }> {
-        const { contact, seatServiceIds, bagServiceIds, confirmedPrice, acknowledgeDuplicate, userId } = args;
 
         // ── Validate provider ──────────────────────────────────────────────────
-        const provider = args.provider ?? (args.offerId ? 'duffel' : undefined);
-        if (provider === 'mystifly_v2' || provider === 'mystifly') {
         const provider = args.provider ?? (args.offerId ? 'duffel' : undefined);
         if (provider === 'mystifly_v2' || provider === 'mystifly') {
             throw new AppError(422, 'This fare is no longer available. Please search again for current prices.', 'FARE_UNAVAILABLE');
         }
         if (provider !== 'duffel') {
-        if (provider !== 'duffel') {
             throw new AppError(400, 'Invalid provider', 'INVALID_PROVIDER');
         }
-
-        const clientOffer = args.flight?._rawOffer ?? (args.flight as any)?.rawOffer;
-        const offerId: string | undefined = args.offerId ?? clientOffer?.id;
-        if (!args.flight && !offerId) {
 
         const clientOffer = args.flight?._rawOffer ?? (args.flight as any)?.rawOffer;
         const offerId: string | undefined = args.offerId ?? clientOffer?.id;
@@ -322,7 +240,6 @@ export class FlightsService {
         const farePolicy = (args.farePolicy ?? (flight as any).farePolicy) as FarePolicy;
 
         // ── The price as shown ─────────────────────────────────────────────────
-        // ── The price as shown ─────────────────────────────────────────────────
         const flightTotal = typeof flight.price === 'number'
             ? (flight.price as number)
             : flight.price?.total ?? 0;
@@ -367,26 +284,6 @@ export class FlightsService {
             }
         }
 
-        // The pre-booking balance guard is off unless asked for. It calls
-        // /air/payments/balances, which does not exist: every variant 404s against a live
-        // token, so on live it never once ran to completion — it threw, was swallowed, and
-        // cost a wasted round trip on every booking — while sandbox skipped it. Duffel's
-        // order API is the real enforcement point.
-        if (process.env.DUFFEL_BALANCE_CHECK === 'on') {
-            try {
-                const balances = await getDuffelBalances(duffelToken);
-                const offerCurrency = rawOffer.total_currency ?? 'USD';
-                const offerTotalNum = parseFloat(rawOffer.total_amount ?? '0');
-                const available = getAvailableBalance(balances, offerCurrency);
-                if (available < offerTotalNum) {
-                    console.error(`[book] Duffel balance insufficient: ${available} ${offerCurrency} < ${offerTotalNum}`);
-                    throw new AppError(503, 'Flight booking is temporarily unavailable. Please try again shortly.', 'INSUFFICIENT_BALANCE');
-                }
-            } catch (balErr: any) {
-                if (balErr instanceof AppError) throw balErr;
-                console.warn('[book] Duffel balance check failed (non-fatal):', balErr.message);
-            }
-        }
         // The pre-booking balance guard is off unless asked for. It calls
         // /air/payments/balances, which does not exist: every variant 404s against a live
         // token, so on live it never once ran to completion — it threw, was swallowed, and
@@ -514,7 +411,6 @@ export class FlightsService {
 
         // ── Create booking session ─────────────────────────────────────────────
         const sanitizedFlight: any = { ...flight, _offerId: rawOffer.id };
-        const sanitizedFlight: any = { ...flight, _offerId: rawOffer.id };
         delete sanitizedFlight.rawOffer;
         delete sanitizedFlight._rawOffer;
 
@@ -533,19 +429,10 @@ export class FlightsService {
             isChangeable: (farePolicy as any)?.isChangeable ?? null,
             refundPenaltyAmount: (farePolicy as any)?.refundPenaltyAmount ?? null,
             refundPenaltyCurrency: (farePolicy as any)?.refundPenaltyCurrency ?? null,
-            farePolicy,
-            policySource: (farePolicy as any)?.policySource ?? null,
-            policyVersion: (farePolicy as any)?.policyVersion ?? null,
-            isRefundable: (farePolicy as any)?.isRefundable ?? null,
-            isChangeable: (farePolicy as any)?.isChangeable ?? null,
-            refundPenaltyAmount: (farePolicy as any)?.refundPenaltyAmount ?? null,
-            refundPenaltyCurrency: (farePolicy as any)?.refundPenaltyCurrency ?? null,
             seatServiceIds,
             seatTotal,
             bagServiceIds,
             bagTotal,
-            // What marks the attempt as the lifecycle's: the sweeper and auto-recover key on it.
-            captureMethod: 'manual',
             // What marks the attempt as the lifecycle's: the sweeper and auto-recover key on it.
             captureMethod: 'manual',
             expiresAt,
@@ -557,15 +444,10 @@ export class FlightsService {
         //
         // Manual capture: the card is held now and charged only once the airline has
         // confirmed the order. A hold the airline then refuses is voided, which is free.
-        // ── Authorise, do not take ─────────────────────────────────────────────
-        //
-        // Manual capture: the card is held now and charged only once the airline has
-        // confirmed the order. A hold the airline then refuses is voided, which is free.
         const piIdempotencyKey = `flight-pi-${userId}-${sessionId}`;
         const paymentIntent = await stripe.paymentIntents.create({
             amount: stripeAmount,
             currency: chargeInCurrency,
-            capture_method: 'manual',
             capture_method: 'manual',
             metadata: {
                 bookingSessionId: sessionId,
@@ -595,9 +477,7 @@ export class FlightsService {
         }
 
         // What the hold was computed from: the lifecycle captures against it.
-        // What the hold was computed from: the lifecycle captures against it.
         await this.repo.updateBookingSessionAudit(sessionId, {
-            currency: baseCurrency,
             currency: baseCurrency,
             originalPrice: pricing.originalPrice,
             chargedPrice: chargePrice,
@@ -605,7 +485,6 @@ export class FlightsService {
             paymentCurrency: chargeInCurrency.toUpperCase(),
         });
 
-        await this.lifecycle.open(sessionId);
         await this.lifecycle.open(sessionId);
 
         return { clientSecret: paymentIntent.client_secret!, sessionId, paymentIntentId: paymentIntent.id, ...held };
@@ -711,65 +590,6 @@ export class FlightsService {
         }
 
         // Someone else holds the session — the auto-recover cron, part-way through writing it.
-        // `book` has refused Mystifly fares for as long as v2 has existed.
-        if (provider === 'mystifly_v2' || provider === 'mystifly') {
-            throw new AppError(422, 'This fare is no longer available. Please search again for current prices.', 'FARE_UNAVAILABLE');
-        }
-
-        // Booked before this release: the order was placed at `book` and the card charged.
-        if (paymentIntent.capture_method !== 'manual') {
-            return this.confirmPreOrdered(paymentIntent, sessionId);
-        }
-
-        const outcome = await this.lifecycle.complete({ sessionId, paymentIntentId, actor: 'browser', userId });
-        if (outcome.kind === 'confirmed') {
-            return { bookingId: outcome.bookingId, pnr: outcome.pnr, status: outcome.status, source: 'lifecycle' };
-        }
-        if (outcome.kind === 'pending') {
-            throw new AppError(409, outcome.message, 'BOOKING_PROCESSING', {
-                pending: true, needsReview: outcome.needsReview, sessionId,
-            });
-        }
-        const wire = CONFIRM_FAILURES[outcome.code] ?? { status: 400 };
-        throw new AppError(wire.status, outcome.message, wire.code ?? outcome.code, outcome.details);
-    }
-
-    /**
-     * A session whose order was placed at `book` and whose card was charged, as every flight
-     * was before the booking lifecycle. Finished in process, under the session's own lock, the
-     * way /internal/create-booking finishes it — so a traveller paying across the release is
-     * not stranded. Delete once no such session can still be open.
-     */
-    private async confirmPreOrdered(paymentIntent: { id: string; status: string }, sessionId: string) {
-        if (paymentIntent.status !== 'succeeded') {
-            throw new AppError(402, `Payment not completed for Duffel (status: ${paymentIntent.status})`, 'PAYMENT_NOT_COMPLETED');
-        }
-
-        if (await this.repo.lockSessionForBooking(sessionId)) {
-            const session = await this.repo.getBookingSession(sessionId);
-            if (!session?.duffel_pre_order_id) {
-                await this.repo.setSessionStatus(sessionId, 'failed');
-                throw new AppError(400, 'Duffel pre-order missing from session', 'BOOKING_FAILED');
-            }
-            try {
-                const done = await completeDuffelBooking({
-                    session,
-                    paymentIntentId: paymentIntent.id,
-                    order: {
-                        orderId:    session.duffel_pre_order_id,
-                        pnr:        session.duffel_pre_order_pnr ?? '',
-                        tickets:    session.duffel_pre_order_tickets ?? [],
-                        isTicketed: session.duffel_pre_order_ticketed === true,
-                    },
-                });
-                return { bookingId: done.bookingId, pnr: done.pnr, status: done.status, source: 'confirm-fallback' };
-            } catch (err) {
-                await this.repo.setSessionStatus(sessionId, 'failed').catch(() => undefined);
-                throw err;
-            }
-        }
-
-        // Someone else holds the session — the auto-recover cron, part-way through writing it.
         const lateBooking = await awaitBookingRow(
             (id) => this.repo.getFlightBookingBySession(id) as any,
             sessionId,
@@ -777,11 +597,6 @@ export class FlightsService {
         if (lateBooking?.pnr) {
             return { bookingId: lateBooking.id, pnr: lateBooking.pnr, status: lateBooking.status ?? undefined, source: 'late-webhook' };
         }
-        // The card was charged and the order exists; the booking row is what is late. This
-        // used to say "your card has not been charged", which by this point it had been.
-        throw new AppError(409, 'Your booking is still being confirmed. Please check your trips shortly — do not pay again.', 'BOOKING_PROCESSING', {
-            pending: true, needsReview: false, sessionId,
-        });
         // The card was charged and the order exists; the booking row is what is late. This
         // used to say "your card has not been charged", which by this point it had been.
         throw new AppError(409, 'Your booking is still being confirmed. Please check your trips shortly — do not pay again.', 'BOOKING_PROCESSING', {
@@ -796,34 +611,8 @@ export class FlightsService {
      * attempt, so a refresh while the airline is being asked says so instead of "not found".
      * `lifecycle` is `pending` (not paid), `processing`, `needs_review` or `failed`.
      */
-    /**
-     * Where a booking is. Once the sale is written that is the booking; before then it is the
-     * attempt, so a refresh while the airline is being asked says so instead of "not found".
-     * `lifecycle` is `pending` (not paid), `processing`, `needs_review` or `failed`.
-     */
     async getBookingStatus(sessionId: string, userId: string) {
         const booking = await this.repo.getFlightBookingBySessionForUser(sessionId, userId);
-        if (!booking) {
-            const attempt = await this.lifecycle.find(sessionId);
-            if (!attempt || attempt.userId !== userId) return { found: false };
-            switch (attempt.status) {
-                case 'PAYMENT_PENDING':
-                    return { found: false, lifecycle: 'pending' };
-                case 'NEEDS_REVIEW':
-                    return { found: false, lifecycle: 'needs_review' };
-                case 'FAILED':
-                case 'EXPIRED':
-                    return {
-                        found: false, failed: true, lifecycle: 'failed',
-                        code: attempt.failureCode ?? 'BOOKING_FAILED',
-                        error: attempt.failureMessage ?? 'This booking could not be completed. Your card has not been charged.',
-                    };
-                default:
-                    // PAYMENT_AUTHORIZED, SUPPLIER_BOOKING, and CONFIRMED in the moment before
-                    // the sale is read back.
-                    return { found: false, lifecycle: 'processing' };
-            }
-        }
         if (!booking) {
             const attempt = await this.lifecycle.find(sessionId);
             if (!attempt || attempt.userId !== userId) return { found: false };

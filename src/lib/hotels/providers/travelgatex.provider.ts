@@ -35,8 +35,6 @@ import {
 
 const PREFIX = 'TGX:';
 
-<<<<<<< HEAD
-=======
 /**
  * How many times prebook re-asks for availability before calling it unavailable.
  *
@@ -55,7 +53,6 @@ const PREBOOK_SEARCH_ATTEMPTS = 3;
  */
 const PREBOOK_QUOTE_ROUNDS = 3;
 
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
 export interface TravelgateXProviderOptions {
     /** OTV needs a moment to propagate a freshly searched option into its valuation cache. */
     propagationDelayMs?: number;
@@ -222,16 +219,12 @@ export class TravelgateXProvider implements HotelProvider {
             adults:            stay.adults,
             children:          stay.children,
             currency:          stay.currency ?? 'USD',
-<<<<<<< HEAD
-            guest_nationality: stay.nationality ?? 'US',
-=======
             // Left to `runTgxSearch`'s own default when the caller names none. Defaulting to
             // 'US' here asked the supplier a different question than the search had: rates are
             // residency-restricted, so a hotel found for a KR guest could come back empty when
             // its own page re-asked as a US one. The two paths have to agree or search
             // advertises rates the property page cannot show.
             guest_nationality: stay.nationality,
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
         });
         return result?.data?.[0]?.roomTypes ?? [];
     }
@@ -248,27 +241,6 @@ export class TravelgateXProvider implements HotelProvider {
         }
 
         console.log(`[prebook/tgx] Fresh search: hotel=${hotelCode} ${checkIn}→${checkOut} adults=${input.adults}`);
-<<<<<<< HEAD
-        let fresh: HotelSearchResult;
-        try {
-            fresh = await runTgxSearch({
-                hotelCode,
-                checkin:  checkIn,
-                checkout: checkOut,
-                adults:   input.adults,
-                children: input.children,
-                currency: input.currency,
-                guest_nationality: nationality,
-            });
-        } catch (err) {
-            throw classifyTgxFailure(err, false);
-        }
-
-        const freshRooms: any[] = fresh?.data?.[0]?.roomTypes || [];
-        if (!freshRooms.length) {
-            throw new HotelProviderError('SOLD_OUT', 'Room is no longer available for the selected dates', { provider: 'travelgatex' });
-=======
-
         // Retried, because an empty answer here is usually not an empty hotel.
         //
         // The supplier intermittently serves no availability at all — an empty set with a
@@ -314,7 +286,6 @@ export class TravelgateXProvider implements HotelProvider {
                 'Availability for this room could not be confirmed. Please try again in a moment.',
                 { provider: 'travelgatex' },
             );
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
         }
 
         const wanted = input.roomName || '';
@@ -332,34 +303,6 @@ export class TravelgateXProvider implements HotelProvider {
         let quotedToken    = candidates[0]?.offerId?.slice(PREFIX.length) ?? staleToken;
         let successfulRoom = candidates[0];
 
-<<<<<<< HEAD
-        for (const room of candidates) {
-            const offerId: string = room?.offerId || '';
-            if (!offerId.startsWith(PREFIX)) continue;
-            const optionId    = offerId.slice(PREFIX.length);
-            const tgxId       = room?.rates?.[0]?._tgx?.id    || '';
-            const nativeToken = room?.rates?.[0]?._tgx?.token || '';
-            const tokensToTry = [...new Set([optionId, tgxId, nativeToken].filter(Boolean))];
-
-            for (const token of tokensToTry) {
-                console.log('[prebook/tgx] Quoting with token:', token.substring(0, 80));
-                try {
-                    optionQuote    = await quoteTgx(token);
-                    quotedToken    = token;
-                    successfulRoom = room;
-                    break;
-                } catch (e: any) {
-                    console.warn('[prebook/tgx] Quote failed:', token.substring(0, 40), '—', e.message?.substring(0, 100));
-                }
-            }
-            if (optionQuote) break;
-        }
-
-        if (!optionQuote) {
-            throw new HotelProviderError(
-                'SOLD_OUT',
-                'This room is currently unavailable for booking. Please try a different hotel or check back later.',
-=======
         for (let round = 1; round <= PREBOOK_QUOTE_ROUNDS && !optionQuote; round++) {
             if (round > 1) {
                 // Growing, because the thing being waited on is OTV's own cache catching up.
@@ -400,7 +343,6 @@ export class TravelgateXProvider implements HotelProvider {
             throw new HotelProviderError(
                 'UNAVAILABLE',
                 'Availability for this room could not be confirmed. Please try again in a moment.',
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
                 { provider: 'travelgatex' },
             );
         }

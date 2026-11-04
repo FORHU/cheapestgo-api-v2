@@ -74,15 +74,12 @@ export interface EtgContentRow {
   hotel_id: string;
   ratehawk_hid: string | null;
   etg_content_seeded_at: Date | null;
-<<<<<<< HEAD
-=======
   /**
    * Stamped by the bulk dump (`etgDump`) and the room-group repository writers, which seed
    * `room_groups` without ever touching `etg_content_seeded_at`. Reading only the latter
    * treated every dump-seeded hotel as unseeded.
    */
   room_groups_seeded_at?: Date | null;
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
   room_groups?: unknown;
   amenity_groups?: unknown;
   metapolicy_struct?: unknown;
@@ -96,8 +93,6 @@ function etgToken(): string {
   return Buffer.from(`${keyId}:${apiKey}`).toString('base64');
 }
 
-<<<<<<< HEAD
-=======
 /** Both halves, or there is no point dialling. See `ensureEtgContent`. */
 function hasEtgCredentials(): boolean {
   return Boolean(process.env.ETG_KEY_ID && process.env.ETG_API_KEY);
@@ -114,7 +109,6 @@ function warnMissingEtgCredentialsOnce(): void {
   );
 }
 
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
 function fromRow(row: {
   room_groups?: unknown; amenity_groups?: unknown; metapolicy_struct?: unknown;
   metapolicy_extra_info?: string | null; important_information?: string | null;
@@ -132,10 +126,6 @@ function fromRow(row: {
  * Returns parsed ETG content for a hotel, fetching hotel/info and caching it to
  * hotel_content when the stored copy is missing or older than 30 days. The RAW
  * ETG blobs are what's stored; parsing happens on read, so a parser change takes
-<<<<<<< HEAD
- * effect without a re-fetch. Best effort: any failure (no slug, network, non-2xx,
- * timeout) returns null and the caller falls back to the legacy modal body.
-=======
  * effect without a re-fetch.
  *
  * **Stored content is the floor, a refetch only an upgrade.** Returning null whenever the
@@ -145,19 +135,11 @@ function fromRow(row: {
  * hotels always read as unseeded; and with the content crons down nothing has refreshed since
  * 2026-08-20, putting every hotel past FRESH_MS. Stale photographs of the actual room beat a
  * fresh photograph of the lobby. Null now means only that we hold nothing at all.
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
  */
 export async function ensureEtgContent(
   hotelId: string,
   row: EtgContentRow,
 ): Promise<EtgContent | null> {
-<<<<<<< HEAD
-  const seededAt = row.etg_content_seeded_at?.getTime() ?? 0;
-  const fresh = seededAt > 0 && Date.now() - seededAt < FRESH_MS;
-  if (fresh && Array.isArray(row.room_groups)) return fromRow(row);
-
-  if (!row.ratehawk_hid) return null;
-=======
   const seededAt = Math.max(
     row.etg_content_seeded_at?.getTime() ?? 0,
     row.room_groups_seeded_at?.getTime() ?? 0,
@@ -175,7 +157,6 @@ export async function ensureEtgContent(
     warnMissingEtgCredentialsOnce();
     return cached;
   }
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
 
   try {
     const res = await fetch('https://api.worldota.net/api/b2b/v3/hotel/info/', {
@@ -186,21 +167,12 @@ export async function ensureEtgContent(
     });
     if (!res.ok) {
       console.warn(`[etg-content] hotel/info ${res.status} for ${hotelId} (hid ${row.ratehawk_hid})`);
-<<<<<<< HEAD
-      return null;
-=======
       return cached;
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
     }
     const json: any = await res.json();
     const d = json?.data;
     if (!d) {
       console.warn(`[etg-content] hotel/info: no data for ${hotelId}`);
-<<<<<<< HEAD
-      return null;
-    }
-
-=======
       return cached;
     }
 
@@ -211,7 +183,6 @@ export async function ensureEtgContent(
       ? d.room_groups
       : (row.room_groups ?? []);
 
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
     const metapolicyExtraInfo =
       typeof d.metapolicy_extra_info === 'string' ? d.metapolicy_extra_info : null;
     const importantInformation =
@@ -220,11 +191,7 @@ export async function ensureEtgContent(
     await prisma.hotel_content.update({
       where: { hotel_id: hotelId },
       data: {
-<<<<<<< HEAD
-        room_groups: (d.room_groups ?? []) as any,
-=======
         room_groups: groups as any,
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
         amenity_groups: (d.amenity_groups ?? []) as any,
         metapolicy_struct: (d.metapolicy_struct ?? null) as any,
         metapolicy_extra_info: metapolicyExtraInfo,
@@ -236,11 +203,7 @@ export async function ensureEtgContent(
     }).catch(() => {});
 
     return fromRow({
-<<<<<<< HEAD
-      room_groups: d.room_groups,
-=======
       room_groups: groups,
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
       amenity_groups: d.amenity_groups,
       metapolicy_struct: d.metapolicy_struct,
       metapolicy_extra_info: metapolicyExtraInfo,
@@ -248,10 +211,6 @@ export async function ensureEtgContent(
     });
   } catch (e: any) {
     console.warn(`[etg-content] hotel/info error for ${hotelId}:`, e?.message ?? e);
-<<<<<<< HEAD
-    return null;
-=======
     return cached;
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
   }
 }
