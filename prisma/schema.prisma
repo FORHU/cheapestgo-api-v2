@@ -442,6 +442,28 @@ model flight_segments {
   @@index([booking_id], map: "idx_flight_segments_booking_id")
 }
 
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model golf_courses {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug           String   @unique
+  name           String
+  country        String
+  city           String
+  address        String?
+  description    String   @default("")
+  holes          Int
+  par            Int?
+  green_fee_from Decimal? @db.Decimal(10, 2)
+  currency       String   @default("USD") @db.Char(3)
+  image_urls     String[] @default([])
+  amenities      String[] @default([])
+  status         String   @default("draft")
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([status, country], map: "idx_golf_courses_status_country")
+}
+
 model hotel_content {
   hotel_id              String    @id
   name                  String?
