@@ -32,3 +32,8 @@ _Avoid_: treating layer debt as a refactor to schedule later — the Feature Por
 
 An endpoint under `/internal/*`, authenticated by a shared secret rather than a user session, called by crons and by the app's own server-side work. It is a transport, not a place for logic: the logic behind it belongs in a service that a cron can call directly.
 _Avoid_: reaching internal routes over HTTP from within this process — see [ADR-0012](../cheapest-go-app/docs/adr/0012-internal-routes-are-called-in-process.md).
+
+## Golf Course
+
+A course CheapestGo can arrange play at, curated by the team in the admin. There is no supplier behind it: a course exists because someone typed it in, and a customer sees it only once it is published — a draft is as absent from the storefront as a slug that never existed. Its **green fee from** is a guide per player in the course's own currency, restated in the viewer's Display Currency by `GolfService`. Until tee-time booking is ported, the course page's one action is the support chat.
+_Avoid_: calling the green fee a price or a quote — nothing is charged from it, and checkout will quote its own.
