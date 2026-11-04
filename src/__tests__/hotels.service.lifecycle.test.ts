@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-=======
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
 
 vi.mock('@/config', () => ({ config: { RESEND_API_KEY: '', SITE_URL: 'https://cheapestgo.com' } }));
 vi.mock('@/lib/hotels/search', () => ({ runTgxSearch: vi.fn() }));
@@ -633,8 +629,6 @@ describe('a card that was not authorised', () => {
         expect(bookCalls()).toBe(0);
     });
 });
-<<<<<<< HEAD
-=======
 
 /**
  * The dev host holds live TravelgateX credentials — the supplier has no sandbox — so this switch
@@ -665,4 +659,3 @@ describe('the booking kill switch', () => {
         expect(bookCalls()).toBe(1);
     });
 });
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283

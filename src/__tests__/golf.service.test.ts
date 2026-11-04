@@ -4,6 +4,7 @@ vi.mock('@/lib/prisma', () => ({ prisma: {} }));
 
 import { GolfService, type GolfStore } from '@/services/golf.service';
 import type { GolfCourse, GolfCourseRecord } from '@/repositories/golf.repository';
+import type { ExtraOffer } from '@/lib/golf/extras';
 import type { RatesResult } from '@/services/exchange-rates.service';
 import { AppError } from '@/middleware/error.middleware';
 import { golfCourseInputSchema, type GolfCourseStatus } from '@/lib/golf/courseInput';
@@ -38,6 +39,8 @@ function fakeRepo() {
         setStatus:              vi.fn(async (_id: string, _s: GolfCourseStatus) => null as GolfCourse | null),
         delete:                 vi.fn(async (_id: string) => false),
         findById:               vi.fn(async (_id: string) => null as GolfCourse | null),
+        listExtras:             vi.fn(async (_courseId: string) => [] as ExtraOffer[]),
+        setExtras:              vi.fn(async (_courseId: string, offers: ExtraOffer[]) => offers),
     } satisfies GolfStore;
 }
 

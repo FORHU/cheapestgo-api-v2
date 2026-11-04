@@ -42,9 +42,11 @@ const schema = z.object({
     MAPBOX_TOKEN: z.string().optional(),
 
     // Which hotel supplier this process talks to. `mock` never calls a supplier, and is refused
-    // in production unless ALLOW_MOCK_HOTEL_PROVIDER=true.
+    // in production unless ALLOW_MOCK_HOTEL_PROVIDER=true. The mirror also holds: `travelgatex`
+    // is refused outside production unless ALLOW_LIVE_HOTEL_PROVIDER=true.
     HOTEL_PROVIDER: z.enum(['travelgatex', 'mock']).default('travelgatex'),
     ALLOW_MOCK_HOTEL_PROVIDER: z.string().optional(),
+    ALLOW_LIVE_HOTEL_PROVIDER: z.string().optional(),
     MOCK_HOTEL_SCENARIO: z.enum(MOCK_SCENARIOS).optional(),
     MOCK_HOTEL_CURRENCY: z.string().length(3).optional(),
     // `log` writes the email to the console instead of sending it. Defaults to `log` when the
@@ -67,6 +69,40 @@ if (
 ) {
     console.error('❌ HOTEL_PROVIDER=mock is refused in production: it would charge real cards for reservations that do not exist.');
     console.error('   Set ALLOW_MOCK_HOTEL_PROVIDER=true to override.');
+    process.exit(1);
+}
+
+/**
+ * The mirror of the rule above, and the more expensive one to get wrong.
+ *
+ * TravelgateX has no sandbox and this codebase has no dry-run, so the supplier is live wherever
+ * its credentials are. Stripe is not: a developer runs test keys, and a test card authorises and
+ * captures exactly as a real one does. Nothing in the booking path can tell the two apart — so on
+ * 2026-11-03 a laptop with `sk_test` and live TravelgateX keys booked a real room in Kyoto, and
+ * the only record of it was in that laptop's own database. The payment guards all held; they
+ * guard money, and the thing at risk was a hotel reservation.
+ *
+ * Checked here rather than at book time because a process that cannot reach the supplier cannot
+ * book by any route — a stray script, a replayed webhook, a confirm replayed by hand.
+ *
+ * Scope is the developer's machine, which is where it happened and the only place that both runs
+ * `NODE_ENV=development` and holds supplier credentials. It is deliberately NOT a general
+ * environment check: the deploy workflow writes `NODE_ENV=production` into the dev container too
+ * (deploy-dev.yml), so that variable cannot tell the dev host from production. The dev host is
+ * covered instead by never being given TRAVELGATEX_* at all — see the same workflow.
+ *
+ * `test` is exempt: vitest sets it, the suite stubs the provider, and a CI box has no
+ * credentials for the refusal to protect.
+ */
+if (
+    parsed.data.NODE_ENV === 'development'
+    && parsed.data.HOTEL_PROVIDER === 'travelgatex'
+    && parsed.data.ALLOW_LIVE_HOTEL_PROVIDER !== 'true'
+) {
+    console.error(`❌ HOTEL_PROVIDER=travelgatex is refused outside production (NODE_ENV=${parsed.data.NODE_ENV}).`);
+    console.error('   TravelgateX has no sandbox: a booking made here is a real reservation at a real hotel,');
+    console.error('   billed to the agency, and OTV have asked us not to make test bookings.');
+    console.error('   Use HOTEL_PROVIDER=mock, or set ALLOW_LIVE_HOTEL_PROVIDER=true if you truly mean it.');
     process.exit(1);
 }
 

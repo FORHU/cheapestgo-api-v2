@@ -21,7 +21,7 @@ const NOW = new Date('2026-11-04T03:00:00Z'); // 11:00 on 4 Nov in Manila
 const course = (over: Partial<GolfCourse> = {}): GolfCourse => ({
     id: COURSE, slug: 'wack-wack', name: 'Wack Wack', country: 'Philippines', city: 'Mandaluyong', address: null,
     description: '', holes: 18, par: 72, greenFeeFrom: 85, currency: 'USD', imageUrls: [], amenities: [],
-    status: 'published', createdAt: '', updatedAt: '', timezone: 'Asia/Manila', bookingWindowDays: 60,
+    status: 'published', createdAt: '', updatedAt: '', timezone: 'Asia/Manila', bookingWindowDays: 60, freeCancelHours: 48,
     scheduleCount: 1, bookable: true, ...over,
 });
 

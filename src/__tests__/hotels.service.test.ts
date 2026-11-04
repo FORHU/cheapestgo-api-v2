@@ -640,8 +640,6 @@ describe('HotelsService.createPayment() — the reference the browser can ask ab
         expect(out.data.bookingReference).toBe(metadata.bookingReference);
     });
 });
-<<<<<<< HEAD
-=======
 
 // ─── featuredStayByCity() ─────────────────────────────────────────────────────
 
@@ -717,4 +715,3 @@ describe('HotelsService.featuredStayByCity()', () => {
         expect(stay!.name).toBe('Myeongdong Stay');
     });
 });
->>>>>>> 2cd56e0ecff090b7f9b6b63577f3259a14dac283
