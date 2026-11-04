@@ -93,9 +93,15 @@ router.post(
         try {
             switch (eventType) {
 
-                // Ticket issued — Duffel confirms all documents are ready
-                case 'order.updated':
-                case 'order.fulfilled': {
+                // The order exists, or it has changed — re-read it and see whether documents
+                // have appeared since. This branch was keyed on 'order.updated' and
+                // 'order.fulfilled' for months and **Duffel sends neither**: no flight ever
+                // reached 'ticketed' through it, no ticket numbers were stored, and the
+                // e-ticket email below never went out. Nothing errored, because nothing ran.
+                // The accepted set is whatever POST /air/webhooks takes — it answers 422 and
+                // lists them for anything else.
+                case 'order.created':
+                case 'air.order.changed': {
                     const orderId: string = event?.data?.id ?? event?.data?.object?.id;
                     if (!orderId) break;
 
