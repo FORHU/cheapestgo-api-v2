@@ -1,9 +1,12 @@
 /**
  * The golf catalogue's rules (CONTEXT.md, "Golf Course").
  *
- * Two are decided here and nowhere else: a customer sees published courses only, and a "from" green
- * fee is restated in the viewer's Display Currency, as a guide. A conversion that cannot be made
- * leaves the course's own figure in its own currency rather than showing none.
+ * Decided here and nowhere else: a customer sees published courses only; a "from" green fee is
+ * restated in the viewer's Display Currency, as a guide (a conversion that cannot be made leaves the
+ * course's own figure in its own currency rather than showing none); and published means bookable —
+ * a course is published only with a time zone and a schedule, and while it has schedules its clock
+ * and its currency stay put, because its tee times were generated on that clock and its schedule
+ * prices are in that currency.
  */
 
 import { AppError } from '@/middleware/error.middleware';
@@ -14,15 +17,27 @@ import { readPage, type AdminListQuery } from '@/services/adminContent.service';
 import { GolfRepository, type GolfCourse, type GolfCourseRecord } from '@/repositories/golf.repository';
 
 export type GolfStore = Pick<GolfRepository,
-    'listPublished' | 'listPublishedCountries' | 'findBySlug' | 'listForAdmin' | 'create' | 'update' | 'setStatus' | 'delete'>;
+    'listPublished' | 'listPublishedCountries' | 'findBySlug' | 'findById' | 'listForAdmin'
+    | 'create' | 'update' | 'setStatus' | 'delete'>;
 
 const UUID     = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CURRENCY = /^[A-Z]{3}$/;
+
+/** Generation lives with the tee times; loaded on first use so the two services do not import each other. */
+const generateTeeTimes = async (courseId: string) => {
+    const { GolfTeeTimesService } = await import('@/services/golfTeeTimes.service');
+    return new GolfTeeTimesService().generate({ courseId });
+};
+
+/** A refusal about one field, shaped like a ZodError's answer so the form shows it beside the field. */
+const fieldConflict = (code: string, field: string, message: string) =>
+    new AppError(409, message, code, { details: { [field]: [message] } });
 
 export class GolfService {
     constructor(
         private readonly repo: GolfStore = new GolfRepository(),
         private readonly rates: () => Promise<RatesResult | null> = () => new ExchangeRatesService().getLiveRates(),
+        private readonly generate: (courseId: string) => Promise<number> = generateTeeTimes,
     ) {}
 
     /** The storefront's list, and every country it can be narrowed to. */
@@ -55,11 +70,35 @@ export class GolfService {
     // A malformed id names no course, so it is answered as an unknown one rather than handed to
     // Postgres to fail as an invalid uuid.
     async update(id: string, input: GolfCourseInput): Promise<GolfCourse | null> {
-        return UUID.test(id) ? this.repo.update(id, withSlug(input)) : null;
+        if (!UUID.test(id)) return null;
+        const before = await this.repo.findById(id);
+        if (!before) return null;
+
+        if (before.scheduleCount > 0 && input.timezone !== before.timezone) {
+            throw fieldConflict('TIMEZONE_LOCKED', 'timezone',
+                'The time zone cannot change while this course has tee-time schedules: its tee times were made on that clock.');
+        }
+        if (before.scheduleCount > 0 && input.currency !== before.currency) {
+            throw fieldConflict('CURRENCY_LOCKED', 'currency',
+                'The currency cannot change while this course has tee-time schedules: their prices are in it.');
+        }
+
+        const after = await this.repo.update(id, withSlug(input));
+        if (after?.bookable && (after.timezone !== before.timezone || after.bookingWindowDays !== before.bookingWindowDays)) {
+            // The course is saved either way; the daily run catches up if this one fails.
+            await this.generate(id).catch((err: unknown) =>
+                console.error('[golf] could not generate tee times after a course change:', (err as Error)?.message));
+        }
+        return after;
     }
 
     async setStatus(id: string, status: GolfCourseStatus): Promise<GolfCourse | null> {
-        return UUID.test(id) ? this.repo.setStatus(id, status) : null;
+        if (!UUID.test(id)) return null;
+        const changed = await this.repo.setStatus(id, status);
+        if (changed) return changed;
+        // Nothing changed: either there is no such course, or it is not bookable yet.
+        if (!(await this.repo.findById(id))) return null;
+        throw new AppError(409, 'Add a time zone and at least one tee-time schedule before publishing this course.', 'COURSE_NOT_BOOKABLE');
     }
 
     async delete(id: string): Promise<boolean> {

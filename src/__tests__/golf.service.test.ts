@@ -19,7 +19,8 @@ const ID = '0b6c7a2e-1111-4a5b-9c3d-000000000001';
 const course = (over: Partial<GolfCourse> = {}): GolfCourse => ({
     id: ID, slug: 'wack-wack', name: 'Wack Wack', country: 'Philippines', city: 'Mandaluyong', address: null,
     description: '', holes: 18, par: 72, greenFeeFrom: 100, currency: 'USD', imageUrls: [], amenities: [],
-    status: 'published', createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-01T00:00:00.000Z', ...over,
+    status: 'published', createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-01T00:00:00.000Z',
+    timezone: 'Asia/Manila', bookingWindowDays: 60, scheduleCount: 1, bookable: true, ...over,
 });
 
 const RATES: RatesResult = {
@@ -36,17 +37,94 @@ function fakeRepo() {
         update:                 vi.fn(async (_id: string, _r: GolfCourseRecord) => null as GolfCourse | null),
         setStatus:              vi.fn(async (_id: string, _s: GolfCourseStatus) => null as GolfCourse | null),
         delete:                 vi.fn(async (_id: string) => false),
+        findById:               vi.fn(async (_id: string) => null as GolfCourse | null),
     } satisfies GolfStore;
 }
 
 let repo: ReturnType<typeof fakeRepo>;
 let rates: ReturnType<typeof vi.fn<() => Promise<RatesResult | null>>>;
+let generate: ReturnType<typeof vi.fn<(courseId: string) => Promise<number>>>;
 let svc: GolfService;
 
 beforeEach(() => {
-    repo  = fakeRepo();
-    rates = vi.fn<() => Promise<RatesResult | null>>(async () => RATES);
-    svc   = new GolfService(repo, rates);
+    repo     = fakeRepo();
+    rates    = vi.fn<() => Promise<RatesResult | null>>(async () => RATES);
+    generate = vi.fn<(courseId: string) => Promise<number>>(async () => 0);
+    svc      = new GolfService(repo, rates, generate);
+});
+
+describe('published means bookable', () => {
+    it('publishes a bookable course', async () => {
+        repo.setStatus.mockResolvedValueOnce(course());
+        expect((await svc.setStatus(ID, 'published'))?.status).toBe('published');
+    });
+
+    it('refuses to publish a course without a time zone and a schedule', async () => {
+        repo.setStatus.mockResolvedValueOnce(null);
+        repo.findById.mockResolvedValueOnce(course({ status: 'draft', timezone: null, scheduleCount: 0, bookable: false }));
+        const err = await svc.setStatus(ID, 'published').catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(AppError);
+        expect(err).toMatchObject({ statusCode: 409, code: 'COURSE_NOT_BOOKABLE' });
+    });
+
+    it('answers null when there is no such course', async () => {
+        repo.setStatus.mockResolvedValueOnce(null);
+        repo.findById.mockResolvedValueOnce(null);
+        expect(await svc.setStatus(ID, 'published')).toBeNull();
+    });
+});
+
+describe('a course with schedules keeps its clock and its currency', () => {
+    const input = golfCourseInputSchema.parse({
+        name: 'Wack Wack', country: 'Philippines', city: 'Mandaluyong', holes: 18, timezone: 'Asia/Manila', currency: 'USD',
+    });
+
+    it('refuses a new time zone, against the time zone field', async () => {
+        repo.findById.mockResolvedValueOnce(course({ scheduleCount: 2 }));
+        const err = await svc.update(ID, { ...input, timezone: 'Asia/Seoul' }).catch((e: unknown) => e);
+        expect(err).toMatchObject({ statusCode: 409, code: 'TIMEZONE_LOCKED', details: { details: { timezone: [expect.any(String)] } } });
+        expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a new currency, against the currency field', async () => {
+        repo.findById.mockResolvedValueOnce(course({ scheduleCount: 2 }));
+        const err = await svc.update(ID, { ...input, currency: 'KRW' }).catch((e: unknown) => e);
+        expect(err).toMatchObject({ statusCode: 409, code: 'CURRENCY_LOCKED', details: { details: { currency: [expect.any(String)] } } });
+    });
+
+    it('lets a course without schedules change both', async () => {
+        repo.findById.mockResolvedValueOnce(course({ scheduleCount: 0, bookable: false }));
+        repo.update.mockResolvedValueOnce(course({ timezone: 'Asia/Seoul', currency: 'KRW', scheduleCount: 0, bookable: false }));
+        expect(await svc.update(ID, { ...input, timezone: 'Asia/Seoul', currency: 'KRW' })).toMatchObject({ currency: 'KRW' });
+    });
+});
+
+describe('tee times follow the course', () => {
+    const input = golfCourseInputSchema.parse({
+        name: 'Wack Wack', country: 'Philippines', city: 'Mandaluyong', holes: 18, timezone: 'Asia/Manila', currency: 'USD',
+    });
+
+    it('are generated again when the window changes', async () => {
+        repo.findById.mockResolvedValueOnce(course({ bookingWindowDays: 60 }));
+        repo.update.mockResolvedValueOnce(course({ bookingWindowDays: 90 }));
+        await svc.update(ID, { ...input, bookingWindowDays: 90 });
+        expect(generate).toHaveBeenCalledWith(ID);
+    });
+
+    it('are left alone when nothing they depend on changed', async () => {
+        repo.findById.mockResolvedValueOnce(course());
+        repo.update.mockResolvedValueOnce(course({ name: 'Wack Wack East' }));
+        await svc.update(ID, { ...input, name: 'Wack Wack East' });
+        expect(generate).not.toHaveBeenCalled();
+    });
+
+    it('do not fail the save when generating them does', async () => {
+        generate.mockRejectedValueOnce(new Error('db down'));
+        repo.findById.mockResolvedValueOnce(course({ bookingWindowDays: 60 }));
+        repo.update.mockResolvedValueOnce(course({ bookingWindowDays: 30 }));
+        vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        expect(await svc.update(ID, { ...input, bookingWindowDays: 30 })).toMatchObject({ bookingWindowDays: 30 });
+    });
 });
 
 describe('what a customer sees', () => {

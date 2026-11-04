@@ -4,6 +4,10 @@
  *
  * Which courses a customer may see is not decided here. `findBySlug` returns drafts too;
  * GolfService is where "published only" lives, once.
+ *
+ * Every read counts the course's tee-time schedules in the same statement
+ * (`schedule_count`), because "bookable" — a time zone and at least one schedule — is part of what a
+ * course is, for the storefront and the admin alike.
  */
 
 import type { Prisma } from '@prisma/client';
@@ -29,6 +33,12 @@ export interface GolfCourse {
     status:       GolfCourseStatus;
     createdAt:    string;
     updatedAt:    string;
+    /** IANA name; tee times are set on this clock. */
+    timezone:     string | null;
+    bookingWindowDays: number;
+    scheduleCount: number;
+    /** A time zone and at least one schedule: the course can have tee times. */
+    bookable:     boolean;
 }
 
 /** A course as it is written: the admin's input with its slug decided. */
@@ -59,9 +69,13 @@ interface GolfCourseRow {
     status:         string;
     created_at:     Date;
     updated_at:     Date;
+    timezone:       string | null;
+    booking_window_days: number;
+    schedule_count: number | null;
 }
 
 function toCourse(r: GolfCourseRow): GolfCourse {
+    const scheduleCount = Number(r.schedule_count ?? 0);
     return {
         id:           r.id,
         slug:         r.slug,
@@ -80,6 +94,10 @@ function toCourse(r: GolfCourseRow): GolfCourse {
         status:       r.status as GolfCourseStatus,
         createdAt:    new Date(r.created_at).toISOString(),
         updatedAt:    new Date(r.updated_at).toISOString(),
+        timezone:     r.timezone,
+        bookingWindowDays: Number(r.booking_window_days),
+        scheduleCount,
+        bookable:     Boolean(r.timezone) && scheduleCount > 0,
     };
 }
 
@@ -92,14 +110,18 @@ function isUniqueViolation(err: unknown): boolean {
 /** `%` and `_` typed into the search box are text to find, not wildcards. */
 const likePattern = (q: string) => `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 
+// Each query below spells out `schedule_count` rather than sharing a fragment, so a test reading the
+// statement sees the SQL that runs.
+
 export class GolfRepository {
     /** Published courses by name, in one country or all of them. */
     async listPublished(country?: string): Promise<GolfCourse[]> {
         const only = country ?? null;
         const rows = await prisma.$queryRaw<GolfCourseRow[]>`
-            SELECT * FROM golf_courses
-            WHERE status = 'published' AND (${only}::text IS NULL OR country = ${only})
-            ORDER BY name`;
+            SELECT c.*, (SELECT count(*)::int FROM golf_tee_time_schedules s WHERE s.course_id = c.id) AS schedule_count
+            FROM golf_courses c
+            WHERE c.status = 'published' AND (${only}::text IS NULL OR c.country = ${only})
+            ORDER BY c.name`;
         return rows.map(toCourse);
     }
 
@@ -113,7 +135,16 @@ export class GolfRepository {
     /** Any course with this slug, draft or not. */
     async findBySlug(slug: string): Promise<GolfCourse | null> {
         const rows = await prisma.$queryRaw<GolfCourseRow[]>`
-            SELECT * FROM golf_courses WHERE slug = ${slug} LIMIT 1`;
+            SELECT c.*, (SELECT count(*)::int FROM golf_tee_time_schedules s WHERE s.course_id = c.id) AS schedule_count
+            FROM golf_courses c WHERE c.slug = ${slug} LIMIT 1`;
+        return rows[0] ? toCourse(rows[0]) : null;
+    }
+
+    /** Any course with this id, draft or not. */
+    async findById(id: string): Promise<GolfCourse | null> {
+        const rows = await prisma.$queryRaw<GolfCourseRow[]>`
+            SELECT c.*, (SELECT count(*)::int FROM golf_tee_time_schedules s WHERE s.course_id = c.id) AS schedule_count
+            FROM golf_courses c WHERE c.id = ${id}::uuid LIMIT 1`;
         return rows[0] ? toCourse(rows[0]) : null;
     }
 
@@ -123,13 +154,14 @@ export class GolfRepository {
         const offset = (opts.page - 1) * opts.pageSize;
         const [rows, counted] = await Promise.all([
             prisma.$queryRaw<GolfCourseRow[]>`
-                SELECT * FROM golf_courses
-                WHERE ${like}::text IS NULL OR name ILIKE ${like} OR city ILIKE ${like} OR country ILIKE ${like}
-                ORDER BY updated_at DESC, name
+                SELECT c.*, (SELECT count(*)::int FROM golf_tee_time_schedules s WHERE s.course_id = c.id) AS schedule_count
+                FROM golf_courses c
+                WHERE ${like}::text IS NULL OR c.name ILIKE ${like} OR c.city ILIKE ${like} OR c.country ILIKE ${like}
+                ORDER BY c.updated_at DESC, c.name
                 LIMIT ${opts.pageSize} OFFSET ${offset}`,
             prisma.$queryRaw<Array<{ total: number }>>`
-                SELECT COUNT(*)::int AS total FROM golf_courses
-                WHERE ${like}::text IS NULL OR name ILIKE ${like} OR city ILIKE ${like} OR country ILIKE ${like}`,
+                SELECT COUNT(*)::int AS total FROM golf_courses c
+                WHERE ${like}::text IS NULL OR c.name ILIKE ${like} OR c.city ILIKE ${like} OR c.country ILIKE ${like}`,
         ]);
         return { courses: rows.map(toCourse), total: Number(counted[0]?.total ?? 0) };
     }
@@ -140,12 +172,12 @@ export class GolfRepository {
             const rows = await prisma.$queryRaw<GolfCourseRow[]>`
                 INSERT INTO golf_courses
                     (slug, name, country, city, address, description, holes, par, green_fee_from,
-                     currency, image_urls, amenities)
+                     currency, image_urls, amenities, timezone, booking_window_days)
                 VALUES
                     (${c.slug}, ${c.name}, ${c.country}, ${c.city}, ${c.address}, ${c.description},
                      ${c.holes}::int, ${c.par}::int, ${c.greenFeeFrom}::numeric, ${c.currency},
-                     ${c.imageUrls}::text[], ${c.amenities}::text[])
-                RETURNING *`;
+                     ${c.imageUrls}::text[], ${c.amenities}::text[], ${c.timezone}, ${c.bookingWindowDays}::int)
+                RETURNING *, 0 AS schedule_count`;
             return toCourse(rows[0]);
         } catch (err) {
             if (isUniqueViolation(err)) throw new SlugTakenError(c.slug);
@@ -162,9 +194,10 @@ export class GolfRepository {
                     address = ${c.address}, description = ${c.description}, holes = ${c.holes}::int,
                     par = ${c.par}::int, green_fee_from = ${c.greenFeeFrom}::numeric, currency = ${c.currency},
                     image_urls = ${c.imageUrls}::text[], amenities = ${c.amenities}::text[],
+                    timezone = ${c.timezone}, booking_window_days = ${c.bookingWindowDays}::int,
                     updated_at = now()
                 WHERE id = ${id}::uuid
-                RETURNING *`;
+                RETURNING *, (SELECT count(*)::int FROM golf_tee_time_schedules s WHERE s.course_id = golf_courses.id) AS schedule_count`;
             return rows[0] ? toCourse(rows[0]) : null;
         } catch (err) {
             if (isUniqueViolation(err)) throw new SlugTakenError(c.slug);
@@ -172,16 +205,22 @@ export class GolfRepository {
         }
     }
 
-    /** Publish or unpublish. Null when there is no such course. */
+    /**
+     * Publish or unpublish. Publishing applies only to a bookable course, decided in this one
+     * statement so a schedule deleted at the same moment cannot slip through. Null when nothing
+     * changed: no such course, or a course that is not bookable.
+     */
     async setStatus(id: string, status: GolfCourseStatus): Promise<GolfCourse | null> {
         const rows = await prisma.$queryRaw<GolfCourseRow[]>`
-            UPDATE golf_courses SET status = ${status}, updated_at = now()
-            WHERE id = ${id}::uuid
-            RETURNING *`;
+            UPDATE golf_courses c SET status = ${status}, updated_at = now()
+            WHERE c.id = ${id}::uuid
+              AND (${status} <> 'published' OR (c.timezone IS NOT NULL
+                   AND EXISTS (SELECT 1 FROM golf_tee_time_schedules s WHERE s.course_id = c.id)))
+            RETURNING c.*, (SELECT count(*)::int FROM golf_tee_time_schedules s WHERE s.course_id = c.id) AS schedule_count`;
         return rows[0] ? toCourse(rows[0]) : null;
     }
 
-    /** Whether there was a course to delete. */
+    /** Whether there was a course to delete. Its schedules and tee times go with it. */
     async delete(id: string): Promise<boolean> {
         const removed = await prisma.$executeRaw`DELETE FROM golf_courses WHERE id = ${id}::uuid`;
         return removed > 0;

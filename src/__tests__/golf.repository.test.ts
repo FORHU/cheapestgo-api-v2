@@ -13,11 +13,13 @@ const ROW = {
     city: 'Mandaluyong', address: null, description: 'Two courses.', holes: 36, par: 72,
     green_fee_from: '85.50', currency: 'USD', image_urls: ['https://img.example/a.jpg'], amenities: ['caddie'],
     status: 'published', created_at: new Date('2026-11-01T00:00:00Z'), updated_at: new Date('2026-11-02T00:00:00Z'),
+    timezone: 'Asia/Manila', booking_window_days: 60, schedule_count: 2,
 };
 
 const RECORD: GolfCourseRecord = {
     slug: 'wack-wack', name: 'Wack Wack', country: 'Philippines', city: 'Mandaluyong', address: null,
     description: '', holes: 36, par: 72, greenFeeFrom: 85.5, currency: 'USD', imageUrls: [], amenities: [],
+    timezone: 'Asia/Manila', bookingWindowDays: 60,
 };
 
 let repo: GolfRepository;
@@ -37,12 +39,43 @@ describe('mapping', () => {
             address: null, description: 'Two courses.', holes: 36, par: 72, greenFeeFrom: 85.5, currency: 'USD',
             imageUrls: ['https://img.example/a.jpg'], amenities: ['caddie'], status: 'published',
             createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-02T00:00:00.000Z',
+            timezone: 'Asia/Manila', bookingWindowDays: 60, scheduleCount: 2, bookable: true,
         });
     });
 
     it('keeps an unpriced course unpriced', async () => {
         db.$queryRaw.mockResolvedValueOnce([{ ...ROW, green_fee_from: null }]);
         expect((await repo.findBySlug('wack-wack'))!.greenFeeFrom).toBeNull();
+    });
+
+    it('calls a course bookable only with a time zone and a schedule', async () => {
+        db.$queryRaw
+            .mockResolvedValueOnce([{ ...ROW, timezone: null }])
+            .mockResolvedValueOnce([{ ...ROW, schedule_count: 0 }]);
+        expect((await repo.findBySlug('a'))!.bookable).toBe(false);
+        expect((await repo.findBySlug('b'))!.bookable).toBe(false);
+    });
+
+    it('counts schedules in the same query as the course', async () => {
+        await repo.findBySlug('wack-wack');
+        expect(sql(db.$queryRaw.mock.calls[0])).toContain('FROM golf_tee_time_schedules');
+    });
+});
+
+describe('findById', () => {
+    it('finds a course by id, draft or not, and nothing for an unknown one', async () => {
+        db.$queryRaw.mockResolvedValueOnce([{ ...ROW, status: 'draft' }]).mockResolvedValueOnce([]);
+        expect((await repo.findById(ROW.id))?.status).toBe('draft');
+        expect(await repo.findById(ROW.id)).toBeNull();
+    });
+});
+
+describe('setStatus', () => {
+    it('publishes only a bookable course, in the same statement', async () => {
+        await repo.setStatus(ROW.id, 'published');
+        const text = sql(db.$queryRaw.mock.calls[0]);
+        expect(text).toContain('timezone IS NOT NULL');
+        expect(text).toContain('EXISTS');
     });
 });
 

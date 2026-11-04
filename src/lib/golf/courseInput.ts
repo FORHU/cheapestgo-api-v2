@@ -8,6 +8,8 @@
  */
 
 import { z } from 'zod';
+import { isValidTimeZone } from '@/lib/golf/time';
+import { DEFAULT_BOOKING_WINDOW_DAYS, MAX_BOOKING_WINDOW_DAYS } from '@/lib/golf/rules';
 
 /** What a course can list. Closed, because the storefront has a label for each in every language. */
 export const GOLF_AMENITIES = [
@@ -58,6 +60,11 @@ export const golfCourseInputSchema = z.object({
     currency:     z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, 'Three letters, e.g. USD').default('USD'),
     imageUrls:    z.array(z.string().trim().url('Not a URL').startsWith('https://', 'Must start with https://')).max(20).default([]),
     amenities:    z.array(z.enum(GOLF_AMENITIES)).default([]).transform((a) => [...new Set(a)]),
+    /** IANA name; tee times are set on this clock. None means the course cannot have schedules yet. */
+    timezone:     optional(z.string().trim().refine(isValidTimeZone, 'Not a time zone')),
+    bookingWindowDays: z.coerce.number().int()
+        .min(1, 'At least 1 day').max(MAX_BOOKING_WINDOW_DAYS, `At most ${MAX_BOOKING_WINDOW_DAYS} days`)
+        .default(DEFAULT_BOOKING_WINDOW_DAYS),
 });
 
 export type GolfCourseInput = z.infer<typeof golfCourseInputSchema>;
