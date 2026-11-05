@@ -1,6 +1,11 @@
 # 1. Base
 FROM node:24-slim AS base
 WORKDIR /app
+# Prisma reads the OpenSSL version to pick its query engine, and the slim image ships without
+# the `openssl` tool. Without it `prisma generate` fell back to openssl-1.1.x, the container
+# needed 3.0.x, and every database call failed at runtime. binaryTargets in schema.prisma pins
+# the engines as well; this keeps detection itself honest. The runner stage needs it too.
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 
 # 2. Dependencies
 FROM base AS deps
@@ -18,6 +23,7 @@ RUN DATABASE_URL=postgresql://build:build@localhost/build npx prisma generate &&
 # 4. Runner
 FROM node:24-slim AS runner
 WORKDIR /app
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
 
