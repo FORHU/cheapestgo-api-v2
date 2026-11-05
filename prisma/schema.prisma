@@ -1,6 +1,12 @@
+// binaryTargets is pinned rather than left to detection: the image is built on node:24-slim,
+// where `prisma generate` once guessed openssl-1.1.x while the container needed 3.0.x, and
+// every query then failed with PrismaClientInitializationError. Dev deploys linux/arm64 and
+// production linux/amd64 (deploy-dev.yml), so both engine names are listed; `native` keeps
+// local development working on whatever machine runs it.
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["postgresqlExtensions"]
+  binaryTargets   = ["native", "debian-openssl-3.0.x", "linux-arm64-openssl-3.0.x"]
 }
 
 datasource db {
