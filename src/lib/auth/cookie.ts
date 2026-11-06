@@ -37,9 +37,12 @@ export const LEGACY_SESSION_COOKIE = 'access_token';
  */
 export function readSessionToken(req: Request): string | undefined {
     const cookies = req.cookies as Record<string, string | undefined> | undefined;
+    const authHeader = req.headers.authorization;
+    const bearerToken = authHeader ? authHeader.replace(/^Bearer\s+/i, '').trim() : undefined;
+
     return cookies?.[SESSION_COOKIE]
         ?? cookies?.[LEGACY_SESSION_COOKIE]
-        ?? req.headers.authorization?.replace('Bearer ', '');
+        ?? (bearerToken && bearerToken.length > 0 ? bearerToken : undefined);
 }
 
 /**
