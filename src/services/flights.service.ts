@@ -14,7 +14,7 @@ import {
     parseDuffelOffer, normalizedToFlightOffer, getDuffelAvailableServices, getDuffelOffer,
     getDuffelSeatMaps, getDuffelBalances, getAvailableBalance,
     createDuffelCancellationQuote, confirmDuffelCancellation, getDuffelOrder,
-    refreshDuffelOffer,
+    listDuffelOrderCancellations, refreshDuffelOffer,
 } from '@/lib/flights/duffel';
 import { sameItineraryOffers } from '@/lib/flights/offerItineraryMatch';
 import { mystiflyRequest } from '@/lib/flights/mystifly';
@@ -59,6 +59,17 @@ const CONFIRM_FAILURES: Record<string, { status: number; code?: string }> = {
 const processing = (attempt: PaidAttempt) => new AppError(409, attempt.message, 'BOOKING_PROCESSING', {
     pending: true, needsReview: attempt.needsReview, sessionId: attempt.sessionId,
 });
+
+/** A flight that is still going ahead: what either side — traveller or supplier — can cancel. */
+const LIVE_STATUSES = ['confirmed', 'ticketed', 'booked', 'pnr_created', 'awaiting_ticket'];
+
+/**
+ * What a cancellation made at Duffel may settle. `cancel_failed` is in — the traveller tried, the
+ * airline refused online, and support then cancelled it in the dashboard. `cancel_requested` is
+ * not: that is our own cancel mid-flight, whose confirm makes Duffel send the very webhook that
+ * would otherwise refund the traveller a second time.
+ */
+const SUPPLIER_SETTLEABLE = [...LIVE_STATUSES, 'cancel_failed'];
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
@@ -798,6 +809,9 @@ export class FlightsService {
         noQuote?: boolean;
         sandboxMock?: boolean;
         requiresManualCancellation?: boolean;
+        /** Cancelled at Duffel already: settled here, and `status` is where that left it. */
+        alreadyCancelled?: boolean;
+        status?: string;
         error?: string;
     }> {
         const booking = await this.repo.getFlightBookingById(bookingId);
@@ -826,6 +840,13 @@ export class FlightsService {
         } catch (err: any) {
             if (err.status === 404) throw new AppError(404, 'Booking not found with airline. It may have already been cancelled.', 'ORDER_NOT_FOUND');
             throw new AppError(422, err.message, 'DUFFEL_ERROR');
+        }
+
+        // Cancelled at Duffel already — its dashboard, or the airline. Duffel then offers no
+        // `cancel` action, which read below as "cannot be cancelled online", so the traveller
+        // was told to contact support about a flight that was cancelled and being refunded.
+        if (order?.cancelled_at) {
+            return { success: false, alreadyCancelled: true, status: await this.settleAlreadyCancelled(bookingId, orderId) };
         }
 
         const availableActions: string[] = order.available_actions ?? [];
@@ -870,6 +891,7 @@ export class FlightsService {
         stripeError?: string;
         providerMissing?: boolean;
         requiresManualCancellation?: boolean;
+        alreadyCancelled?: boolean;
     }> {
         const booking = await this.repo.getFlightBookingById(bookingId);
         if (!booking) throw new AppError(404, 'Booking not found', 'NOT_FOUND');
@@ -922,6 +944,8 @@ export class FlightsService {
         let supplierCancellationId: string | undefined;
         let refundTo: string | undefined;
         let requiresManualCancellation = false;
+        /** The order, when Duffel says it was cancelled before this request reached it. */
+        let cancelledAtDuffelOrderId: string | undefined;
 
         if (booking.status === 'refund_failed') {
             supplierSuccess = true;
@@ -947,10 +971,25 @@ export class FlightsService {
                     requiresManualCancellation = result.requiresManualCancellation === true
                         || /tkt-in-process|ticketed status|cancellation denied/i.test(supplierError ?? '');
                     refundTo = result.refundTo;
+                    cancelledAtDuffelOrderId = result.cancelledAtDuffelOrderId;
                 }
             } catch (supplierErr: any) {
                 supplierError = supplierErr.message;
             }
+        }
+
+        // Cancelled at Duffel between the quote and this confirm. Our attempt is recorded as
+        // failed — it did not cancel anything — and the booking is then settled from Duffel's
+        // own cancellation, which `cancel_failed` is open to.
+        if (cancelledAtDuffelOrderId) {
+            await this.repo.updateFlightBookingCancellation(bookingId, {
+                status: 'cancel_failed',
+                cancellationLog: [...currentLog, logEntry, {
+                    at: new Date().toISOString(), oldStatus: 'cancel_requested', newStatus: 'cancel_failed',
+                    note: 'Already cancelled at Duffel — settling from its cancellation',
+                }],
+            });
+            return { status: await this.settleAlreadyCancelled(bookingId, cancelledAtDuffelOrderId), alreadyCancelled: true };
         }
 
         if (!supplierSuccess) {
@@ -996,6 +1035,140 @@ export class FlightsService {
             };
         }
 
+        return this.settleCancellation(booking, {
+            paymentIntentId: effectivePaymentIntentId,
+            refundAmount, penaltyAmount, refundCurrency, supplierCancellationId, refundTo,
+            log: [...currentLog, logEntry],
+        });
+    }
+
+    // ── Cancelled at the supplier ─────────────────────────────────────────────
+
+    /**
+     * A Duffel order cancelled without us — from the Duffel dashboard, or by the airline — made
+     * true on the booking. Settles the traveller's money by the same rule as a cancel from the
+     * booking page: they get back the share of the fare Duffel refunded.
+     *
+     * Reached from the webhook and from the booking page's refresh, often both for one
+     * cancellation, so it must be safe to run twice: Duffel is asked whether the order really
+     * is cancelled, the booking is claimed only from a live status, and the Stripe refund
+     * shares its idempotency key with the page's.
+     */
+    async syncSupplierCancellation(orderId: string): Promise<{ changed: boolean; status?: string }> {
+        const booking = await this.repo.getFlightBookingByOrderId(orderId);
+        if (!booking) return { changed: false };
+        if (!SUPPLIER_SETTLEABLE.includes(booking.status)) return { changed: false, status: booking.status };
+
+        const order = await getDuffelOrder(orderId);
+        if (!order?.cancelled_at) return { changed: false, status: booking.status };
+
+        // The confirmed cancellation carries the refund. None — the airline cancelled the order
+        // itself — and what Duffel refunded is not known here.
+        const cancellation = (await listDuffelOrderCancellations(orderId))
+            .filter((c: any) => c?.confirmed_at)
+            .sort((a: any, b: any) => String(b.confirmed_at).localeCompare(String(a.confirmed_at)))[0];
+
+        const currentLog: any[] = Array.isArray(booking.cancellation_log) ? booking.cancellation_log : [];
+        const logEntry = {
+            at: new Date().toISOString(),
+            oldStatus: booking.status, newStatus: 'cancel_requested',
+            note: 'Cancelled at Duffel', duffelCancelledAt: order.cancelled_at,
+            ...(cancellation && { supplierCancellationId: cancellation.id }),
+        };
+        const claimed = await this.repo.setFlightBookingCancelRequested(booking.id, SUPPLIER_SETTLEABLE, logEntry, currentLog);
+        if (!claimed) return { changed: false };
+
+        if (!cancellation) {
+            await this.repo.updateFlightBookingCancellation(booking.id, {
+                status: 'cancelled',
+                cancellationCompletedAt: new Date(order.cancelled_at),
+                cancellationLog: [...currentLog, logEntry, {
+                    at: new Date().toISOString(), oldStatus: 'cancel_requested', newStatus: 'cancelled',
+                    note: 'No confirmed Duffel cancellation to price a refund from — refund left for support',
+                }],
+            });
+            console.warn(`[syncSupplierCancellation] ${orderId} cancelled at Duffel with no confirmed cancellation — no refund issued (booking ${booking.id})`);
+            return { changed: true, status: 'cancelled' };
+        }
+
+        const supplierPrice = Number(booking.total_price ?? 0);
+        const refundAmount = Math.min(Number(cancellation.refund_amount) || 0, supplierPrice);
+        const result = await this.settleCancellation(booking, {
+            paymentIntentId:        booking.payment_intent_id ?? null,
+            refundAmount,
+            penaltyAmount:          Math.max(0, supplierPrice - refundAmount),
+            refundCurrency:         cancellation.refund_currency ?? 'USD',
+            supplierCancellationId: cancellation.id,
+            refundTo:               cancellation.refund_to,
+            log:                    [...currentLog, logEntry],
+        });
+        return { changed: true, status: result.status };
+    }
+
+    /**
+     * A booking the page meant to cancel, found already cancelled at Duffel: settled as Duffel's
+     * cancellation, answering the status that leaves. Another request — the page's check on
+     * open, the webhook — may be settling it already, so the status is read back rather than
+     * assumed; a failure here is left to those to finish.
+     */
+    private async settleAlreadyCancelled(bookingId: string, orderId: string): Promise<string> {
+        try {
+            const synced = await this.syncSupplierCancellation(orderId);
+            if (synced.changed && synced.status) return synced.status;
+        } catch (err: any) {
+            console.warn(`[cancel] Could not settle ${orderId}, cancelled at Duffel:`, err?.message);
+        }
+        const current = await this.repo.getFlightBookingById(bookingId);
+        return current?.status ?? 'cancel_requested';
+    }
+
+    /**
+     * The booking page's check on its own flight: a Duffel order cancelled elsewhere is settled
+     * now rather than whenever the webhook lands — or for good, where none can reach us. Never
+     * throws for Duffel's sake: the page shows what is stored.
+     */
+    async refreshStatus(bookingId: string, userId: string): Promise<{ status: string; changed: boolean }> {
+        const booking = await this.repo.getFlightBookingById(bookingId);
+        if (!booking) throw new AppError(404, 'Booking not found', 'NOT_FOUND');
+        if (booking.user_id !== userId) throw new AppError(403, 'Unauthorized', 'FORBIDDEN');
+
+        const orderId = booking.provider_order_id ?? booking.duffel_order_id;
+        if (booking.provider !== 'duffel' || !orderId || !SUPPLIER_SETTLEABLE.includes(booking.status)) {
+            return { status: booking.status, changed: false };
+        }
+
+        try {
+            const synced = await this.syncSupplierCancellation(orderId);
+            return synced.changed && synced.status
+                ? { status: synced.status, changed: true }
+                : { status: booking.status, changed: false };
+        } catch (err: any) {
+            console.warn(`[refreshStatus] Could not check ${orderId} with Duffel:`, err?.message);
+            return { status: booking.status, changed: false };
+        }
+    }
+
+    /**
+     * The money half of a cancellation the supplier has confirmed — whoever asked for it. The
+     * traveller's share is what the supplier refunded us over what it charged, applied to what
+     * the traveller paid: a hold still uncaptured is voided, a capture partly refunded.
+     */
+    private async settleCancellation(booking: {
+        id: string; provider: string; session_id: string | null; payment_currency: string | null;
+    }, args: {
+        paymentIntentId:        string | null;
+        refundAmount:           number;
+        penaltyAmount:          number;
+        refundCurrency:         string;
+        supplierCancellationId: string | undefined;
+        refundTo:               string | undefined;
+        /** The cancellation log so far, through the step that claimed the booking. */
+        log:                    any[];
+    }) {
+        const bookingId = booking.id;
+        const { refundAmount, penaltyAmount, refundCurrency, supplierCancellationId, refundTo } = args;
+        let effectivePaymentIntentId = args.paymentIntentId;
+
         const cancelLog = {
             at: new Date().toISOString(),
             oldStatus: 'cancel_requested', newStatus: 'cancelled',
@@ -1017,7 +1190,7 @@ export class FlightsService {
             supplierCancellationId: supplierCancellationId ?? null,
             paymentCurrency: (booking.payment_currency ?? 'USD') as string,
             supplierCurrency: refundCurrency,
-            cancellationLog: [...currentLog, logEntry, cancelLog, refundPendingLog],
+            cancellationLog: [...args.log, cancelLog, refundPendingLog],
         });
 
         // Stripe refund
@@ -1055,7 +1228,7 @@ export class FlightsService {
                     await this.repo.updateFlightBookingRefundedStatus(bookingId, {
                         refundAmount: actualStripeRefundAmount,
                         refundCurrency: actualStripeCurrency,
-                        cancellationLog: [...currentLog, logEntry, cancelLog, refundPendingLog, { at: new Date().toISOString(), oldStatus: 'refund_pending', newStatus: 'refunded', note: 'PI cancelled (uncaptured)' }],
+                        cancellationLog: [...args.log, cancelLog, refundPendingLog, { at: new Date().toISOString(), oldStatus: 'refund_pending', newStatus: 'refunded', note: 'PI cancelled (uncaptured)' }],
                     });
                 } else {
                     const supplierCurrency = refundCurrency.toLowerCase();
@@ -1094,7 +1267,7 @@ export class FlightsService {
                         await this.repo.updateFlightBookingRefundedStatus(bookingId, {
                             refundAmount: actualStripeRefundAmount,
                             refundCurrency: actualStripeCurrency,
-                            cancellationLog: [...currentLog, logEntry, cancelLog, refundPendingLog, refundedLog],
+                            cancellationLog: [...args.log, cancelLog, refundPendingLog, refundedLog],
                         });
                     }
                 }
@@ -1103,18 +1276,21 @@ export class FlightsService {
                 console.error('[cancelBooking] Stripe refund failed:', stripeError);
                 await this.repo.updateFlightBookingCancellation(bookingId, {
                     status: 'refund_failed',
-                    cancellationLog: [...currentLog, logEntry, cancelLog, refundPendingLog, { at: new Date().toISOString(), oldStatus: 'refund_pending', newStatus: 'refund_failed', stripeError }],
+                    cancellationLog: [...args.log, cancelLog, refundPendingLog, { at: new Date().toISOString(), oldStatus: 'refund_pending', newStatus: 'refund_failed', stripeError }],
                 });
             }
         } else {
             await this.repo.updateFlightBookingCancellation(bookingId, {
                 status: 'cancelled',
-                cancellationLog: [...currentLog, logEntry, cancelLog],
+                cancellationLog: [...args.log, cancelLog],
             });
         }
 
+        // Nothing to refund (a non-refundable fare, or no payment found) is written `cancelled`
+        // above, and was answered `refund_pending` — a refund that was never coming.
+        const nothingToRefund = !effectivePaymentIntentId || refundAmount <= 0;
         return {
-            status: stripeError ? 'refund_failed' : (refunded ? 'refunded' : 'refund_pending'),
+            status: stripeError ? 'refund_failed' : refunded ? 'refunded' : nothingToRefund ? 'cancelled' : 'refund_pending',
             refundAmount: refunded ? actualStripeRefundAmount : refundAmount,
             refundCurrency: refunded ? actualStripeCurrency : refundCurrency,
             penaltyAmount,
@@ -1266,6 +1442,7 @@ export class FlightsService {
         success: boolean; refundAmount?: number; penaltyAmount?: number;
         currency?: string; cancellationId?: string; refundTo?: string;
         error?: string; providerMissing?: boolean; requiresManualCancellation?: boolean;
+        cancelledAtDuffelOrderId?: string;
     }> {
         const duffelToken = config.DUFFEL_ACCESS_TOKEN;
         if (!duffelToken) return { success: false, error: 'DUFFEL_ACCESS_TOKEN not configured' };
@@ -1291,6 +1468,10 @@ export class FlightsService {
                     return { success: true, refundAmount: 0, penaltyAmount: Number(booking.total_price ?? 0), currency: booking.currency ?? 'USD', providerMissing: true, error: 'Supplier order not found' };
                 }
                 return { success: false, error: err.message };
+            }
+
+            if (order?.cancelled_at) {
+                return { success: false, cancelledAtDuffelOrderId: orderId, error: 'Order already cancelled at Duffel' };
             }
 
             const availableActions: string[] = order.available_actions ?? [];

@@ -5,6 +5,16 @@
 import { prisma } from '@/lib/prisma';
 import type { FxLock } from '@/lib/payments/fxLock';
 
+/** What cancelling a flight booking reads, whichever way it is found. */
+const CANCELLABLE_BOOKING_FIELDS = {
+    id: true, user_id: true, status: true, provider: true, pnr: true,
+    payment_intent_id: true, created_at: true, cancellation_log: true,
+    session_id: true, total_price: true, charged_price: true,
+    payment_currency: true, refund_amount: true, refund_penalty_amount: true,
+    refund_currency: true, supplier_currency: true, provider_order_id: true,
+    duffel_order_id: true,
+} as const;
+
 export class FlightsRepository {
 
     // ─── Booking sessions ──────────────────────────────────────────────────────
@@ -345,14 +355,16 @@ export class FlightsRepository {
     async getFlightBookingById(bookingId: string) {
         return prisma.flight_bookings.findUnique({
             where: { id: bookingId },
-            select: {
-                id: true, user_id: true, status: true, provider: true, pnr: true,
-                payment_intent_id: true, created_at: true, cancellation_log: true,
-                session_id: true, total_price: true, charged_price: true,
-                payment_currency: true, refund_amount: true, refund_penalty_amount: true,
-                refund_currency: true, supplier_currency: true, provider_order_id: true,
-                duffel_order_id: true,
-            },
+            select: CANCELLABLE_BOOKING_FIELDS,
+        });
+    }
+
+    /** The booking a Duffel order belongs to — what a webhook about that order names. */
+    async getFlightBookingByOrderId(orderId: string) {
+        return prisma.flight_bookings.findFirst({
+            where:   { OR: [{ provider_order_id: orderId }, { duffel_order_id: orderId }] },
+            orderBy: { created_at: 'desc' },
+            select:  CANCELLABLE_BOOKING_FIELDS,
         });
     }
 
@@ -383,15 +395,18 @@ export class FlightsRepository {
     }) {
         return prisma.flight_bookings.update({
             where: { id: bookingId },
+            // Only what this step knows. Writing `null` for the rest erased the refund figures
+            // and completion time the step before had recorded, the moment a booking moved on
+            // to `cancelled` or `refund_failed`.
             data: {
                 status: data.status,
-                cancellation_completed_at: data.cancellationCompletedAt ?? null,
-                refund_amount: data.refundAmount ?? null,
-                refund_penalty_amount: data.refundPenaltyAmount ?? null,
-                refund_currency: data.refundCurrency ?? null,
-                supplier_cancellation_id: data.supplierCancellationId ?? null,
-                payment_currency: data.paymentCurrency ?? null,
-                supplier_currency: data.supplierCurrency ?? null,
+                ...(data.cancellationCompletedAt !== undefined && { cancellation_completed_at: data.cancellationCompletedAt }),
+                ...(data.refundAmount !== undefined && { refund_amount: data.refundAmount }),
+                ...(data.refundPenaltyAmount !== undefined && { refund_penalty_amount: data.refundPenaltyAmount }),
+                ...(data.refundCurrency !== undefined && { refund_currency: data.refundCurrency }),
+                ...(data.supplierCancellationId !== undefined && { supplier_cancellation_id: data.supplierCancellationId }),
+                ...(data.paymentCurrency !== undefined && { payment_currency: data.paymentCurrency }),
+                ...(data.supplierCurrency !== undefined && { supplier_currency: data.supplierCurrency }),
                 cancellation_log: data.cancellationLog as any,
             },
         });
@@ -413,24 +428,21 @@ export class FlightsRepository {
         });
     }
 
+    /**
+     * Claim a booking for cancellation: one UPDATE whose WHERE holds the status, so of a
+     * traveller's cancel and a Duffel webhook arriving together exactly one moves it — and so
+     * exactly one refunds. (A read-then-update let both through.)
+     */
     async setFlightBookingCancelRequested(bookingId: string, eligibleStatuses: string[], logEntry: any, currentLog: any[]) {
-        // We need to check status in the WHERE clause to prevent race conditions
-        // Prisma doesn't support updateMany with returning, so we use a transaction
-        const existing = await prisma.flight_bookings.findUnique({
-            where: { id: bookingId },
-            select: { status: true },
-        });
-        if (!existing || !eligibleStatuses.includes(existing.status)) return null;
-
-        return prisma.flight_bookings.update({
-            where: { id: bookingId },
+        const { count } = await prisma.flight_bookings.updateMany({
+            where: { id: bookingId, status: { in: eligibleStatuses } },
             data: {
                 status: 'cancel_requested',
                 cancellation_requested_at: new Date(),
                 cancellation_log: [...currentLog, logEntry] as any,
             },
-            select: { id: true },
         });
+        return count > 0 ? { id: bookingId } : null;
     }
 
     async getFlightSegmentsByBooking(bookingId: string) {
