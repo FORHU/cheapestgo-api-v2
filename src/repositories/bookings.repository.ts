@@ -2,7 +2,7 @@ import { prisma } from '@/lib/prisma';
 
 export class BookingsRepository {
 
-    async listForUser(userId: string, tripType?: 'flight' | 'hotel') {
+    async listForUser(userId: string, tripType?: 'flight' | 'hotel' | 'golf') {
         const results: any[] = [];
 
         // Query hotel bookings when type is unspecified or 'hotel'
@@ -13,6 +13,45 @@ export class BookingsRepository {
             });
             for (const row of hotelRows) {
                 results.push({ ...row, type: 'hotel' });
+            }
+
+            // Include V2 hotel_bookings deduplicated against legacy rows
+            try {
+                const v2HotelRows = await prisma.hotel_bookings.findMany({
+                    where:   { user_id: userId },
+                    orderBy: { created_at: 'desc' },
+                    include: {
+                        hotel_booking_guests: true,
+                    },
+                });
+                const existingRefs = new Set(hotelRows.map((r: any) => r.booking_id || r.id));
+                for (const row of v2HotelRows) {
+                    if (!existingRefs.has(row.booking_reference) && !existingRefs.has(row.id)) {
+                        const holder = row.hotel_booking_guests.find((g: any) => g.kind === 'holder') || row.hotel_booking_guests[0];
+                        results.push({
+                            id:                 row.id,
+                            booking_id:         row.booking_reference,
+                            type:               'hotel',
+                            user_id:            row.user_id,
+                            status:             row.status.toLowerCase(),
+                            provider:           row.provider,
+                            property_name:      row.property_name,
+                            room_name:          row.room_name,
+                            check_in:           row.check_in,
+                            check_out:          row.check_out,
+                            currency:           row.currency,
+                            total_price:        Number(row.amount_minor) / 100,
+                            holder_first_name:  holder?.first_name ?? null,
+                            holder_last_name:   holder?.last_name ?? null,
+                            holder_email:       holder?.email ?? null,
+                            created_at:         row.created_at,
+                            updated_at:         row.updated_at,
+                            supplier_reference: row.supplier_reference,
+                        });
+                    }
+                }
+            } catch {
+                // Table unreachable or offline; continue with available results
             }
         }
 
@@ -28,6 +67,42 @@ export class BookingsRepository {
             });
             for (const row of flightRows) {
                 results.push({ ...row, type: 'flight' });
+            }
+        }
+
+        // Query golf bookings when type is unspecified or 'golf'
+        if (!tripType || tripType === 'golf') {
+            try {
+                const golfRows = await prisma.golf_bookings.findMany({
+                    where:   { user_id: userId, status: { not: 'expired' } },
+                    orderBy: { created_at: 'desc' },
+                    include: {
+                        golf_courses:   true,
+                        golf_tee_times: true,
+                    },
+                });
+                for (const row of golfRows) {
+                    results.push({
+                        id:                row.id,
+                        booking_id:        row.reference,
+                        type:              'golf',
+                        user_id:           row.user_id,
+                        status:            row.status,
+                        provider:          'golf',
+                        property_name:     row.golf_courses.name,
+                        room_name:         `${row.players} Player${row.players > 1 ? 's' : ''} · Tee time`,
+                        check_in:          row.golf_tee_times.starts_at,
+                        check_out:         null,
+                        currency:          row.currency.trim(),
+                        total_price:       Number(row.total),
+                        holder_first_name: row.lead_name,
+                        holder_email:      row.contact_email,
+                        created_at:        row.created_at,
+                        updated_at:        row.updated_at,
+                    });
+                }
+            } catch {
+                // Table unreachable or offline; continue with available results
             }
         }
 
@@ -78,7 +153,48 @@ export class BookingsRepository {
     }
 
     async findByIdForUser(bookingId: string, userId: string) {
-        return prisma.bookings.findFirst({ where: { booking_id: bookingId, user_id: userId } });
+        const legacy = await prisma.bookings.findFirst({ where: { booking_id: bookingId, user_id: userId } });
+        if (legacy) return legacy;
+
+        try {
+            const hb = await prisma.hotel_bookings.findFirst({
+                where: {
+                    user_id: userId,
+                    OR: [{ booking_reference: bookingId }, { id: bookingId }],
+                },
+                include: { hotel_booking_guests: true },
+            });
+            if (hb) {
+                const holder = hb.hotel_booking_guests.find((g: any) => g.kind === 'holder') || hb.hotel_booking_guests[0];
+                return {
+                    id:                  hb.id,
+                    booking_id:          hb.booking_reference,
+                    user_id:             hb.user_id,
+                    status:              hb.status.toLowerCase(),
+                    provider:            hb.provider,
+                    property_name:       hb.property_name,
+                    property_image:      null,
+                    room_name:           hb.room_name,
+                    check_in:            hb.check_in,
+                    check_out:           hb.check_out,
+                    guests_adults:       hb.hotel_booking_guests.filter(g => g.kind === 'adult' || g.kind === 'holder').length || 1,
+                    guests_children:     hb.hotel_booking_guests.filter(g => g.kind === 'child').length || 0,
+                    total_price:         Number(hb.amount_minor) / 100,
+                    currency:            hb.currency,
+                    holder_first_name:   holder?.first_name ?? '',
+                    holder_last_name:    holder?.last_name ?? '',
+                    holder_email:        holder?.email ?? '',
+                    special_requests:    null,
+                    policy_type:         'free_cancellation',
+                    cancellation_policy: null,
+                    created_at:          hb.created_at,
+                } as any;
+            }
+        } catch {
+            // Fall through if table is unavailable
+        }
+
+        return null;
     }
 
     /** By row id rather than booking_id — the self-service links address the UUID. */

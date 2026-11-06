@@ -1319,6 +1319,7 @@ model hotel_bookings {
   hotel_booking_guests   hotel_booking_guests[]
   hotel_booking_payments hotel_booking_payments[]
 
+  @@index([user_id], map: "idx_hotel_bookings_user_id")
   @@index([status, created_at], map: "hotel_bookings_status_created_idx")
 }
 
