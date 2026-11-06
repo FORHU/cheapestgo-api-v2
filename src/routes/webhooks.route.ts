@@ -384,6 +384,8 @@ router.post(
 
                 case 'payment_intent.payment_failed': {
                     const pi = event.data.object as Stripe.PaymentIntent;
+
+                    // 1. Update legacy bookings
                     await (prisma as any).bookings.updateMany({
                         where: { payment_intent_id: pi.id },
                         data: { status: 'payment_failed', updated_at: new Date() },
@@ -394,23 +396,111 @@ router.post(
                             WHERE payment_intent_id = ${pi.id}
                         `
                     );
+
+                    // 2. Update hotel_bookings
+                    try {
+                        const { HotelBookingLifecycleRepository } = await import('@/repositories/hotelBookingLifecycle.repository');
+                        const hotelRepo = new HotelBookingLifecycleRepository();
+                        const hb = await hotelRepo.findByPaymentIntent(pi.id);
+                        if (hb && hb.status === 'PAYMENT_PENDING') {
+                            await hotelRepo.transition(hb.reference, 'PAYMENT_PENDING', 'FAILED', {
+                                actor: 'webhook',
+                                reason: 'Stripe payment_intent.payment_failed',
+                                patch: {
+                                    failureCode: pi.last_payment_error?.code ?? 'payment_failed',
+                                    failureMessage: pi.last_payment_error?.message ?? 'Payment failed',
+                                },
+                            });
+                        }
+                    } catch (err: any) {
+                        logger.warn('[webhooks/stripe] Could not update hotel_bookings on payment_failed', { piId: pi.id, error: err.message });
+                    }
+
+                    // 3. Update flight_bookings
+                    try {
+                        await prisma.flight_bookings.updateMany({
+                            where: { payment_intent_id: pi.id },
+                            data: { status: 'payment_failed' },
+                        }).catch(() => {});
+                    } catch (err: any) {
+                        logger.warn('[webhooks/stripe] Could not update flight_bookings on payment_failed', { piId: pi.id, error: err.message });
+                    }
+
+                    // 4. Update golf_bookings
+                    try {
+                        await prisma.golf_bookings.updateMany({
+                            where: { payment_intent_id: pi.id, status: 'held' },
+                            data: {
+                                status: 'expired',
+                                close_reason: 'hold_expired',
+                                closed_at: new Date(),
+                                updated_at: new Date(),
+                            },
+                        }).catch(() => {});
+                    } catch (err: any) {
+                        logger.warn('[webhooks/stripe] Could not update golf_bookings on payment_failed', { piId: pi.id, error: err.message });
+                    }
+
                     logger.info('[webhooks/stripe] Payment failed', { paymentIntentId: pi.id });
                     break;
                 }
 
                 case 'charge.refunded': {
                     const charge = event.data.object as Stripe.Charge;
-                    if (charge.payment_intent) {
+                    const piId = charge.payment_intent ? String(charge.payment_intent) : null;
+                    if (piId) {
+                        // 1. Update legacy bookings
                         await (prisma as any).bookings.updateMany({
-                            where: { payment_intent_id: charge.payment_intent as string },
+                            where: { payment_intent_id: piId },
                             data: { status: 'refunded', updated_at: new Date() },
                         }).catch(() =>
                             prisma.$executeRaw`
                                 UPDATE bookings
                                 SET status = 'refunded', updated_at = NOW()
-                                WHERE payment_intent_id = ${charge.payment_intent as string}
+                                WHERE payment_intent_id = ${piId}
                             `
                         );
+
+                        // 2. Update hotel_bookings
+                        try {
+                            const { HotelBookingLifecycleRepository } = await import('@/repositories/hotelBookingLifecycle.repository');
+                            const hotelRepo = new HotelBookingLifecycleRepository();
+                            const hb = await hotelRepo.findByPaymentIntent(piId);
+                            if (hb && hb.status !== 'REFUNDED') {
+                                await hotelRepo.transition(hb.reference, hb.status, 'REFUNDED', {
+                                    actor: 'webhook',
+                                    reason: 'Stripe charge.refunded',
+                                    payload: { chargeId: charge.id, amountRefunded: charge.amount_refunded },
+                                });
+                            }
+                        } catch (err: any) {
+                            logger.warn('[webhooks/stripe] Could not update hotel_bookings on charge.refunded', { piId, error: err.message });
+                        }
+
+                        // 3. Update flight_bookings
+                        try {
+                            await prisma.flight_bookings.updateMany({
+                                where: { payment_intent_id: piId },
+                                data: { status: 'refunded' },
+                            }).catch(() => {});
+                        } catch (err: any) {
+                            logger.warn('[webhooks/stripe] Could not update flight_bookings on charge.refunded', { piId, error: err.message });
+                        }
+
+                        // 4. Update golf_bookings
+                        try {
+                            await prisma.golf_bookings.updateMany({
+                                where: { payment_intent_id: piId },
+                                data: {
+                                    status: 'cancelled',
+                                    close_reason: 'cancelled_by_team',
+                                    refund_amount: Number(charge.amount_refunded) / 100,
+                                    updated_at: new Date(),
+                                },
+                            }).catch(() => {});
+                        } catch (err: any) {
+                            logger.warn('[webhooks/stripe] Could not update golf_bookings on charge.refunded', { piId, error: err.message });
+                        }
                     }
                     logger.info('[webhooks/stripe] Charge refunded', { chargeId: charge.id });
                     break;
