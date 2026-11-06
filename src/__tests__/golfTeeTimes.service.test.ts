@@ -55,7 +55,7 @@ let svc: GolfTeeTimesService;
 
 beforeEach(() => {
     f = fakes();
-    rates = vi.fn<() => Promise<RatesResult | null>>(async () => RATES);
+    rates = vi.fn<() => Promise<RatesResult | null>>(async () => ({ ...RATES, fetchedAt: Date.now() }));
     svc = new GolfTeeTimesService(f.teeTimes, f.courses, rates);
 });
 

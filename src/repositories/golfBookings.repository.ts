@@ -272,9 +272,8 @@ export class GolfBookingsRepository {
     }
 
     async referenceExists(reference: string): Promise<boolean> {
-        const rows = await prisma.$queryRaw<Array<{ one: number }>>`
-            SELECT 1 AS one FROM golf_bookings WHERE reference = ${reference} LIMIT 1`;
-        return rows.length > 0;
+        const count = await prisma.golf_bookings.count({ where: { reference } });
+        return count > 0;
     }
 
     /**
@@ -317,9 +316,10 @@ export class GolfBookingsRepository {
     }
 
     async attachPaymentIntent(id: string, paymentIntentId: string): Promise<void> {
-        await prisma.$executeRaw`
-            UPDATE golf_bookings SET payment_intent_id = ${paymentIntentId}, updated_at = now()
-            WHERE id = ${id}::uuid`;
+        await prisma.golf_bookings.update({
+            where: { id },
+            data: { payment_intent_id: paymentIntentId },
+        });
     }
 
     /** `held` → `requested`, once the card is authorised. Null when it was not `held`. */

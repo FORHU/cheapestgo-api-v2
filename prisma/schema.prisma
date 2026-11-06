@@ -468,10 +468,25 @@ model golf_courses {
   updated_at              DateTime                  @default(now()) @db.Timestamptz(6)
   timezone                String?
   booking_window_days     Int                       @default(60)
+  free_cancel_hours       Int                       @default(48)
   golf_tee_time_schedules golf_tee_time_schedules[]
   golf_tee_times          golf_tee_times[]
+  golf_bookings           golf_bookings[]
+  golf_course_extras      golf_course_extras[]
 
   @@index([status, country], map: "idx_golf_courses_status_country")
+}
+
+model golf_course_extras {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  course_id    String       @db.Uuid
+  code         String
+  price        Decimal      @db.Decimal(10, 2)
+  created_at   DateTime     @default(now()) @db.Timestamptz(6)
+  golf_courses golf_courses @relation(fields: [course_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([course_id, code], map: "golf_course_extras_course_code_key")
+  @@index([course_id], map: "idx_golf_course_extras_course")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -507,9 +522,62 @@ model golf_tee_times {
   created_at              DateTime                 @default(now()) @db.Timestamptz(6)
   golf_courses            golf_courses             @relation(fields: [course_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   golf_tee_time_schedules golf_tee_time_schedules? @relation(fields: [schedule_id], references: [id], onUpdate: NoAction)
+  golf_bookings           golf_bookings[]
 
   @@unique([course_id, starts_at], map: "golf_tee_times_course_start_key")
   @@index([schedule_id], map: "idx_golf_tee_times_schedule")
+}
+
+model golf_bookings {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reference           String                @unique
+  user_id             String                @db.Uuid
+  course_id           String                @db.Uuid
+  tee_time_id         String                @db.Uuid
+  players             Int
+  lead_name           String
+  contact_email       String
+  course_currency     String                @db.Char(3)
+  price_per_player    Decimal               @db.Decimal(10, 2)
+  currency            String                @db.Char(3)
+  fx_rate             Decimal               @default(1.0000) @db.Decimal(10, 4)
+  green_fee           Decimal               @db.Decimal(10, 2)
+  extras_total        Decimal               @default(0) @db.Decimal(10, 2)
+  service_fee         Decimal               @default(0) @db.Decimal(10, 2)
+  total               Decimal               @db.Decimal(10, 2)
+  payment_intent_id   String?
+  status              String                @default("held")
+  hold_expires_at     DateTime              @db.Timestamptz(6)
+  requested_at        DateTime?             @db.Timestamptz(6)
+  decide_by           DateTime?             @db.Timestamptz(6)
+  confirmed_at        DateTime?             @db.Timestamptz(6)
+  closed_at           DateTime?             @db.Timestamptz(6)
+  close_reason        String?
+  free_cancel_until   DateTime              @db.Timestamptz(6)
+  refund_amount       Decimal               @default(0) @db.Decimal(10, 2)
+  reminded_at         DateTime?             @db.Timestamptz(6)
+  created_at          DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime              @default(now()) @db.Timestamptz(6)
+  golf_courses        golf_courses          @relation(fields: [course_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  golf_tee_times      golf_tee_times        @relation(fields: [tee_time_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  golf_booking_extras golf_booking_extras[]
+
+  @@index([user_id], map: "idx_golf_bookings_user")
+  @@index([tee_time_id], map: "idx_golf_bookings_tee_time")
+  @@index([status], map: "idx_golf_bookings_status")
+  @@index([payment_intent_id], map: "idx_golf_bookings_payment_intent")
+}
+
+model golf_booking_extras {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  booking_id    String        @db.Uuid
+  code          String
+  quantity      Int
+  unit_price    Decimal       @db.Decimal(10, 2)
+  total         Decimal       @db.Decimal(10, 2)
+  golf_bookings golf_bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([booking_id], map: "idx_golf_booking_extras_booking")
 }
 
 model hotel_content {
