@@ -601,6 +601,21 @@ export async function confirmDuffelCancellation(cancellationId: string): Promise
     return data.data;
 }
 
+/**
+ * The cancellations Duffel holds for an order — quoted and confirmed alike. One made in the
+ * Duffel dashboard is here too, which is how its refund is known to a booking that never
+ * asked for it.
+ */
+export async function listDuffelOrderCancellations(orderId: string): Promise<any[]> {
+    const res = await fetch(`${DUFFEL_BASE}/air/order_cancellations?order_id=${encodeURIComponent(orderId)}`, {
+        headers: duffelHeaders(),
+        signal: AbortSignal.timeout(12_000),
+    });
+    const data: any = await res.json();
+    if (!res.ok) throw Object.assign(new Error(data?.errors?.[0]?.message ?? `Duffel cancellations fetch failed ${res.status}`), { status: res.status });
+    return Array.isArray(data?.data) ? data.data : [];
+}
+
 export async function getDuffelOrder(orderId: string): Promise<any> {
     const res = await fetch(`${DUFFEL_BASE}/air/orders/${orderId}`, {
         headers: duffelHeaders(),

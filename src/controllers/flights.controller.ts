@@ -147,6 +147,15 @@ export class FlightsController {
         } catch (err) { next(err); }
     };
 
+    /** The booking page asking whether its flight was cancelled at Duffel since it was stored. */
+    refreshStatus = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { bookingId } = z.object({ bookingId: z.string() }).parse(req.body);
+            const result = await svc.refreshStatus(bookingId, req.user!.sub);
+            res.json(result);
+        } catch (err) { next(err); }
+    };
+
     priceCalendar = async (req: Request, res: Response, next: NextFunction) => {
         try {
             const params = z.object({

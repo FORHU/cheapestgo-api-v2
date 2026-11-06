@@ -18,6 +18,7 @@ vi.mock('@/lib/flights/duffel', () => ({
     createDuffelCancellationQuote: vi.fn(),
     confirmDuffelCancellation:     vi.fn(),
     getDuffelOrder:                vi.fn(),
+    listDuffelOrderCancellations:  vi.fn(),
     getDuffelOffer:                vi.fn(),
     placeDuffelOrder:              vi.fn(),
     refreshDuffelOffer:            vi.fn(),
@@ -59,6 +60,7 @@ vi.mock('@/repositories/flights.repository', () => ({
         this.getFlightBookingBySession         = vi.fn().mockResolvedValue(null);
         this.getFlightBookingBySessionForUser  = vi.fn();
         this.getFlightBookingById              = vi.fn();
+        this.getFlightBookingByOrderId         = vi.fn().mockResolvedValue(null);
         this.setFlightBookingCancelRequested   = vi.fn().mockResolvedValue(true);
         this.updateFlightBookingCancellation   = vi.fn().mockResolvedValue(undefined);
         this.updateFlightBookingRefundedStatus = vi.fn().mockResolvedValue(undefined);
@@ -107,7 +109,7 @@ vi.mock('@/config', () => ({
 import { searchFlightsWithStatus, applyServerFilters }      from '@/lib/flights/search';
 import {
     placeDuffelOrder, getDuffelOrder, getDuffelOffer,
-    createDuffelCancellationQuote, confirmDuffelCancellation,
+    createDuffelCancellationQuote, confirmDuffelCancellation, listDuffelOrderCancellations,
 } from '@/lib/flights/duffel';
 import { stripe }          from '@/lib/stripe';
 import { applyMarkup, toStripeAmount, FLIGHT_MARKUP_SPEC } from '@/lib/pricing';
@@ -751,6 +753,219 @@ describe('FlightsService.cancelBooking()', () => {
         );
         expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
         expect(result.status).toBe('refunded');
+    });
+});
+
+// ─── Cancelled at Duffel (dashboard, airline) ────────────────────────────────
+
+describe('FlightsService.syncSupplierCancellation()', () => {
+    const ORDER_ID = 'ord-1';
+    const confirmedCancellation = (refund: string) => ({
+        id: 'ore_dash', order_id: ORDER_ID, refund_amount: refund, refund_currency: 'USD',
+        refund_to: 'balance', confirmed_at: '2026-11-06T10:00:00Z',
+    });
+
+    function cancelledAtDuffel(refund = '100.00') {
+        vi.mocked(getDuffelOrder).mockResolvedValue({ id: ORDER_ID, cancelled_at: '2026-11-06T10:00:00Z', available_actions: [] } as any);
+        vi.mocked(listDuffelOrderCancellations).mockResolvedValue([confirmedCancellation(refund)] as any);
+    }
+
+    function booked(over: Record<string, unknown> = {}) {
+        const repo = (service as any).repo;
+        repo.getFlightBookingByOrderId.mockResolvedValue({ ...MOCK_BOOKING, status: 'ticketed', ...over });
+        return repo;
+    }
+
+    beforeEach(() => {
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 10250, currency: 'usd' } as any);
+        vi.mocked(stripe.refunds.create).mockResolvedValue({ status: 'succeeded', id: 're_1' } as any);
+    });
+
+    it('refunds the traveller in full when Duffel refunded the whole fare', async () => {
+        const repo = booked();
+        cancelledAtDuffel('100.00');
+
+        const result = await service.syncSupplierCancellation(ORDER_ID);
+
+        expect(repo.setFlightBookingCancelRequested).toHaveBeenCalledWith(
+            BOOKING_ID, expect.not.arrayContaining(['cancel_requested']), expect.anything(), [],
+        );
+        expect(stripe.refunds.create).toHaveBeenCalledWith(
+            expect.objectContaining({ payment_intent: PI_ID, amount: 10250 }),
+            { idempotencyKey: `refund-${BOOKING_ID}` },
+        );
+        expect(result).toMatchObject({ changed: true, status: 'refunded' });
+    });
+
+    it('refunds the share Duffel refunded, as the booking page would', async () => {
+        booked();
+        cancelledAtDuffel('60.00'); // of a 100.00 fare
+
+        await service.syncSupplierCancellation(ORDER_ID);
+
+        expect(stripe.refunds.create).toHaveBeenCalledWith(
+            expect.objectContaining({ amount: 6150 }), // 60% of 102.50 paid
+            expect.anything(),
+        );
+    });
+
+    it('records Duffel\'s figures and cancellation on the booking', async () => {
+        const repo = booked();
+        cancelledAtDuffel('60.00');
+
+        await service.syncSupplierCancellation(ORDER_ID);
+
+        expect(repo.updateFlightBookingCancellation).toHaveBeenCalledWith(BOOKING_ID, expect.objectContaining({
+            status: 'refund_pending', refundAmount: 60, refundPenaltyAmount: 40, supplierCancellationId: 'ore_dash',
+        }));
+    });
+
+    it('leaves a booking our own cancel is already handling — no second refund', async () => {
+        for (const status of ['cancel_requested', 'refund_pending', 'refunded', 'refund_failed', 'cancelled']) {
+            vi.clearAllMocks();
+            const repo = booked({ status });
+            cancelledAtDuffel();
+
+            const result = await service.syncSupplierCancellation(ORDER_ID);
+
+            expect(result.changed).toBe(false);
+            expect(repo.setFlightBookingCancelRequested).not.toHaveBeenCalled();
+            expect(stripe.refunds.create).not.toHaveBeenCalled();
+        }
+    });
+
+    it('does nothing when Duffel says the order is still live', async () => {
+        const repo = booked();
+        vi.mocked(getDuffelOrder).mockResolvedValue({ id: ORDER_ID, cancelled_at: null } as any);
+
+        const result = await service.syncSupplierCancellation(ORDER_ID);
+
+        expect(result.changed).toBe(false);
+        expect(repo.setFlightBookingCancelRequested).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when another caller claimed the booking first', async () => {
+        const repo = booked();
+        repo.setFlightBookingCancelRequested.mockResolvedValue(null);
+        cancelledAtDuffel();
+
+        const result = await service.syncSupplierCancellation(ORDER_ID);
+
+        expect(result.changed).toBe(false);
+        expect(stripe.refunds.create).not.toHaveBeenCalled();
+    });
+
+    it('marks it cancelled without touching Stripe when Duffel has no confirmed cancellation to price it', async () => {
+        // An order the airline cancelled has no order_cancellation: we do not know what Duffel
+        // refunded, so the money is left for a person rather than guessed.
+        const repo = booked();
+        vi.mocked(getDuffelOrder).mockResolvedValue({ id: ORDER_ID, cancelled_at: '2026-11-06T10:00:00Z' } as any);
+        vi.mocked(listDuffelOrderCancellations).mockResolvedValue([]);
+
+        const result = await service.syncSupplierCancellation(ORDER_ID);
+
+        expect(result).toMatchObject({ changed: true, status: 'cancelled' });
+        expect(repo.updateFlightBookingCancellation).toHaveBeenCalledWith(BOOKING_ID, expect.objectContaining({ status: 'cancelled' }));
+        expect(stripe.refunds.create).not.toHaveBeenCalled();
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+    });
+
+    it('does nothing for an order no booking holds', async () => {
+        const result = await service.syncSupplierCancellation('ord-unknown');
+
+        expect(result.changed).toBe(false);
+        expect(getDuffelOrder).not.toHaveBeenCalled();
+    });
+});
+
+describe('cancelling from the page a flight already cancelled at Duffel', () => {
+    // What Duffel answers for an order cancelled in its dashboard: no `cancel` action left.
+    const CANCELLED_ORDER = { id: 'ord-1', cancelled_at: '2026-10-29T02:38:24Z', available_actions: ['update'] };
+    const DUFFEL_CANCELLATION = { id: 'ore_dash', refund_amount: '100.00', refund_currency: 'USD', refund_to: 'balance', confirmed_at: '2026-10-29T02:38:24Z' };
+
+    beforeEach(() => {
+        const repo = (service as any).repo;
+        repo.getFlightBookingById.mockResolvedValue({ ...MOCK_BOOKING, status: 'ticketed' });
+        repo.getFlightBookingByOrderId.mockResolvedValue({ ...MOCK_BOOKING, status: 'ticketed' });
+        vi.mocked(getDuffelOrder).mockResolvedValue(CANCELLED_ORDER as any);
+        vi.mocked(listDuffelOrderCancellations).mockResolvedValue([DUFFEL_CANCELLATION] as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 10250, currency: 'usd' } as any);
+        vi.mocked(stripe.refunds.create).mockResolvedValue({ status: 'succeeded', id: 're_1' } as any);
+    });
+
+    it('the quote settles it and says it is already cancelled — not "contact support"', async () => {
+        const quote = await service.cancelQuote(BOOKING_ID, USER_ID);
+
+        expect(quote).toMatchObject({ alreadyCancelled: true, status: 'refunded' });
+        expect(quote.requiresManualCancellation).toBeFalsy();
+        expect(createDuffelCancellationQuote).not.toHaveBeenCalled();
+        expect(stripe.refunds.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('the quote reports the status as it stands when another request is already settling it', async () => {
+        // The page's own check on open got there first and holds the booking.
+        const repo = (service as any).repo;
+        repo.setFlightBookingCancelRequested.mockResolvedValue(null);
+        repo.getFlightBookingById
+            .mockResolvedValueOnce({ ...MOCK_BOOKING, status: 'ticketed' })
+            .mockResolvedValueOnce({ ...MOCK_BOOKING, status: 'refund_pending' });
+
+        const quote = await service.cancelQuote(BOOKING_ID, USER_ID);
+
+        expect(quote).toMatchObject({ alreadyCancelled: true, status: 'refund_pending' });
+        expect(stripe.refunds.create).not.toHaveBeenCalled();
+    });
+
+    it('confirming settles it from Duffel\'s cancellation rather than failing it', async () => {
+        const result = await service.cancelBooking(BOOKING_ID, USER_ID, 'ore_quoted_earlier');
+
+        expect(confirmDuffelCancellation).not.toHaveBeenCalled();
+        expect(result).toMatchObject({ status: 'refunded', alreadyCancelled: true });
+        expect(result.requiresManualCancellation).toBeFalsy();
+        expect(stripe.refunds.create).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('FlightsService.refreshStatus()', () => {
+    it('refuses a booking that is not the caller\'s', async () => {
+        (service as any).repo.getFlightBookingById.mockResolvedValue({ ...MOCK_BOOKING, user_id: 'other-user' });
+
+        await expect(service.refreshStatus(BOOKING_ID, USER_ID)).rejects.toMatchObject({ status: 403 });
+    });
+
+    it('picks up a cancellation made at Duffel', async () => {
+        const repo = (service as any).repo;
+        repo.getFlightBookingById.mockResolvedValue({ ...MOCK_BOOKING, status: 'ticketed' });
+        repo.getFlightBookingByOrderId.mockResolvedValue({ ...MOCK_BOOKING, status: 'ticketed' });
+        vi.mocked(getDuffelOrder).mockResolvedValue({ id: 'ord-1', cancelled_at: '2026-11-06T10:00:00Z' } as any);
+        vi.mocked(listDuffelOrderCancellations).mockResolvedValue([
+            { id: 'ore_1', refund_amount: '100.00', refund_currency: 'USD', confirmed_at: '2026-11-06T10:00:00Z' },
+        ] as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 10250, currency: 'usd' } as any);
+        vi.mocked(stripe.refunds.create).mockResolvedValue({ status: 'succeeded', id: 're_1' } as any);
+
+        const result = await service.refreshStatus(BOOKING_ID, USER_ID);
+
+        expect(getDuffelOrder).toHaveBeenCalledWith('ord-1');
+        expect(result).toEqual({ status: 'refunded', changed: true });
+    });
+
+    it('does not ask Duffel about a booking that is already cancelled here', async () => {
+        (service as any).repo.getFlightBookingById.mockResolvedValue({ ...MOCK_BOOKING, status: 'refunded' });
+
+        const result = await service.refreshStatus(BOOKING_ID, USER_ID);
+
+        expect(result).toEqual({ status: 'refunded', changed: false });
+        expect(getDuffelOrder).not.toHaveBeenCalled();
+    });
+
+    it('answers the stored status when Duffel cannot be reached', async () => {
+        const repo = (service as any).repo;
+        repo.getFlightBookingById.mockResolvedValue({ ...MOCK_BOOKING, status: 'ticketed' });
+        repo.getFlightBookingByOrderId.mockResolvedValue({ ...MOCK_BOOKING, status: 'ticketed' });
+        vi.mocked(getDuffelOrder).mockRejectedValue(new Error('Duffel 503'));
+
+        await expect(service.refreshStatus(BOOKING_ID, USER_ID)).resolves.toEqual({ status: 'ticketed', changed: false });
     });
 });
 
