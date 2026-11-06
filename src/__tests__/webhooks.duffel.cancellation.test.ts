@@ -66,19 +66,19 @@ describe('POST /flight-supplier — an order cancelled at Duffel', () => {
         expect(syncSupplierCancellation).toHaveBeenCalledWith('ord_1');
     });
 
-    it('does not mark a cancelled order ticketed when an order update arrives', async () => {
+    it('does not mark a cancelled order ticketed when Duffel says the order changed', async () => {
         getDuffelOrder.mockResolvedValue({ id: 'ord_1', cancelled_at: '2026-11-06T10:00:00Z', documents: [{ type: 'electronic_ticket', unique_identifier: '125' }] });
 
-        await deliver('order.updated', { id: 'ord_1' });
+        await deliver('air.order.changed', { id: 'ord_1' });
 
         expect(syncSupplierCancellation).toHaveBeenCalledWith('ord_1');
         expect(executeRaw).not.toHaveBeenCalled();
     });
 
-    it('still syncs a live order\'s tickets from an order update', async () => {
+    it('still syncs a live order\'s tickets from an order change', async () => {
         getDuffelOrder.mockResolvedValue({ id: 'ord_1', cancelled_at: null, documents: [] });
 
-        await deliver('order.updated', { id: 'ord_1' });
+        await deliver('air.order.changed', { id: 'ord_1' });
 
         expect(syncSupplierCancellation).not.toHaveBeenCalled();
         expect(executeRaw).toHaveBeenCalledTimes(1);

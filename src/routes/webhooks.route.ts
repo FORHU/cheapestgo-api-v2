@@ -99,9 +99,15 @@ router.post(
         try {
             switch (eventType) {
 
-                // Ticket issued — Duffel confirms all documents are ready
-                case 'order.updated':
-                case 'order.fulfilled': {
+                // The order exists, or it has changed — re-read it and see whether documents
+                // have appeared since, or whether it was cancelled. This branch was keyed on
+                // 'order.updated' and 'order.fulfilled' for months and **Duffel sends neither**:
+                // no flight ever reached 'ticketed' through it, no ticket numbers were stored,
+                // and the e-ticket email below never went out. Nothing errored, because nothing
+                // ran. The accepted set is whatever POST /air/webhooks takes — it answers 422 and
+                // lists them for anything else (webhooks.duffelEvents.test.ts holds that list).
+                case 'order.created':
+                case 'air.order.changed': {
                     const orderId: string = event?.data?.object?.id ?? event?.data?.id;
                     if (!orderId) break;
 
@@ -118,7 +124,7 @@ router.post(
                     // went back to `ticketed` — undoing the cancellation on the traveller's page.
                     if (order?.cancelled_at) {
                         const out = await settleSupplierCancellation(orderId);
-                        logger.info('[webhooks/duffel] Updated order is cancelled', { orderId, ...out });
+                        logger.info('[webhooks/duffel] Changed order is cancelled', { orderId, ...out });
                         break;
                     }
 
