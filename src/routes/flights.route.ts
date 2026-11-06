@@ -27,6 +27,7 @@ router.post('/confirm',              requireAuth, ctrl.confirm);
 router.get( '/booking-status',       requireAuth, ctrl.bookingStatus);
 router.post('/cancel-quote',         requireAuth, ctrl.cancelQuote);
 router.post('/cancel-booking',       requireAuth, ctrl.cancelBooking);
+router.post('/refresh-status',       requireAuth, ctrl.refreshStatus);
 
 // ── Mystifly-only actions (stubs until live Mystifly key is active) ───────────
 const mystiflyNotLive = (_req: Request, res: Response) =>
