@@ -20,7 +20,7 @@
  * Province, state, county, region and country are **absent on purpose**: a distance from the
  * middle of Hokkaido is noise on every card, so those searches say nothing at all.
  */
-/** Haversine distance in km. The one copy —  imports it from here. */
+/** Haversine distance in km. The one copy — `search.ts` imports it from here. */
 export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
     const R  = 6371;
     const dL = ((lat2 - lat1) * Math.PI) / 180;
