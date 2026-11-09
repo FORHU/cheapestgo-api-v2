@@ -563,6 +563,11 @@ export class HotelsController {
                 children:    Number(body.children) || 0,
                 // So the pins drawn are the pins inside the place that was asked for.
                 areaRung:    body.areaRung,
+                // Both rungs, because the catalog measures how far each pin is from the anchor
+                // and `areaRung` is only set for a sub-area. Forwarding one and not the other
+                // left every catalog hotel unmeasured on a plain city search while the supplier's
+                // were measured fine — 18 silent Machida and Ota pins, live, on 2026-11-09.
+                rung:        body.rung,
                 bbox:        body.bbox,
                 // And the coordinates, which this call never sent. Without them the catalog can
                 // only match the city by name, so a spelling the traveller did not use finds
