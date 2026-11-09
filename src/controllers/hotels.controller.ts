@@ -13,6 +13,7 @@ import { resolveStayDates } from '@/lib/hotels/property';
 import { CITY_ALIASES } from '@/lib/cityAliases';
 import { DestinationsService } from '@/services/destinations.service';
 import { logger } from '@/lib/logger';
+import { attachDistance } from '@/lib/hotels/searchDistance';
 
 /**
  * How long a first pass must take before it is worth asking again.
@@ -651,7 +652,8 @@ export class HotelsController {
              * of more than one night, once `buildCityResults` began dividing at the source.
              */
             const stayNights = nightsBetween(body.checkin ?? body.checkIn, body.checkout ?? body.checkOut);
-            const tgxHotels: any[]   = attachStayTotals(Array.isArray(tgxResult.data) ? tgxResult.data : [], stayNights);
+            const tgxHotels: any[]   = attachDistance(
+                attachStayTotals(Array.isArray(tgxResult.data) ? tgxResult.data : [], stayNights), body);
             const tgxHotelIdSet      = new Set(tgxHotels.map((h: any) => h.hotelId || h.id));
             const newTgxHotels       = tgxHotels.filter((h: any) => !catalogIdSet.has(h.hotelId || h.id));
 
@@ -763,7 +765,8 @@ export class HotelsController {
                         return { data: [] as any[], allMappable: [] as any[], totalCount: 0, truncated: false };
                     });
 
-                const secondHotels: any[] = attachStayTotals(Array.isArray(second.data) ? second.data : [], stayNights);
+                const secondHotels: any[] = attachDistance(
+                    attachStayTotals(Array.isArray(second.data) ? second.data : [], stayNights), body);
                 const known = new Set([...tgxHotelIdSet, ...catalogIdSet]);
                 extraHotels = secondHotels.filter((h: any) => !known.has(h.hotelId || h.id));
                 console.log(`[stream] Second pass: ${secondHotels.length} hotels in ${Date.now() - t0}ms, ${extraHotels.length} of them new`);
