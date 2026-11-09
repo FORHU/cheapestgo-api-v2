@@ -161,7 +161,14 @@ export class GolfTeeTimesService {
         // Rates are fetched once, and only when a price has to cross currencies: the fee's flat part is
         // in USD, so any other visitor currency needs them too.
         const needsRates = open.length > 0 && (charge !== 'USD' || open.some((t) => t.currency !== charge));
-        const convert = makeStrictConverter(needsRates ? await this.rates().catch(() => null) : null);
+        // Rates are judged fresh against the same clock as everything else here. On the wall clock
+        // instead, a listing asked about at a given `now` priced or not depending on the day it
+        // was asked — the test pinned to 4 Nov stopped pricing on the 6th.
+        const convert = makeStrictConverter(
+            needsRates ? await this.rates().catch(() => null) : null,
+            undefined,
+            () => now.getTime(),
+        );
 
         const teeTimes = open.map((t): TeeTimeOffer => {
             let allInPerPlayer: number | null = null;

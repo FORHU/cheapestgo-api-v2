@@ -31,7 +31,7 @@ import { config } from '@/config';
 import { logger } from '@/lib/logger';
 import { ticketNumbersFrom } from '@/lib/flights/duffelTickets';
 import crypto from 'crypto';
-import { duffelHeaders } from '@/lib/flights/duffel';
+import { getDuffelOrder } from '@/lib/flights/duffel';
 import { sendFlightConfirmationEmail } from '@/lib/email/flightConfirmation';
 
 const router: Router = Router();
@@ -55,6 +55,12 @@ function verifyDuffelSignature(rawBody: Buffer, sigHeader: string, secret: strin
     } catch {
         return false; // length mismatch, malformed hex, etc.
     }
+}
+
+/** Settle a booking whose Duffel order was cancelled — loaded late, as the Stripe handlers load theirs. */
+async function settleSupplierCancellation(orderId: string) {
+    const { FlightsService } = await import('@/services/flights.service');
+    return new FlightsService().syncSupplierCancellation(orderId);
 }
 
 // ── Duffel Webhook ─────────────────────────────────────────────────────────
@@ -94,28 +100,34 @@ router.post(
             switch (eventType) {
 
                 // The order exists, or it has changed — re-read it and see whether documents
-                // have appeared since. This branch was keyed on 'order.updated' and
-                // 'order.fulfilled' for months and **Duffel sends neither**: no flight ever
-                // reached 'ticketed' through it, no ticket numbers were stored, and the
-                // e-ticket email below never went out. Nothing errored, because nothing ran.
-                // The accepted set is whatever POST /air/webhooks takes — it answers 422 and
-                // lists them for anything else.
+                // have appeared since, or whether it was cancelled. This branch was keyed on
+                // 'order.updated' and 'order.fulfilled' for months and **Duffel sends neither**:
+                // no flight ever reached 'ticketed' through it, no ticket numbers were stored,
+                // and the e-ticket email below never went out. Nothing errored, because nothing
+                // ran. The accepted set is whatever POST /air/webhooks takes — it answers 422 and
+                // lists them for anything else (webhooks.duffelEvents.test.ts holds that list).
                 case 'order.created':
                 case 'air.order.changed': {
-                    const orderId: string = event?.data?.id ?? event?.data?.object?.id;
+                    const orderId: string = event?.data?.object?.id ?? event?.data?.id;
                     if (!orderId) break;
 
                     // Re-fetch from Duffel to get latest status + documents
-                    const duffelRes = await fetch(
-                        `https://api.duffel.com/air/orders/${orderId}`,
-                        { headers: duffelHeaders(config.DUFFEL_ACCESS_TOKEN!) }
-                    );
-                    if (!duffelRes.ok) {
-                        logger.warn('[webhooks/duffel] Could not re-fetch order', { orderId, status: duffelRes.status });
+                    let order: any;
+                    try {
+                        order = await getDuffelOrder(orderId);
+                    } catch (err: any) {
+                        logger.warn('[webhooks/duffel] Could not re-fetch order', { orderId, status: err?.status, error: err?.message });
                         break;
                     }
 
-                    const { data: order } = await duffelRes.json() as any;
+                    // A cancelled order still carries its e-tickets, so read as tickets alone it
+                    // went back to `ticketed` — undoing the cancellation on the traveller's page.
+                    if (order?.cancelled_at) {
+                        const out = await settleSupplierCancellation(orderId);
+                        logger.info('[webhooks/duffel] Changed order is cancelled', { orderId, ...out });
+                        break;
+                    }
+
                     // An e-ticket is a document whose number is `unique_identifier`; this read
                     // `document_number`, which Duffel does not send, so an order with documents
                     // was marked ticketed with `[null]` recorded against it.
@@ -123,6 +135,8 @@ router.post(
                     const newStatus = tickets.length > 0 ? 'ticketed' : 'confirmed';
                     const ticketNumbers = tickets.length > 0 ? JSON.stringify(tickets) : null;
 
+                    // Only a flight still going ahead: one mid-cancel or cancelled here keeps
+                    // that status, whatever the order says about its tickets.
                     await prisma.$executeRaw`
                         UPDATE flight_bookings
                         SET
@@ -130,7 +144,7 @@ router.post(
                             ticket_numbers = ${ticketNumbers}::jsonb,
                             updated_at     = NOW()
                         WHERE provider_order_id = ${orderId}
-                          AND status NOT IN ('cancelled', 'refunded')
+                          AND status IN ('confirmed', 'ticketed', 'booked', 'pnr_created', 'awaiting_ticket')
                     `;
 
                     logger.info('[webhooks/duffel] Order status synced', { orderId, newStatus });
@@ -153,48 +167,20 @@ router.post(
                     break;
                 }
 
-                // Cancellation confirmed — mark cancelled + trigger Stripe refund if needed
+                // Cancellation confirmed — from our booking page, the Duffel dashboard, or the
+                // airline. The booking and the traveller's refund are settled the way the page
+                // settles them; one our page is already settling is left to it.
+                //
+                // The cancellation is at `data.object`. This read `data.order_id`, so every
+                // delivery stopped at "no order id" — and past that, joined `flight_bookings`
+                // to `bookings` on a column it does not have.
                 case 'order_cancellation.confirmed': {
-                    const cancellation = event?.data ?? event?.data?.object;
-                    const orderId: string = cancellation?.order_id ?? cancellation?.order?.id;
+                    const cancellation = event?.data?.object ?? event?.data;
+                    const orderId: string | undefined = cancellation?.order_id;
                     if (!orderId) break;
 
-                    // Find the booking
-                    const rows: any[] = await prisma.$queryRaw`
-                        SELECT fb.id, fb.status, b.payment_intent_id
-                        FROM flight_bookings fb
-                        JOIN bookings b ON b.id = fb.booking_id
-                        WHERE fb.provider_order_id = ${orderId}
-                        LIMIT 1
-                    `;
-                    if (!rows.length) break;
-
-                    const booking = rows[0];
-
-                    await prisma.$executeRaw`
-                        UPDATE flight_bookings
-                        SET status = 'cancelled', updated_at = NOW()
-                        WHERE provider_order_id = ${orderId}
-                    `;
-
-                    // Issue Stripe refund only if booking hasn't already been refunded
-                    if (booking.payment_intent_id && booking.status !== 'refunded') {
-                        try {
-                            await (stripe as Stripe).refunds.create({
-                                payment_intent: booking.payment_intent_id,
-                                reason: 'requested_by_customer',
-                            });
-                            await prisma.$executeRaw`
-                                UPDATE bookings SET status = 'refunded', updated_at = NOW()
-                                WHERE payment_intent_id = ${booking.payment_intent_id}
-                            `;
-                            logger.info('[webhooks/duffel] Refund issued', { orderId, pi: booking.payment_intent_id });
-                        } catch (refundErr: any) {
-                            logger.error('[webhooks/duffel] Stripe refund failed', { orderId, error: refundErr.message });
-                        }
-                    }
-
-                    logger.info('[webhooks/duffel] Order cancelled', { orderId });
+                    const out = await settleSupplierCancellation(orderId);
+                    logger.info('[webhooks/duffel] Order cancellation confirmed', { orderId, cancellationId: cancellation?.id, ...out });
                     break;
                 }
 
