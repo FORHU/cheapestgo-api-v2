@@ -19,6 +19,15 @@ export function ticketNumbersFrom(order: any): string[] {
 }
 
 /**
+ * Whether the airline has issued the ticket: an e-ticket number on an order that still stands.
+ * The booking path asks the same question of the same documents. A cancelled order can keep
+ * its documents, and it is not ticketed.
+ */
+export function isOrderTicketed(order: any): boolean {
+    return !order?.cancelled_at && ticketNumbersFrom(order).length > 0;
+}
+
+/**
  * Duffel passenger id → the seats the airline assigned, joined for a multi-leg trip
  * ("14A" one-way, "14A / 22C" where both legs were assigned up front).
  *

@@ -159,6 +159,41 @@ export class FlightsRepository {
         `;
     }
 
+    /**
+     * Duffel bookings the ticket poll checks again: waiting for the airline to issue, and
+     * still inside the ticketing deadline (or with none, so ticketing may be in progress).
+     * The lifecycle writes `awaiting_ticket`. `booked` is kept for rows written before it.
+     */
+    async findBookingsAwaitingTicket(limit = 50) {
+        return prisma.$queryRaw<{ id: string; provider_order_id: string; user_id: string }[]>`
+            SELECT id, provider_order_id, user_id
+            FROM flight_bookings
+            WHERE provider = 'duffel'
+              AND status IN ('awaiting_ticket', 'booked')
+              AND provider_order_id IS NOT NULL
+              AND (ticket_time_limit IS NULL OR ticket_time_limit > NOW())
+            LIMIT ${limit}
+        `;
+    }
+
+    /**
+     * Marks a polled booking ticketed, but only if it is still waiting for its ticket. False
+     * means something else moved it while Duffel was being read (a cancel, the webhook, an
+     * overlapping run), and the caller should neither count it nor send the ticket email.
+     */
+    async markTicketedIfAwaiting(bookingId: string, ticketNumbers: string[]): Promise<boolean> {
+        const rows = await prisma.$queryRaw<{ id: string }[]>`
+            UPDATE flight_bookings
+               SET status         = 'ticketed',
+                   ticket_numbers = COALESCE(${ticketNumbers.length ? JSON.stringify(ticketNumbers) : null}::jsonb, ticket_numbers),
+                   ticketed_at    = COALESCE(ticketed_at, NOW())
+             WHERE id = ${bookingId}::uuid
+               AND status IN ('awaiting_ticket', 'booked')
+            RETURNING id
+        `;
+        return rows.length > 0;
+    }
+
     // ─── Duplicate booking guard ───────────────────────────────────────────────
 
     async getActiveBookingsForUser(userId: string): Promise<{ id: string }[]> {

@@ -40,6 +40,52 @@ describe('sessions auto-recover may retry', () => {
     });
 });
 
+describe('bookings the ticket poll checks', () => {
+    it('includes the ones the booking lifecycle left waiting for a ticket', async () => {
+        // The lifecycle writes `awaiting_ticket` when Duffel has not issued yet. The poll
+        // selected only `booked`, which nothing writes, so those bookings were never
+        // checked again and the traveller never got their ticket email.
+        await repo.findBookingsAwaitingTicket();
+        expect(sql()).toMatch(/status IN \('awaiting_ticket', 'booked'\)/);
+    });
+
+    it('otherwise checks what it always did: a Duffel order still inside its ticketing deadline', async () => {
+        await repo.findBookingsAwaitingTicket();
+        expect(sql()).toMatch(/provider = 'duffel'/);
+        expect(sql()).toMatch(/provider_order_id IS NOT NULL/);
+        expect(sql()).toMatch(/\(ticket_time_limit IS NULL OR ticket_time_limit > NOW\(\)\)/);
+        expect(values()).toEqual([50]);
+    });
+});
+
+describe('marking a polled booking ticketed', () => {
+    it('only moves a booking that is still waiting for its ticket', async () => {
+        // The poll reads Duffel between its select and this write. A customer cancel in that
+        // window must not be overwritten with `ticketed`.
+        await repo.markTicketedIfAwaiting('fb-1', ['0797586589419']);
+        expect(sql()).toMatch(/UPDATE flight_bookings/);
+        expect(sql()).toMatch(/AND status IN \('awaiting_ticket', 'booked'\)/);
+        expect(sql()).toMatch(/RETURNING id/);
+        expect(values()).toEqual([JSON.stringify(['0797586589419']), 'fb-1']);
+    });
+
+    it('stamps ticketed_at, and never updated_at, which flight_bookings does not have', async () => {
+        // The poll's old UPDATE set `updated_at = NOW()`. Postgres rejects the whole statement
+        // ("column updated_at does not exist"), so even a booking it did select could never
+        // have been marked ticketed. `ticketed_at` is what the issue-ticket route stamps.
+        await repo.markTicketedIfAwaiting('fb-1', ['T-1']);
+        expect(sql()).toMatch(/ticketed_at\s*=\s*COALESCE\(ticketed_at, NOW\(\)\)/);
+        expect(sql()).not.toMatch(/updated_at/);
+    });
+
+    it('says whether it moved the booking', async () => {
+        db.$queryRaw.mockResolvedValueOnce([{ id: 'fb-1' }]);
+        expect(await repo.markTicketedIfAwaiting('fb-1', ['T-1'])).toBe(true);
+        db.$queryRaw.mockResolvedValueOnce([]);
+        expect(await repo.markTicketedIfAwaiting('fb-1', ['T-1'])).toBe(false);
+    });
+});
+
 describe('orders the orphaned-order cron may cancel', () => {
     it('never offers one the booking lifecycle wrote', async () => {
         await repo.findOrphanedOrderCandidates(new Date('2026-10-19T11:25:00Z'));
