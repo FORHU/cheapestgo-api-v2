@@ -150,7 +150,7 @@ export class GolfBookingsController {
 
     adminCancel = async (req: Request, res: Response, next: NextFunction) => {
         try {
-            const booking = await this.svc.cancelByTeam(req.params.reference);
+            const booking = await this.svc.cancelByTeam(req.params.reference, new Date(), { email: (req as any).user?.email ?? 'unknown admin' });
             if (!booking) throw notFound();
             audit(req, 'golf_booking_cancel', booking.id);
             res.json({ success: true, data: booking });

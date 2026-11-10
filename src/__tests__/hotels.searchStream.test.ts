@@ -120,6 +120,23 @@ describe('HotelsController.searchStream', () => {
         expect(fetchHotelContentPatches).toHaveBeenCalledWith(['H2'], 8_000);
     });
 
+    /**
+     * The catalog measures how far each pin is from the anchor, and it needs the rung to know
+     * what counts as far (ADR-0051). Only `areaRung` was forwarded, which is set for a sub-area
+     * and nothing else, so on a plain city search every catalog pin came back unmeasured while
+     * the supplier's were measured fine — 18 silent Machida and Ota pins, live, on 2026-11-09.
+     */
+    it('hands the catalog both rungs, so it can tell how far is far', async () => {
+        const { provider } = fakeProvider({ providesContent: false, data: [] });
+        setHotelProviderForTests(provider);
+
+        await new HotelsController().searchStream(fakeReq({ ...BODY, rung: 'city', lat: 14.6, lng: 121 }), fakeRes().res);
+
+        expect(getInstantHotelCatalog).toHaveBeenCalledWith(
+            expect.objectContaining({ rung: 'city', lat: 14.6, lng: 121 }),
+        );
+    });
+
     it('reports a supplier that did not answer, with the catalog left alone', async () => {
         const { provider, searchHotels } = fakeProvider({ providesContent: false, data: [] });
         const err = Object.assign(new Error('no answer'), { name: 'UnansweredSearchError' });

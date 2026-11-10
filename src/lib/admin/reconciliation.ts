@@ -20,6 +20,7 @@
 import Stripe from 'stripe';
 import { stripe } from '@/lib/stripe';
 import { prisma } from '@/lib/prisma';
+import { assertStripeAccount } from '@/lib/stripeAccount';
 
 /** Charges this platform creates. Sibling FORHU products settle into the same account. */
 const HOTEL_PI_TYPES = new Set(['hotel', 'hotel_bundle']);
@@ -53,35 +54,17 @@ export interface ReconciliationResult {
 /**
  * Refuses to run when the Stripe key and the database belong to different worlds.
  *
- * Comparing Stripe against `bookings` is only meaningful when both are the same
- * environment, and the compose file deliberately overrides DATABASE_URL to live RDS without
- * overriding the Stripe keys — so the container on 4001 pairs live RDS with the test key.
- * Scanning there would report every test PaymentIntent as unrecorded while hiding the real
- * one. Failing loudly beats emitting plausible garbage, and discipline has already been
- * tried and lost here (a test booking against live RDS once issued a real airline ticket).
+ * Comparing Stripe against `bookings` is only meaningful when both are the same environment, and
+ * the compose file deliberately overrides DATABASE_URL to live RDS without overriding the Stripe
+ * keys — so the container on 4001 pairs live RDS with the test key. Scanning there would report
+ * every test PaymentIntent as unrecorded while hiding the real one. Failing loudly beats emitting
+ * plausible garbage, and discipline has already been tried and lost here (a test booking against
+ * live RDS once issued a real airline ticket).
  *
- * Set STRIPE_EXPECTED_ACCOUNT to the account id the deployment should be talking to.
- * Unset means unenforced, which is the right default for local development.
+ * The check itself now lives in `lib/stripeAccount`, because the same mismatch is also refused at
+ * boot (ADR-0002, amended). Re-exported so this module's callers are unchanged.
  */
-export async function assertStripeAccount(): Promise<{ ok: true; account: string } | { ok: false; reason: string }> {
-    const expected = process.env.STRIPE_EXPECTED_ACCOUNT?.trim();
-    let account: string;
-    try {
-        // `GET /v1/account` — the account this key belongs to. The SDK's typings only
-        // describe retrieving a *connected* account by id, so the no-id form needs the cast.
-        account = (await stripe.accounts.retrieve(undefined as unknown as string)).id;
-    } catch (err: any) {
-        return { ok: false, reason: `Could not resolve Stripe account: ${err?.message ?? 'unknown error'}` };
-    }
-    if (expected && account !== expected) {
-        return {
-            ok: false,
-            reason: `Stripe account mismatch — key belongs to ${account}, expected ${expected}. `
-                  + 'Refusing to reconcile: the Stripe key and the database are different environments.',
-        };
-    }
-    return { ok: true, account };
-}
+export { assertStripeAccount };
 
 /**
  * Every hotel PaymentIntent that succeeded in the window but has no booking row.

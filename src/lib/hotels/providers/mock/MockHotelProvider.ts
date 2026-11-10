@@ -13,6 +13,9 @@
  */
 
 import type { HotelListing, HotelSearchParams, HotelSearchResult, RoomType } from '@/types/hotels';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { nightsBetween } from '@/lib/hotels/nights';
 import {
     HotelProviderError,
@@ -55,6 +58,8 @@ export interface MockHotelProviderOptions {
     now?:               () => number;
     /** A real supplier may or may not refuse a repeated client reference; the default is "does not". */
     dedupeByClientRef?: boolean;
+    /** False keeps reservations in memory only. Tests set it; a running server does not. */
+    persist?:           boolean;
 }
 
 interface BaseRef {
@@ -125,10 +130,60 @@ export class MockHotelProvider implements HotelProvider {
     private readonly currency: string;
     private readonly now: () => number;
 
+    /**
+     * Where reservations are kept between restarts, or null when they are not kept at all.
+     *
+     * A real supplier remembers a booking; this one held it in a Map, so every restart made
+     * every existing reservation uncancellable — `cancelBooking` answered "Booking not found",
+     * which the error map turns into REJECTED and the traveller reads as "the hotel did not
+     * accept the cancellation". During development the process restarts on every file save, so
+     * a booking was cancellable for about as long as nobody was working.
+     *
+     * A file rather than a table: this is a stand-in for a supplier's own records, and it has no
+     * business in the schema that records our sales. Tests pass `persist: false` and keep the
+     * old in-memory behaviour, since a suite that shares state between files is worse.
+     */
+    private readonly storePath: string | null;
+
     constructor(private readonly options: MockHotelProviderOptions = {}) {
         const wanted = options.currency?.toUpperCase();
         this.currency = wanted && mockSupportsCurrency(wanted) ? wanted : MOCK_DEFAULT_CURRENCY;
         this.now = options.now ?? Date.now;
+
+        // The option wins where it is given; otherwise the default is off under vitest, where a
+        // file shared between test files would make one suite depend on another having run.
+        const persist = options.persist ?? process.env.NODE_ENV !== 'test';
+        this.storePath = persist
+            ? path.join(os.tmpdir(), 'cheapestgo-mock-reservations.json')
+            : null;
+        this.load();
+    }
+
+    /** Reservations from the last run. Any failure leaves the mock empty, which is survivable. */
+    private load(): void {
+        if (!this.storePath) return;
+        try {
+            const raw = fs.readFileSync(this.storePath, 'utf8');
+            const saved = JSON.parse(raw) as { sequence?: number; reservations?: Reservation[] };
+            for (const r of saved.reservations ?? []) this.store.set(r.supplierRef, r);
+            // Carried over so a restart cannot mint a supplier reference that already exists.
+            this.sequence = Math.max(saved.sequence ?? 0, this.store.size);
+        } catch {
+            // No file yet, or an unreadable one. Starting empty is the old behaviour.
+        }
+    }
+
+    /** Written after every change. Never throws: losing the file must not fail a booking. */
+    private save(): void {
+        if (!this.storePath) return;
+        try {
+            fs.writeFileSync(this.storePath, JSON.stringify({
+                sequence: this.sequence,
+                reservations: [...this.store.values()],
+            }));
+        } catch (err) {
+            console.warn('[mock] could not persist reservations:', (err as Error)?.message);
+        }
     }
 
     // ── Test controls ───────────────────────────────────────────────────────
@@ -277,6 +332,7 @@ export class MockHotelProvider implements HotelProvider {
             status:      'OK',
         };
         this.store.set(reservation.supplierRef, reservation);
+        this.save();
 
         if (scenario === 'book_timeout') {
             // The reservation is made; only the answer is lost.
@@ -285,18 +341,31 @@ export class MockHotelProvider implements HotelProvider {
         return this.toBooking(reservation);
     }
 
+    /**
+     * The reservation a pair of references names, or none.
+     *
+     * A supplier reference only identifies a reservation if the client reference agrees with it.
+     * The mock numbers its references from one whenever its store starts empty, so a reference
+     * left over from an earlier run names somebody else's reservation rather than nothing at
+     * all — and cancelling a dead booking would quietly cancel a live one, reporting success for
+     * the wrong stay. A real supplier is given both references and holds them to each other.
+     */
+    private find(ref: { clientRef?: string; supplierRef?: string }): Reservation | undefined {
+        const bySupplier = ref.supplierRef ? this.store.get(ref.supplierRef) : undefined;
+        if (bySupplier && (!ref.clientRef || bySupplier.clientRef === ref.clientRef)) return bySupplier;
+        return ref.clientRef ? this.findByClientRef(ref.clientRef) : undefined;
+    }
+
     async getBooking(ref: ProviderBookingRef): Promise<ProviderBooking | null> {
         this.record('getBooking', ref);
-        const found = (ref.supplierRef && this.store.get(ref.supplierRef))
-            || (ref.clientRef ? this.findByClientRef(ref.clientRef) : undefined);
+        const found = this.find(ref);
         return found ? this.toBooking(found) : null;
     }
 
     async cancelBooking(input: CancelInput): Promise<ProviderCancellation> {
         this.record('cancelBooking', input);
 
-        const found = (input.supplierRef && this.store.get(input.supplierRef))
-            || (input.clientRef ? this.findByClientRef(input.clientRef) : undefined);
+        const found = this.find(input);
         if (!found) {
             throw new HotelProviderError('REJECTED', 'Booking not found', { provider: 'mock' });
         }
@@ -311,6 +380,7 @@ export class MockHotelProvider implements HotelProvider {
         }
 
         found.status = 'CANCELLED';
+        this.save();
         if (scenario === 'cancel_timeout') {
             throw new HotelProviderError('UNKNOWN_OUTCOME', 'The mock supplier did not answer in time.', { provider: 'mock' });
         }

@@ -26,6 +26,7 @@
  */
 
 import { AppError } from '@/middleware/error.middleware';
+import { openRefund, closeRefund } from '@/lib/refundLog';
 import { stripe } from '@/lib/stripe';
 import { canonicalBrandName } from '@/lib/brand';
 import { mintUniqueBookingReference } from '@/lib/payments/bookingReference';
@@ -454,13 +455,13 @@ export class GolfBookingsService {
      * the free-cancellation time says, because it is not the customer's doing. A request is answered by
      * declining it instead.
      */
-    async cancelByTeam(reference: string, now = new Date()): Promise<GolfBooking | null> {
+    async cancelByTeam(reference: string, now = new Date(), admin?: { email: string }): Promise<GolfBooking | null> {
         const booking = await this.repo.findByReference(reference);
         if (!booking) return null;
         if (booking.status === 'cancelled') return booking;
         if (booking.status !== 'confirmed') throw notCancellable(booking);
 
-        await this.refund(booking);
+        await this.refund(booking, admin?.email ?? null);
         return this.closedAndTold(booking, await this.repo.close(booking.id, 'confirmed', 'cancelled', 'cancelled_by_team', now, booking.total));
     }
 
@@ -526,8 +527,30 @@ export class GolfBookingsService {
         return report;
     }
 
-    /** The whole charge back to the card, in the currency it was taken in, so there is no drift. */
-    private async refund(booking: GolfBooking): Promise<void> {
+    /**
+     * The whole charge back to the card, in the currency it was taken in, so there is no drift.
+     *
+     * Full every time is correct for a tee time: the course resells the slot, so there is no
+     * supplier cost left stranded. That is the reasoning ADR-0004 declined to carry over to
+     * hotels, where the supplier bills us for a room nobody slept in.
+     *
+     * @param requestedBy the admin's email when the team cancelled it, null when the customer did.
+     */
+    private async refund(booking: GolfBooking, requestedBy: string | null = null): Promise<void> {
+        // Opened before the money moves, as the hotel and flight paths do. Golf recorded nothing
+        // at all until ADR-0004, so a refunded tee time was invisible to the back office.
+        const refundLogId = await openRefund({
+            bookingId:       booking.reference,
+            userId:          booking.userId,
+            product:         'golf',
+            refundType:      'full_refund',
+            requestedAmount: booking.total,
+            penaltyAmount:   0,
+            currency:        booking.currency,
+            reason:          requestedBy ? 'cancelled by the team' : 'cancelled by the customer',
+            requestedBy,
+        });
+
         try {
             await this.payments.refund(
                 booking.paymentIntentId!,
@@ -535,8 +558,18 @@ export class GolfBookingsService {
                 `golf-refund-${booking.id}`,
             );
         } catch (err) {
-            console.error(`[golf] could not refund ${booking.reference}:`, (err as Error)?.message);
+            const message = (err as Error)?.message ?? 'unknown error';
+            console.error(`[golf] could not refund ${booking.reference}:`, message);
+            if (refundLogId) await closeRefund(refundLogId, { issued: false, reason: message });
             throw new AppError(502, 'The refund could not be made. Please try again.', 'REFUND_FAILED');
+        }
+
+        if (refundLogId) {
+            await closeRefund(refundLogId, {
+                issued:         true,
+                approvedAmount: booking.total,
+                externalRef:    booking.paymentIntentId!,
+            });
         }
     }
 

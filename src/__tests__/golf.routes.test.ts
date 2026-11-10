@@ -435,7 +435,10 @@ describe('golf bookings', () => {
 
         bookings.cancelByTeam.mockResolvedValue({ ...BOOKING, status: 'cancelled', refundAmount: 210000 });
         expect((await call('POST', `/admin/golf/bookings/${REF}/cancel`, { role: 'admin' })).status).toBe(200);
-        expect(bookings.cancelByTeam).toHaveBeenCalledWith(REF);
+        // The admin's email goes with it, so the refund record names who decided (ADR-0004).
+        expect(bookings.cancelByTeam).toHaveBeenCalledWith(
+            REF, expect.any(Date), { email: 'admin@example.com' },
+        );
         expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'golf_booking_cancel', targetId: 'b-1' }));
 
         bookings.cancelByTeam.mockResolvedValue(null);

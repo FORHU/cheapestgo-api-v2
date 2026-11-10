@@ -13,6 +13,7 @@ import { resolveStayDates } from '@/lib/hotels/property';
 import { CITY_ALIASES } from '@/lib/cityAliases';
 import { DestinationsService } from '@/services/destinations.service';
 import { logger } from '@/lib/logger';
+import { attachDistance } from '@/lib/hotels/searchDistance';
 
 /**
  * How long a first pass must take before it is worth asking again.
@@ -562,6 +563,11 @@ export class HotelsController {
                 children:    Number(body.children) || 0,
                 // So the pins drawn are the pins inside the place that was asked for.
                 areaRung:    body.areaRung,
+                // Both rungs, because the catalog measures how far each pin is from the anchor
+                // and `areaRung` is only set for a sub-area. Forwarding one and not the other
+                // left every catalog hotel unmeasured on a plain city search while the supplier's
+                // were measured fine — 18 silent Machida and Ota pins, live, on 2026-11-09.
+                rung:        body.rung,
                 bbox:        body.bbox,
                 // And the coordinates, which this call never sent. Without them the catalog can
                 // only match the city by name, so a spelling the traveller did not use finds
@@ -651,7 +657,8 @@ export class HotelsController {
              * of more than one night, once `buildCityResults` began dividing at the source.
              */
             const stayNights = nightsBetween(body.checkin ?? body.checkIn, body.checkout ?? body.checkOut);
-            const tgxHotels: any[]   = attachStayTotals(Array.isArray(tgxResult.data) ? tgxResult.data : [], stayNights);
+            const tgxHotels: any[]   = attachDistance(
+                attachStayTotals(Array.isArray(tgxResult.data) ? tgxResult.data : [], stayNights), body);
             const tgxHotelIdSet      = new Set(tgxHotels.map((h: any) => h.hotelId || h.id));
             const newTgxHotels       = tgxHotels.filter((h: any) => !catalogIdSet.has(h.hotelId || h.id));
 
@@ -763,7 +770,8 @@ export class HotelsController {
                         return { data: [] as any[], allMappable: [] as any[], totalCount: 0, truncated: false };
                     });
 
-                const secondHotels: any[] = attachStayTotals(Array.isArray(second.data) ? second.data : [], stayNights);
+                const secondHotels: any[] = attachDistance(
+                    attachStayTotals(Array.isArray(second.data) ? second.data : [], stayNights), body);
                 const known = new Set([...tgxHotelIdSet, ...catalogIdSet]);
                 extraHotels = secondHotels.filter((h: any) => !known.has(h.hotelId || h.id));
                 console.log(`[stream] Second pass: ${secondHotels.length} hotels in ${Date.now() - t0}ms, ${extraHotels.length} of them new`);

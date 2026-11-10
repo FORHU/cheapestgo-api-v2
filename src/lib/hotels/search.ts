@@ -19,6 +19,7 @@ import { hotelLocationNames } from '@/lib/geo/hotelLocation';
 import { hotelCountry, isTerritory } from '@/lib/geo/territories';
 import type { HotelSearchParams, HotelSearchResult } from '@/types/hotels';
 import { staysUnderMaintenance } from '@/lib/maintenance';
+import { anchorRung, distanceToShow, haversineKm } from '@/lib/hotels/searchDistance';
 
 // ─── Country name → ISO lookup (shared by stream route and ETG fallback) ──────
 
@@ -51,15 +52,6 @@ function resolveIsoCode(raw?: string): string | null {
     if (!raw) return null;
     if (/^[A-Za-z]{2}$/.test(raw)) return raw.toUpperCase();
     return COUNTRY_NAME_TO_ISO[raw.toLowerCase()] ?? null;
-}
-
-// Haversine distance in km between two lat/lng points.
-function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
-    const R  = 6371;
-    const dL = ((lat2 - lat1) * Math.PI) / 180;
-    const dG = ((lng2 - lng1) * Math.PI) / 180;
-    const a  = Math.sin(dL / 2) ** 2 + Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dG / 2) ** 2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 // ─── Instant hotel catalog from hotel_content ─────────────────────────────────
@@ -204,9 +196,17 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
         }
 
         // When using radius search, cull to true circle (bounding box is rectangular).
-        let filtered = body.lat && body.lng
-            ? rows.filter((r: any) => haversineKm(body.lat!, body.lng!, Number(r.lat), Number(r.lng)) <= 50)
-            : rows;
+        //
+        // The distance is kept rather than thrown away with the predicate. It is the one thing
+        // the card never said — "Hachioji, Tokyo" and a price, with nothing to say it is 33 km
+        // from where the traveller searched (ADR-0051). Computed here because it is computed
+        // here already.
+        const anchored = Boolean(body.lat && body.lng);
+        const measured = rows.map((r: any) => ({
+            r,
+            km: anchored ? haversineKm(body.lat!, body.lng!, Number(r.lat), Number(r.lng)) : null,
+        }));
+        let filtered = (anchored ? measured.filter(m => m.km! <= 50) : measured);
 
         // A territory's border is a customs line, and it has to be enforced however the rows
         // were found. 50km from central Hong Kong is all of Shenzhen plus Dongguan and Zhuhai:
@@ -221,11 +221,14 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
         // cities. The border decides, not the name, and not whether a circle was drawn.
         if (isTerritory(countryCode)) {
             const own = countryCode.toUpperCase();
-            filtered = filtered.filter((r: any) =>
+            filtered = filtered.filter(({ r }: any) =>
                 hotelCountry(r.country, r.city, r.lat, r.lng).toUpperCase() === own);
         }
 
-        return filtered.map((r: any) => ({
+        // One rung for the whole result set, so every card is judged the same way.
+        const rung = anchorRung(body);
+
+        return filtered.map(({ r, km }: any) => ({
             hotelId:      r.hotel_id,
             id:           r.hotel_id,
             name:         r.name || r.hotel_id,
@@ -252,6 +255,9 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
             country:      hotelCountry(r.country, r.city, r.lat, r.lng),
             provider:     'travelgatex',
             priceLoading: true,
+            // Null unless it is far for this rung — see `distanceToShow`. Null is the common
+            // case and must read as "this one is central", never as a field that failed to load.
+            distanceKm:   distanceToShow(km, rung),
         }));
     } catch (e: any) {
         console.error('[instant-catalog] query failed:', e.message);

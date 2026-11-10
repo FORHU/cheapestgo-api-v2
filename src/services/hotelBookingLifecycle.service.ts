@@ -35,6 +35,7 @@ import {
     type BeginInput,
     type LifecycleGuest,
     type LifecycleRecord,
+    type TransitionResult,
 } from '@/repositories/hotelBookingLifecycle.repository';
 import {
     projectLegacyStatus,
@@ -369,19 +370,51 @@ export class HotelBookingLifecycleService {
         });
     }
 
+    /**
+     * The end of a cancellation, written into the lifecycle.
+     *
+     * Every transition here starts from `CANCEL_REQUESTED`, which `recordCancelStart` sets. A
+     * booking with no `hotel_bookings` row at all — one made before the lifecycle existed, or
+     * repaired by hand — matches nothing, and the cancellation completes with the money moved and
+     * no lifecycle record of it. That is the shape of the three gaps found on 2026-09-04.
+     *
+     * It is not promoted to an error: the customer has been refunded and failing here would undo
+     * nothing. But it is no longer silent, because silence is how it went unnoticed for a month.
+     * The refund itself is recorded separately in `refund_logs` either way (ADR-0004), so the
+     * money remains visible to the back office even when this does nothing.
+     */
     async recordCancelEnd(reference: string, legacyStatus: string, actor: LifecycleActor): Promise<void> {
         const from: HotelBookingStatus[] = ['CANCEL_REQUESTED'];
+
+        const warnIfIgnored = (result: TransitionResult, step: string) => {
+            if (result !== 'applied') {
+                console.warn(
+                    `[hotel-lifecycle] ${reference}: ${step} did not apply (${result}). The money has moved; `
+                    + `the lifecycle has no record of it. Check refund_logs for the refund itself.`,
+                );
+            }
+        };
+
         switch (legacyStatus) {
             case 'cancelled_refunded':
-                await this.repo.transition(reference, from, 'REFUND_PENDING', { actor, reason: 'refund issued' });
+                warnIfIgnored(
+                    await this.repo.transition(reference, from, 'REFUND_PENDING', { actor, reason: 'refund issued' }),
+                    'refund issued',
+                );
                 await this.repo.transition(reference, 'REFUND_PENDING', 'REFUNDED', { actor, reason: 'refund completed' });
                 return;
             case 'cancelled_refund_failed':
-                await this.repo.transition(reference, from, 'REFUND_PENDING', { actor, reason: 'refund attempted' });
+                warnIfIgnored(
+                    await this.repo.transition(reference, from, 'REFUND_PENDING', { actor, reason: 'refund attempted' }),
+                    'refund attempted',
+                );
                 await this.repo.transition(reference, 'REFUND_PENDING', 'REFUND_FAILED', { actor, reason: 'refund failed' });
                 return;
             default:
-                await this.repo.transition(reference, from, 'CANCELLED', { actor, reason: 'cancelled, nothing to refund' });
+                warnIfIgnored(
+                    await this.repo.transition(reference, from, 'CANCELLED', { actor, reason: 'cancelled, nothing to refund' }),
+                    'cancelled',
+                );
         }
     }
 

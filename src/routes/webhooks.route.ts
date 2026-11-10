@@ -271,7 +271,15 @@ router.post(
         // entirely. Only a *completed* one is a duplicate.
         try {
             await prisma.stripe_processed_events.create({
-                data: { event_id: event.id, event_type: event.type },
+                data: {
+                    event_id: event.id,
+                    event_type: event.type,
+                    // Pulled off the object so the row can be found by what support has in front
+                    // of them. Both optional — an event about neither still gets claimed.
+                    payment_intent_id: eventPaymentIntentId(event),
+                    booking_reference: eventBookingReference(event),
+                    last_received_at: new Date(),
+                },
             });
         } catch (err: any) {
             if (err?.code === 'P2002') {
@@ -285,6 +293,13 @@ router.post(
                     return res.json({ received: true });
                 }
                 logger.warn('[webhooks/stripe] Event was claimed but never completed — reprocessing', { id: event.id });
+                // Stripe retries the same id, so a count above one with no completion is the
+                // signature of an event failing over and over. Best effort: the count is a
+                // diagnosis, and losing it must not cost the event.
+                await prisma.stripe_processed_events.updateMany({
+                    where: { event_id: event.id },
+                    data:  { delivery_count: { increment: 1 }, last_received_at: new Date() },
+                }).catch(() => undefined);
             } else {
                 // A dedup failure must not cost the event: handling it twice is recoverable,
                 // dropping it is not.
@@ -426,3 +441,23 @@ router.post(
 );
 
 export default router;
+
+/**
+ * The payment this event is about, where Stripe's object carries one.
+ *
+ * Read defensively: the shape differs per event type, and an event we cannot attribute is still
+ * an event worth claiming. Returning null is a normal outcome, not a failure.
+ */
+function eventPaymentIntentId(event: { type: string; data?: { object?: any } }): string | null {
+    const o = event.data?.object ?? {};
+    if (typeof o.id === 'string' && o.id.startsWith('pi_')) return o.id;
+    if (typeof o.payment_intent === 'string') return o.payment_intent;
+    return null;
+}
+
+/** The booking reference, which this platform mints into PaymentIntent metadata at creation. */
+function eventBookingReference(event: { data?: { object?: any } }): string | null {
+    const o = event.data?.object ?? {};
+    const ref = o.metadata?.bookingReference;
+    return typeof ref === 'string' && ref ? ref : null;
+}

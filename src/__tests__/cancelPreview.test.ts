@@ -36,20 +36,26 @@ describe('buildCancelPreview', () => {
         });
     });
 
-    it('applies the tier in force and names the moment it escalates', () => {
+    /**
+     * The 1st is before every penalty starts, so the stay is still free to cancel and the date
+     * worth showing is when that stops. The engine used to charge the 5th's penalty here, on the
+     * reading that a deadline is a date to cancel *before*.
+     */
+    it('refunds in full before the first penalty starts, and names when it does', () => {
         const p = buildCancelPreview({ ...base, policy: TIERED });
 
-        expect(p.refund).toMatchObject({ amount: 132, type: 'partial_refund' });
-        expect(p.penalty.amount).toBe(132);
-        // 50% until the 5th, then the whole charge.
+        expect(p.refund).toMatchObject({ amount: 264, type: 'full_refund' });
+        expect(p.penalty.amount).toBe(0);
         expect(p.deadline).toBe('2026-11-05T10:00:00.000Z');
     });
 
     it('escalates as time passes, using the same clock the engine uses', () => {
+        // The 5th has passed, so its 50% is now in force; the whole charge follows on the 18th.
         const later = Date.parse('2026-11-06T00:00:00Z');
         const p = buildCancelPreview({ ...base, policy: TIERED, now: later });
 
-        expect(p.refund).toMatchObject({ amount: 0, type: 'no_refund' });
+        expect(p.refund).toMatchObject({ amount: 132, type: 'partial_refund' });
+        expect(p.penalty.amount).toBe(132);
         expect(p.deadline).toBe('2026-11-18T10:00:00.000Z');
     });
 

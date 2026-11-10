@@ -368,7 +368,7 @@ describe('booking status', () => {
 });
 
 describe('cancel preview', () => {
-    // Fifty per cent back until the 5th, then nothing; the same terms the real cancel will read.
+    // Free until the 5th, then fifty per cent, then nothing; the same terms the real cancel reads.
     const POLICY = {
         policyType: 'tiered' as const,
         freeCancelDeadline: null,
@@ -392,12 +392,14 @@ describe('cancel preview', () => {
     });
 
     it('shows the owner what they would get back, and until when', async () => {
+        // Booked on the 1st, before the 5th's penalty begins: still free, and the preview says
+        // when that ends rather than charging the penalty early.
         const out: any = await service.getCancelPreview(REF, USER, BOOKED_AT);
 
         expect(out.data).toMatchObject({
             reference: REF, cancellable: true,
-            refund:  { amount: 132, currency: 'USD', type: 'partial_refund' },
-            penalty: { amount: 132, currency: 'USD' },
+            refund:  { amount: 264, currency: 'USD', type: 'full_refund' },
+            penalty: { amount: 0, currency: 'USD' },
             paid:    { amount: 264, currency: 'USD' },
             deadline: '2026-11-05T10:00:00.000Z',
         });

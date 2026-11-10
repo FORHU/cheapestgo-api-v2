@@ -2,6 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
+// The shared refund record (ADR-0004). Mocked rather than left to hit prisma: these tests have
+// no database, and a swallowed write proves nothing about what was written.
+const refundLog = vi.hoisted(() => ({
+    openRefund:   vi.fn().mockResolvedValue('refund-log-1'),
+    closeRefund:  vi.fn().mockResolvedValue(undefined),
+    recordRefund: vi.fn().mockResolvedValue('refund-log-2'),
+}));
+vi.mock('@/lib/refundLog', () => refundLog);
+
 vi.mock('@/lib/flights/search', () => ({
     searchFlightsWithStatus: vi.fn(),
     searchFlights:      vi.fn(),
@@ -749,7 +758,7 @@ describe('FlightsService.cancelBooking()', () => {
                 payment_intent: PI_ID,
                 reason:         'requested_by_customer',
             }),
-            expect.objectContaining({ idempotencyKey: `refund-${BOOKING_ID}` }),
+            expect.objectContaining({ idempotencyKey: `flight-refund-${BOOKING_ID}-10250` }),
         );
         expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
         expect(result.status).toBe('refunded');
@@ -792,7 +801,7 @@ describe('FlightsService.syncSupplierCancellation()', () => {
         );
         expect(stripe.refunds.create).toHaveBeenCalledWith(
             expect.objectContaining({ payment_intent: PI_ID, amount: 10250 }),
-            { idempotencyKey: `refund-${BOOKING_ID}` },
+            { idempotencyKey: `flight-refund-${BOOKING_ID}-10250` },
         );
         expect(result).toMatchObject({ changed: true, status: 'refunded' });
     });
