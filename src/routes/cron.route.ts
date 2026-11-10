@@ -25,8 +25,7 @@ import { HotelBookingLifecycleService } from '@/services/hotelBookingLifecycle.s
 import { FlightBookingLifecycleService } from '@/services/flightBookingLifecycle.service';
 import { FlightsRepository } from '@/repositories/flights.repository';
 import { createNotification } from '@/lib/admin/notify';
-import { ticketNumbersFrom } from '@/lib/flights/duffelTickets';
-import { sendFlightConfirmationEmail } from '@/lib/email/flightConfirmation';
+import { pollPendingTickets } from '@/services/flightTicketPoll';
 import { makeStrictConverter } from '@/lib/payments/convertStrict';
 import { ExchangeRatesService } from '@/services/exchange-rates.service';
 import { fromStripeAmount } from '@/lib/pricing';
@@ -506,63 +505,8 @@ router.get('/poll-pending-tickets', async (_req: Request, res: Response, next: N
             return res.json({ ok: true, skipped: true, reason: 'DUFFEL_ACCESS_TOKEN not configured' });
         }
 
-        // Find Duffel bookings with status 'booked' whose ticket_time_limit is still in future
-        // (or null — no TTL means ticketing may be in progress)
-        const pending = await prisma.$queryRaw<any[]>`
-            SELECT id, provider_order_id, user_id
-            FROM flight_bookings
-            WHERE provider = 'duffel'
-              AND status = 'booked'
-              AND provider_order_id IS NOT NULL
-              AND (ticket_time_limit IS NULL OR ticket_time_limit > NOW())
-            LIMIT 50
-        `;
-
-        let ticketed = 0;
-        let unchanged = 0;
-        const errs: string[] = [];
-
-        for (const fb of pending) {
-            try {
-                const res2 = await fetch(
-                    `https://api.duffel.com/air/orders/${fb.provider_order_id}`,
-                    { headers: duffelHeaders(), signal: AbortSignal.timeout(8000) }
-                );
-                if (!res2.ok) continue;
-                const data = await res2.json() as any;
-                const isTicketed = (data?.data?.metadata?.payment_status === 'fully_paid')
-                    || (Array.isArray(data?.data?.documents) && data.data.documents.length > 0);
-
-                if (isTicketed) {
-                    // The numbers, not just the status. An e-ticket number is what an airline
-                    // desk asks for, and this used to mark a booking ticketed while leaving
-                    // the column empty — the same field the webhook path fills.
-                    const tickets = ticketNumbersFrom(data?.data);
-                    await prisma.$executeRaw`
-                        UPDATE flight_bookings
-                        SET status         = 'ticketed',
-                            ticket_numbers = COALESCE(${tickets.length ? JSON.stringify(tickets) : null}::jsonb, ticket_numbers),
-                            updated_at     = NOW()
-                        WHERE id = ${fb.id}::uuid
-                    `;
-                    ticketed++;
-                    console.log(`[cron/poll-pending-tickets] Ticketed flight booking ${fb.id}`);
-
-                    // The traveller was told the ticket was on its way. This is the third
-                    // route by which it can arrive — after the webhook and the booking call —
-                    // and the only one that catches a webhook we never received. Suppressed
-                    // by email_logs when one of the others got there first.
-                    await sendFlightConfirmationEmail(fb.id)
-                        .catch((e: any) => console.error(`[cron/poll-pending-tickets] Ticket email failed for ${fb.id}:`, e?.message));
-                } else {
-                    unchanged++;
-                }
-            } catch (err: any) {
-                errs.push(`fb ${fb.id}: ${err.message}`);
-            }
-        }
-
-        return res.json({ ok: true, ticketed, unchanged, errors: errs.length ? errs : undefined });
+        const { ticketed, unchanged, errors } = await pollPendingTickets();
+        return res.json({ ok: true, ticketed, unchanged, errors: errors.length ? errors : undefined });
     } catch (err) {
         next(err);
     }

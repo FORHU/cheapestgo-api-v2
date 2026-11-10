@@ -61,6 +61,32 @@ describe('revalidateFlight', () => {
             .resolves.toMatchObject({ success: true, priceChanged: false });
     });
 
+    it('says the offer is gone when the airline no longer has it, so the results can be searched again', async () => {
+        // The price check and the offer read both answer "no such offer": the read is the one the
+        // checkout and `book` call a fare gone on, so the two cannot disagree about it.
+        const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ errors: [{ code: 'not_found' }] }), { status: 404 }));
+        vi.stubGlobal('fetch', fetchSpy);
+
+        await expect(revalidateFlight({ provider: 'duffel', flightPayload: offer(250) }))
+            .resolves.toMatchObject({ success: true, seatsAvailable: false, priceChanged: false, offerExpired: true });
+        expect(fetchSpy.mock.calls.map((c) => String((c as unknown[])[0]))).toEqual([
+            'https://api.duffel.com/air/offers/off_1/actions/price',
+            'https://api.duffel.com/air/offers/off_1',
+        ]);
+    });
+
+    it("does not call an offer gone on the price check's word alone", async () => {
+        // A 404 from the price check with the offer still there to read: the booking goes ahead,
+        // and the order path says what is wrong, if anything is.
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => (url.endsWith('/actions/price')
+            ? new Response('{}', { status: 404 })
+            : new Response(JSON.stringify({ data: { id: 'off_1', total_amount: '250.00' } }), { status: 200 }))));
+
+        const result = await revalidateFlight({ provider: 'duffel', flightPayload: offer(250) });
+        expect(result).toMatchObject({ success: true, priceChanged: false });
+        expect(result.offerExpired).toBeUndefined();
+    });
+
     it('passes an offer with no id rather than refusing it', async () => {
         const fetchSpy = vi.fn();
         vi.stubGlobal('fetch', fetchSpy);

@@ -92,3 +92,17 @@ describe('POST /flight-supplier — an order cancelled at Duffel', () => {
         expect(syncSupplierCancellation).not.toHaveBeenCalled();
     });
 });
+
+describe('POST /flight-supplier — an order event before the ticket is out', () => {
+    it('leaves a booking waiting for its ticket as it is, so the ticket poll still checks it', async () => {
+        // `order.created` lands seconds after the sale is written as `awaiting_ticket`. Moving it to
+        // `confirmed` took it out of poll-pending-tickets (`awaiting_ticket`, `booked`) for good.
+        const { ticketNumbersFrom } = await import('@/lib/flights/duffelTickets');
+        vi.mocked(ticketNumbersFrom).mockReturnValueOnce([]);
+        getDuffelOrder.mockResolvedValue({ id: 'ord_1', cancelled_at: null, documents: [] });
+
+        await deliver('order.created', { id: 'ord_1' });
+
+        expect(executeRaw).not.toHaveBeenCalled();
+    });
+});

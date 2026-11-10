@@ -12,6 +12,7 @@
 
 import { config } from '@/config';
 import { getFlightPriceTolerance } from '@/lib/pricing';
+import { getDuffelOffer } from '@/lib/flights/duffel';
 
 export interface RevalidateResult {
     success: boolean;
@@ -23,6 +24,9 @@ export interface RevalidateResult {
     error?: string;
     /** The input itself was wrong, so the caller can answer 400 rather than 200. */
     badRequest?: boolean;
+    /** The airline no longer has the offer: nothing can book it, and the results around it are
+     *  as old as it is. The results page searches again. */
+    offerExpired?: boolean;
 }
 
 /**
@@ -75,10 +79,16 @@ export async function revalidateFlight(input: { provider?: string; flightPayload
         });
 
         if (!res.ok) {
-            // 404 is the offer having expired, which the booking path recovers from by
-            // re-quoting; anything else is Duffel's problem, not the traveller's. Both
-            // soft-pass so the booking can surface the real error in its own words.
             console.warn(`[revalidate] Duffel price action ${res.status} for ${offerId}`);
+            // A 404 is usually the offer having expired. Said so only once the offer read agrees —
+            // the read the checkout and `book` call a fare gone on, so the results page and the
+            // checkout cannot disagree about it — and a "gone" here sends the traveller back to
+            // a new search, which a wrong one would do on every pick.
+            if ((res.status === 404 || res.status === 410) && await offerIsGone(offerId)) {
+                return { success: true, seatsAvailable: false, priceChanged: false, offerExpired: true };
+            }
+            // Anything else is Duffel's problem, not the traveller's: soft-pass, so the booking
+            // can surface the real error in its own words.
             return { success: true, seatsAvailable: true, priceChanged: false };
         }
         priceData = await res.json();
@@ -114,4 +124,14 @@ export async function revalidateFlight(input: { provider?: string; flightPayload
             policySource:          'duffel' as const,
         },
     };
+}
+
+/** Does Duffel no longer have this offer? No when it cannot say: a failed read blocks nothing. */
+async function offerIsGone(offerId: string): Promise<boolean> {
+    try {
+        return (await getDuffelOffer(offerId)) === null;
+    } catch (err: any) {
+        console.warn(`[revalidate] offer ${offerId} could not be read: ${err?.message}`);
+        return false;
+    }
 }

@@ -657,29 +657,40 @@ export class FlightBookingLifecycleService {
             // No PaymentIntent: `book` wrote the session and then could not open the payment.
             // There is nothing to release, only a record to close.
             if (record.paymentIntentId) {
-                const voided = await this.voidAuthorisation(record.paymentIntentId);
-                if (voided === 'captured') {
+                let status: string;
+                try {
+                    status = (await stripe.paymentIntents.retrieve(record.paymentIntentId)).status;
+                } catch (err: any) {
+                    // Left as it was: the next sweep reads it again.
+                    report.anomalies.push({ sessionId: record.sessionId, reason: `could not read the payment: ${err?.message ?? err}` });
+                    continue;
+                }
+                if (status === 'succeeded') {
                     // Paid, never ordered, and the airline was never asked. Not ours to unwind.
                     report.anomalies.push({ sessionId: record.sessionId, reason: 'payment was captured but the airline was never asked' });
                     continue;
                 }
-                if (voided === 'failed') {
-                    report.anomalies.push({ sessionId: record.sessionId, reason: 'could not release the authorisation' });
-                    continue;
-                }
             }
 
+            // Closed before the payment is released, never after — the order `book` keeps when it
+            // releases an earlier attempt. A void first could land under a claim taken in between
+            // (a late confirm, a retried webhook), and the airline would order on a hold that no
+            // longer exists. A close that is not applied was such a claim: nothing is released.
             const moved = await this.repo.transition(record.sessionId, ['PAYMENT_PENDING', 'PAYMENT_AUTHORIZED'], 'EXPIRED', {
                 actor: 'sweeper',
                 reason: !record.paymentIntentId ? 'no payment was ever opened'
                     : record.status === 'PAYMENT_AUTHORIZED' ? 'authorised and never completed' : 'payment never started',
                 patch: { failureCode: 'ABANDONED' },
             });
-            if (moved === 'applied') {
-                await this.sessions.setSessionStatus(record.sessionId, 'expired')
-                    .catch((err: any) => console.error(`[flight-lifecycle] could not mark ${record.sessionId} expired: ${err?.message}`));
-                report.expired.push(record.sessionId);
+            if (moved !== 'applied') continue;
+
+            if (record.paymentIntentId && (await this.voidAuthorisation(record.paymentIntentId)) === 'failed') {
+                // Closed, so nothing can order on it; the hold is a person's to release, or lapses.
+                report.anomalies.push({ sessionId: record.sessionId, reason: 'closed, but could not release the authorisation' });
             }
+            await this.sessions.setSessionStatus(record.sessionId, 'expired')
+                .catch((err: any) => console.error(`[flight-lifecycle] could not mark ${record.sessionId} expired: ${err?.message}`));
+            report.expired.push(record.sessionId);
         }
 
         const stuck = await this.repo.findNeedingAttention(new Date(now.getTime() - ATTENTION_AFTER_MS), limit);
