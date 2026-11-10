@@ -72,6 +72,18 @@ const LIVE_STATUSES = ['confirmed', 'ticketed', 'booked', 'pnr_created', 'awaiti
  */
 const SUPPLIER_SETTLEABLE = [...LIVE_STATUSES, 'cancel_failed'];
 
+/**
+ * What the airline charged for a booking's order, in the fare's currency — the figure its
+ * cancellation refund is a share of. `total_price` is not it: the sale writes what the
+ * traveller paid there, in the card's currency with our fee on top, so a USD 100 refund on a
+ * PHP 5,945 booking read as 1.7% refunded. A booking written before `supplier_cost` was
+ * recorded falls back to it.
+ */
+function airlineCharge(booking: { supplier_cost?: unknown; total_price?: unknown }): number {
+    const cost = Number(booking.supplier_cost ?? 0);
+    return cost > 0 ? cost : Number(booking.total_price ?? 0);
+}
+
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export class FlightsService {
@@ -857,7 +869,7 @@ export class FlightsService {
 
         const quote = await createDuffelCancellationQuote(orderId);
         const duffelRefundUsd = Number(quote.refund_amount) || 0;
-        const duffelSupplierPrice = Number(booking.total_price ?? 0);
+        const duffelSupplierPrice = airlineCharge(booking);
         const cancellationId: string = quote.id;
 
         const refundRatio = duffelSupplierPrice > 0 ? Math.min(1, duffelRefundUsd / duffelSupplierPrice) : 1;
@@ -951,6 +963,8 @@ export class FlightsService {
         let requiresManualCancellation = false;
         /** The order, when Duffel says it was cancelled before this request reached it. */
         let cancelledAtDuffelOrderId: string | undefined;
+        /** No order at the supplier at all — so no flight, and the traveller is refunded in full. */
+        let providerMissing = false;
 
         if (booking.status === 'refund_failed') {
             supplierSuccess = true;
@@ -965,11 +979,12 @@ export class FlightsService {
                     refundCurrency = result.currency ?? 'USD';
                     supplierError = result.error;
                     supplierCancellationId = result.cancellationId;
+                    providerMissing = /not found|does not exist|could not find/i.test(result.error ?? '');
                 } else {
                     const result = await this._cancelDuffel(booking, preQuotedCancellationId);
                     supplierSuccess = result.success;
-                    refundAmount = Math.min(result.refundAmount ?? 0, Number(booking.total_price));
-                    penaltyAmount = result.penaltyAmount ?? Math.max(0, Number(booking.total_price) - (result.refundAmount ?? 0));
+                    refundAmount = Math.min(result.refundAmount ?? 0, airlineCharge(booking));
+                    penaltyAmount = result.penaltyAmount ?? Math.max(0, airlineCharge(booking) - (result.refundAmount ?? 0));
                     refundCurrency = result.currency ?? 'USD';
                     supplierError = result.error;
                     supplierCancellationId = result.cancellationId;
@@ -977,6 +992,7 @@ export class FlightsService {
                         || /tkt-in-process|ticketed status|cancellation denied/i.test(supplierError ?? '');
                     refundTo = result.refundTo;
                     cancelledAtDuffelOrderId = result.cancelledAtDuffelOrderId;
+                    providerMissing = result.providerMissing === true;
                 }
             } catch (supplierErr: any) {
                 supplierError = supplierErr.message;
@@ -998,7 +1014,10 @@ export class FlightsService {
         }
 
         if (!supplierSuccess) {
-            const isProviderMissing = /not found|does not exist|could not find/i.test(supplierError ?? '');
+            // Said by the supplier call, never guessed from an error's wording: a lapsed quote's
+            // confirm says "does not exist" too, and read that way the whole fare was refunded on a
+            // ticket the traveller still held.
+            const isProviderMissing = providerMissing;
 
             const failLog = {
                 at: new Date().toISOString(),
@@ -1115,7 +1134,7 @@ export class FlightsService {
             return { changed: true, status: 'cancelled' };
         }
 
-        const supplierPrice = Number(booking.total_price ?? 0);
+        const supplierPrice = airlineCharge(booking);
         const refundAmount = Math.min(Number(cancellation.refund_amount) || 0, supplierPrice);
         const result = await this.settleCancellation(booking, {
             paymentIntentId:        booking.payment_intent_id ?? null,
@@ -1279,19 +1298,10 @@ export class FlightsService {
                         cancellationLog: [...args.log, cancelLog, refundPendingLog, { at: new Date().toISOString(), oldStatus: 'refund_pending', newStatus: 'refunded', note: 'PI cancelled (uncaptured)' }],
                     });
                 } else {
-                    const supplierCurrency = refundCurrency.toLowerCase();
-                    let refundAmountCents: number;
-
-                    if (supplierCurrency === piCurrency) {
-                        refundAmountCents = penaltyAmount > 0
-                            ? Math.round(piAmount * (refundAmount / (refundAmount + penaltyAmount)))
-                            : piAmount;
-                    } else {
-                        refundAmountCents = penaltyAmount > 0
-                            ? Math.round(piAmount * (refundAmount / (refundAmount + penaltyAmount)))
-                            : piAmount;
-                    }
-                    refundAmountCents = Math.min(refundAmountCents, piAmount);
+                    // The airline's refund as a share of its charge — both in the fare's currency —
+                    // applied to what the card paid, so the card's currency never has to match.
+                    const share = penaltyAmount > 0 ? refundAmount / (refundAmount + penaltyAmount) : 1;
+                    const refundAmountCents = Math.min(Math.round(piAmount * share), piAmount);
 
                     const stripeRefund = await stripe.refunds.create({
                         payment_intent: effectivePaymentIntentId,
@@ -1522,7 +1532,7 @@ export class FlightsService {
         if (!orderId) {
             const isSandbox = duffelToken.startsWith('duffel_test_');
             if (isSandbox) return { success: true, refundAmount: 0, penaltyAmount: 0, currency: 'USD' };
-            return { success: false, error: 'Duffel order ID not found. Cannot cancel.' };
+            return { success: false, providerMissing: true, error: 'Duffel order ID not found. Cannot cancel.' };
         }
 
         try {
@@ -1531,7 +1541,10 @@ export class FlightsService {
                 order = await getDuffelOrder(orderId);
             } catch (err: any) {
                 if (err.status === 404) {
-                    return { success: true, refundAmount: 0, penaltyAmount: Number(booking.total_price ?? 0), currency: booking.currency ?? 'USD', providerMissing: true, error: 'Supplier order not found' };
+                    // No order, so no flight: settled as the supplier missing — a full refund.
+                    // This answered success with nothing refunded, so the full-refund branch it
+                    // flagged itself for was never reached.
+                    return { success: false, providerMissing: true, error: 'Supplier order not found' };
                 }
                 return { success: false, error: err.message };
             }
@@ -1545,8 +1558,18 @@ export class FlightsService {
                 return { success: false, requiresManualCancellation: true, error: 'Booking cannot be cancelled via API. Contact support for manual cancellation.' };
             }
 
+            // The quoted id comes from the browser, so it is confirmed only if it is one of this
+            // order's cancellations. Confirmed as sent, another order's quote would cancel that
+            // flight and refund this booking for a cancellation it never had.
+            const quotedHere = preQuotedCancellationId
+                ? (await listDuffelOrderCancellations(orderId)).some((c: any) => c?.id === preQuotedCancellationId)
+                : false;
+            if (preQuotedCancellationId && !quotedHere) {
+                console.warn(`[cancel] Quoted cancellation ${preQuotedCancellationId} is not one of order ${orderId}'s — quoting afresh`);
+            }
+
             let cancellationId: string;
-            if (preQuotedCancellationId) {
+            if (preQuotedCancellationId && quotedHere) {
                 cancellationId = preQuotedCancellationId;
             } else {
                 const quote = await createDuffelCancellationQuote(orderId);
@@ -1561,7 +1584,7 @@ export class FlightsService {
             return {
                 success: true,
                 refundAmount,
-                penaltyAmount: Math.max(0, Number(booking.total_price ?? 0) - refundAmount),
+                penaltyAmount: Math.max(0, airlineCharge(booking) - refundAmount),
                 currency: refundCurrency,
                 cancellationId,
                 refundTo,

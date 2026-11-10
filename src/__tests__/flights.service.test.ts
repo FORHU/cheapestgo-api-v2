@@ -1031,103 +1031,168 @@ describe('FlightsService.offerRefresh()', () => {
     });
 });
 
-
-// ─── The flight refund record, and the key that guards it ────────────────────
+// ─── Refunds, from the booking as the sale is written ─────────────────────────
 //
-// ADR-0004. Flights wrote their refunds into a JSON blob on the booking row, which the payments
-// back office cannot read, and keyed Stripe on the booking id alone, which meant a corrected
-// amount silently replayed the first refund and returned the old figure while reporting the new.
+// `completeDuffelBooking` writes what the traveller PAID — in the currency the card was
+// charged in, service fee included — into `total_price` (and `charged_price`), and the
+// airline's own charge for the order into `supplier_cost`, in the fare's currency. A
+// cancellation's refund is the airline's refund as a share of what the airline charged,
+// applied to what the traveller paid: both halves of that share are in the fare's currency,
+// whatever the card was charged in.
 
-describe('the flight refund record', () => {
-    const ORDER = 'ord_test_1';
+describe('the traveller\'s refund, from a booking as the sale writes it', () => {
+    const ORDER_ID = 'ord-1';
 
-    const settled = (refundAmount: string) => {
-        const repo = (service as any).repo;
-        repo.getFlightBookingByOrderId.mockResolvedValue({
-            ...MOCK_BOOKING, status: 'ticketed', user_id: 'the-traveller',
-        });
-        vi.mocked(getDuffelOrder).mockResolvedValue({ id: ORDER, cancelled_at: new Date().toISOString() } as any);
-        vi.mocked(listDuffelOrderCancellations).mockResolvedValue([{
-            id: 'can_1', confirmed_at: new Date().toISOString(),
-            refund_amount: refundAmount, refund_currency: 'USD', refund_to: 'original_form_of_payment',
-        }] as any);
-        return repo;
+    /** Fare USD 100.00, charged to the card as PHP 5,945.00 (fee included). */
+    const pesoBooking = {
+        ...MOCK_BOOKING, status: 'ticketed',
+        total_price: '5945.00', charged_price: '5945.00', supplier_cost: '100.00', payment_currency: null,
     };
+    const pesoPayment = { status: 'succeeded', amount: 594500, currency: 'php' };
+
+    function cancelledAtDuffel(refund: string, currency = 'USD') {
+        vi.mocked(getDuffelOrder).mockResolvedValue({ id: ORDER_ID, cancelled_at: '2026-11-06T10:00:00Z', available_actions: [] } as any);
+        vi.mocked(listDuffelOrderCancellations).mockResolvedValue([{
+            id: 'ore_dash', order_id: ORDER_ID, refund_amount: refund, refund_currency: currency,
+            refund_to: 'balance', confirmed_at: '2026-11-06T10:00:00Z',
+        }] as any);
+    }
 
     beforeEach(() => {
+        vi.mocked(stripe.refunds.create).mockResolvedValue({ status: 'succeeded', id: 're_1' } as any);
+    });
+
+    it('gives back everything paid, fee included, when the airline refunds its whole charge', async () => {
+        (service as any).repo.getFlightBookingByOrderId.mockResolvedValue({
+            ...MOCK_BOOKING, status: 'ticketed', total_price: '102.50', charged_price: '102.50', supplier_cost: '100.00',
+        });
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 10250, currency: 'usd' } as any);
+        cancelledAtDuffel('100.00');
+
+        await service.syncSupplierCancellation(ORDER_ID);
+
+        expect(stripe.refunds.create).toHaveBeenCalledWith(expect.objectContaining({ amount: 10250 }), expect.anything());
+    });
+
+    it('refunds a card charged in pesos the share the airline refunded in dollars', async () => {
+        (service as any).repo.getFlightBookingByOrderId.mockResolvedValue(pesoBooking);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue(pesoPayment as any);
+        cancelledAtDuffel('60.00'); // of the airline's USD 100.00
+
+        await service.syncSupplierCancellation(ORDER_ID);
+
+        expect(stripe.refunds.create).toHaveBeenCalledWith(expect.objectContaining({ amount: 356700 }), expect.anything());
+    });
+
+    it('keeps the airline\'s penalty when the fare is in a currency of larger numbers than the card\'s', async () => {
+        (service as any).repo.getFlightBookingByOrderId.mockResolvedValue({
+            ...MOCK_BOOKING, status: 'ticketed', total_price: '102.50', charged_price: '102.50', supplier_cost: '15000',
+        });
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 10250, currency: 'usd' } as any);
+        cancelledAtDuffel('5000', 'JPY'); // a third of the airline's JPY 15,000
+
+        await service.syncSupplierCancellation(ORDER_ID);
+
+        expect(stripe.refunds.create).toHaveBeenCalledWith(expect.objectContaining({ amount: 3417 }), expect.anything());
+    });
+
+    it('quotes a peso traveller the share the airline would refund, in pesos', async () => {
+        (service as any).repo.getFlightBookingById.mockResolvedValue(pesoBooking);
+        vi.mocked(getDuffelOrder).mockResolvedValue({ id: ORDER_ID, cancelled_at: null, available_actions: ['cancel'] } as any);
+        vi.mocked(createDuffelCancellationQuote).mockResolvedValue({ id: 'ore_q', refund_amount: '60.00', refund_currency: 'USD' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue(pesoPayment as any);
+
+        const quote = await service.cancelQuote(BOOKING_ID, USER_ID);
+
+        expect(quote).toMatchObject({ success: true, refundAmount: 3567, refundCurrency: 'PHP' });
+    });
+
+    it('refunds a peso traveller who cancels from the page the share the airline refunded', async () => {
+        (service as any).repo.getFlightBookingById.mockResolvedValue(pesoBooking);
+        vi.mocked(getDuffelOrder).mockResolvedValue({ id: ORDER_ID, cancelled_at: null, available_actions: ['cancel'] } as any);
+        vi.mocked(createDuffelCancellationQuote).mockResolvedValue({ id: 'ore_q' } as any);
+        vi.mocked(confirmDuffelCancellation).mockResolvedValue({ refund_amount: '60.00', refund_currency: 'USD' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue(pesoPayment as any);
+
+        await service.cancelBooking(BOOKING_ID, USER_ID);
+
+        expect(stripe.refunds.create).toHaveBeenCalledWith(expect.objectContaining({ amount: 356700 }), expect.anything());
+    });
+
+    it('falls back to the paid price for an older booking that never recorded the airline\'s charge', async () => {
+        (service as any).repo.getFlightBookingByOrderId.mockResolvedValue({
+            ...MOCK_BOOKING, status: 'ticketed', total_price: '100.00', supplier_cost: null,
+        });
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 10000, currency: 'usd' } as any);
+        cancelledAtDuffel('100.00');
+
+        await service.syncSupplierCancellation(ORDER_ID);
+
+        expect(stripe.refunds.create).toHaveBeenCalledWith(expect.objectContaining({ amount: 10000 }), expect.anything());
+    });
+});
+
+// ─── The quote the page cancels with ──────────────────────────────────────────
+
+describe('cancelling with the cancellation the page was quoted', () => {
+    beforeEach(() => {
+        (service as any).repo.getFlightBookingById.mockResolvedValue(MOCK_BOOKING);
+        mockDuffelCancelFlow();
         vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 10250, currency: 'usd' } as any);
         vi.mocked(stripe.refunds.create).mockResolvedValue({ status: 'succeeded', id: 're_1' } as any);
     });
 
-    it('opens a record against the traveller before Stripe is asked', async () => {
-        settled('100.00');
+    it('confirms the quoted cancellation when it is this booking\'s order\'s', async () => {
+        vi.mocked(listDuffelOrderCancellations).mockResolvedValue([{ id: 'ore_mine', order_id: 'ord-1' }] as any);
 
-        await service.syncSupplierCancellation(ORDER);
+        await service.cancelBooking(BOOKING_ID, USER_ID, 'ore_mine');
 
-        expect(refundLog.openRefund).toHaveBeenCalledWith(expect.objectContaining({
-            bookingId: BOOKING_ID,
-            userId:    'the-traveller',
-            product:   'flight',
-        }));
+        expect(confirmDuffelCancellation).toHaveBeenCalledWith('ore_mine');
+        expect(createDuffelCancellationQuote).not.toHaveBeenCalled();
     });
 
-    it('calls a refund with a penalty partial, and one without full', async () => {
-        settled('60.00'); // of a 100.00 fare
-        await service.syncSupplierCancellation(ORDER);
-        expect(refundLog.openRefund).toHaveBeenCalledWith(expect.objectContaining({ refundType: 'partial_refund' }));
+    it('never confirms a cancellation of some other order, whatever id the request carries', async () => {
+        // The id comes from the browser. Confirmed as sent, another traveller's quote would cancel
+        // their flight — and refund this booking for a cancellation it never had.
+        vi.mocked(listDuffelOrderCancellations).mockResolvedValue([{ id: 'ore_mine', order_id: 'ord-1' }] as any);
 
-        vi.mocked(refundLog.openRefund).mockClear();
-        settled('100.00');
-        await service.syncSupplierCancellation(ORDER);
-        expect(refundLog.openRefund).toHaveBeenCalledWith(expect.objectContaining({ refundType: 'full_refund' }));
-    });
+        await service.cancelBooking(BOOKING_ID, USER_ID, 'ore_someone_else');
 
-    it('closes the record as processed when Stripe took the refund', async () => {
-        settled('100.00');
-
-        await service.syncSupplierCancellation(ORDER);
-
-        expect(refundLog.closeRefund).toHaveBeenCalledWith('refund-log-1', expect.objectContaining({ issued: true }));
-    });
-
-    /** The row must never read processed when the customer has not been paid. */
-    it('closes the record as failed, with the reason, when Stripe refused', async () => {
-        settled('100.00');
-        vi.mocked(stripe.refunds.create).mockRejectedValue(new Error('charge_already_refunded'));
-
-        await service.syncSupplierCancellation(ORDER);
-
-        expect(refundLog.closeRefund).toHaveBeenCalledWith('refund-log-1', {
-            issued: false, reason: 'charge_already_refunded',
-        });
-    });
-
-    /**
-     * The bug the key fixes. Two cancellations of the same booking for different amounts must
-     * reach Stripe as two distinct requests; sharing a key returns the first refund's amount
-     * while the caller reports the second.
-     */
-    it('keys Stripe on the amount, so a corrected figure is a new refund', async () => {
-        settled('60.00');
-        await service.syncSupplierCancellation(ORDER);
-        const first = vi.mocked(stripe.refunds.create).mock.calls[0][1];
-
-        vi.mocked(stripe.refunds.create).mockClear();
-        settled('100.00');
-        await service.syncSupplierCancellation(ORDER);
-        const second = vi.mocked(stripe.refunds.create).mock.calls[0][1];
-
-        expect((first as any).idempotencyKey).not.toBe((second as any).idempotencyKey);
-        expect((first as any).idempotencyKey).toContain(BOOKING_ID);
-    });
-
-    /** A fare that returns nothing is not a refund, and should not leave a record saying it was. */
-    it('opens no record when the supplier returned nothing', async () => {
-        settled('0.00');
-
-        await service.syncSupplierCancellation(ORDER);
-
-        expect(refundLog.openRefund).not.toHaveBeenCalled();
+        expect(confirmDuffelCancellation).not.toHaveBeenCalledWith('ore_someone_else');
+        expect(confirmDuffelCancellation).toHaveBeenCalledWith('q1'); // a fresh quote for this order
     });
 });
 
+// ─── An order Duffel does not have ────────────────────────────────────────────
+
+describe('cancelling a flight whose order Duffel does not have', () => {
+    beforeEach(() => {
+        (service as any).repo.getFlightBookingById.mockResolvedValue(MOCK_BOOKING);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 10250, currency: 'usd' } as any);
+        vi.mocked(stripe.refunds.create).mockResolvedValue({ status: 'succeeded', id: 're_1' } as any);
+    });
+
+    it('refunds the traveller in full when Duffel has no such order: there is no flight', async () => {
+        vi.mocked(getDuffelOrder).mockRejectedValue(Object.assign(new Error('Not found'), { status: 404 }));
+
+        const result = await service.cancelBooking(BOOKING_ID, USER_ID);
+
+        expect(stripe.refunds.create).toHaveBeenCalledWith(
+            expect.objectContaining({ payment_intent: PI_ID, metadata: expect.objectContaining({ note: 'provider_missing_full_refund' }) }),
+            expect.anything(),
+        );
+        expect(result).toMatchObject({ status: 'refunded', providerMissing: true });
+    });
+
+    it('refunds nothing when only the confirm fails, whatever its message says — the order is still live', async () => {
+        // A quote that lapsed answers with words like these. Read as "the order is gone", it
+        // refunded the whole fare on a ticket the traveller still held.
+        mockDuffelCancelFlow();
+        vi.mocked(confirmDuffelCancellation).mockRejectedValue(new Error('The resource you are trying to access does not exist'));
+
+        const result = await service.cancelBooking(BOOKING_ID, USER_ID);
+
+        expect(stripe.refunds.create).not.toHaveBeenCalled();
+        expect(result).toMatchObject({ status: 'cancel_failed' });
+    });
+});

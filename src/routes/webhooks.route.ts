@@ -132,37 +132,43 @@ router.post(
                     // `document_number`, which Duffel does not send, so an order with documents
                     // was marked ticketed with `[null]` recorded against it.
                     const tickets = ticketNumbersFrom(order);
-                    const newStatus = tickets.length > 0 ? 'ticketed' : 'confirmed';
-                    const ticketNumbers = tickets.length > 0 ? JSON.stringify(tickets) : null;
+
+                    // No ticket yet: nothing to record. This used to write `confirmed`, and
+                    // `order.created` lands seconds after the sale is written as
+                    // `awaiting_ticket` — which took the booking out of poll-pending-tickets
+                    // (`awaiting_ticket`, `booked`), the one route that catches a ticket whose
+                    // webhook never arrives.
+                    if (tickets.length === 0) {
+                        logger.info('[webhooks/duffel] Order has no ticket yet — booking left as it is', { orderId });
+                        break;
+                    }
 
                     // Only a flight still going ahead: one mid-cancel or cancelled here keeps
                     // that status, whatever the order says about its tickets.
                     await prisma.$executeRaw`
                         UPDATE flight_bookings
                         SET
-                            status         = ${newStatus},
-                            ticket_numbers = ${ticketNumbers}::jsonb,
+                            status         = 'ticketed',
+                            ticket_numbers = ${JSON.stringify(tickets)}::jsonb,
                             updated_at     = NOW()
                         WHERE provider_order_id = ${orderId}
                           AND status IN ('confirmed', 'ticketed', 'booked', 'pnr_created', 'awaiting_ticket')
                     `;
 
-                    logger.info('[webhooks/duffel] Order status synced', { orderId, newStatus });
+                    logger.info('[webhooks/duffel] Order ticketed', { orderId });
 
                     // The first email told the traveller the ticket was on its way. This is
                     // where it arrives — without this, that promise was never kept, and a
                     // traveller holding an 'awaiting ticket' message had no way to learn
                     // their e-ticket numbers short of opening the site. Suppressed by
                     // email_logs if this booking was already ticketed when it was made.
-                    if (newStatus === 'ticketed') {
-                        const ticketedBooking = await prisma.flight_bookings.findFirst({
-                            where:  { provider_order_id: orderId },
-                            select: { id: true },
-                        }).catch(() => null);
-                        if (ticketedBooking) {
-                            await sendFlightConfirmationEmail(ticketedBooking.id)
-                                .catch((err: any) => logger.error('[webhooks/duffel] Ticket email failed', { orderId, error: err?.message }));
-                        }
+                    const ticketedBooking = await prisma.flight_bookings.findFirst({
+                        where:  { provider_order_id: orderId },
+                        select: { id: true },
+                    }).catch(() => null);
+                    if (ticketedBooking) {
+                        await sendFlightConfirmationEmail(ticketedBooking.id)
+                            .catch((err: any) => logger.error('[webhooks/duffel] Ticket email failed', { orderId, error: err?.message }));
                     }
                     break;
                 }

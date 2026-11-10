@@ -581,13 +581,44 @@ describe('sweep', () => {
         expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
     });
 
-    it('reports a hold it could not release and leaves the attempt as it was', async () => {
+    it('closes the attempt before releasing its payment, as `book` does', async () => {
+        // A void ahead of the close could land under a claim taken in between — a late confirm, or
+        // a retried webhook — and the airline would order on a hold that no longer exists.
+        await svc.sweep(NOW);
+
+        const firstClose = lifecycle.transition.mock.invocationCallOrder[0];
+        const firstVoid = vi.mocked(stripe.paymentIntents.cancel).mock.invocationCallOrder[0];
+        expect(firstClose).toBeLessThan(firstVoid);
+    });
+
+    it('releases nothing when a confirm claimed the attempt before the sweeper could close it', async () => {
+        lifecycle.transition.mockResolvedValue('lost');
+
+        await svc.sweep(NOW);
+
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+    });
+
+    it('reports a hold it could not release, on an attempt it has closed', async () => {
         vi.mocked(stripe.paymentIntents.cancel).mockRejectedValue(new Error('stripe down'));
+
+        const report = await svc.sweep(NOW);
+
+        expect(report.anomalies).toEqual([
+            { sessionId: 's-pending', reason: 'closed, but could not release the authorisation' },
+            { sessionId: 's-auth', reason: 'closed, but could not release the authorisation' },
+        ]);
+        expect(report.expired).toEqual(['s-pending', 's-auth']);
+    });
+
+    it('leaves an attempt as it was when the payment cannot be read, so the next sweep tries again', async () => {
+        vi.mocked(stripe.paymentIntents.retrieve).mockRejectedValue(new Error('stripe down'));
 
         const report = await svc.sweep(NOW);
 
         expect(report.anomalies).toHaveLength(2);
         expect(lifecycle.transition).not.toHaveBeenCalled();
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
     });
 
     it('does not count an attempt that moved on before the sweep reached it', async () => {
