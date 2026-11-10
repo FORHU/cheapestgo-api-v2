@@ -2,6 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
+// The shared refund record (ADR-0004). Mocked rather than left to hit prisma: these tests have
+// no database, and a swallowed write proves nothing about what was written.
+const refundLog = vi.hoisted(() => ({
+    openRefund:   vi.fn().mockResolvedValue('refund-log-1'),
+    closeRefund:  vi.fn().mockResolvedValue(undefined),
+    recordRefund: vi.fn().mockResolvedValue('refund-log-2'),
+}));
+vi.mock('@/lib/refundLog', () => refundLog);
+
 vi.mock('@/lib/flights/search', () => ({
     searchFlightsWithStatus: vi.fn(),
     searchFlights:      vi.fn(),
@@ -749,7 +758,7 @@ describe('FlightsService.cancelBooking()', () => {
                 payment_intent: PI_ID,
                 reason:         'requested_by_customer',
             }),
-            expect.objectContaining({ idempotencyKey: `refund-${BOOKING_ID}` }),
+            expect.objectContaining({ idempotencyKey: `flight-refund-${BOOKING_ID}-10250` }),
         );
         expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
         expect(result.status).toBe('refunded');
@@ -792,7 +801,7 @@ describe('FlightsService.syncSupplierCancellation()', () => {
         );
         expect(stripe.refunds.create).toHaveBeenCalledWith(
             expect.objectContaining({ payment_intent: PI_ID, amount: 10250 }),
-            { idempotencyKey: `refund-${BOOKING_ID}` },
+            { idempotencyKey: `flight-refund-${BOOKING_ID}-10250` },
         );
         expect(result).toMatchObject({ changed: true, status: 'refunded' });
     });
@@ -1021,3 +1030,104 @@ describe('FlightsService.offerRefresh()', () => {
         await expect(service.offerRefresh(chosen)).resolves.toMatchObject({ success: false, reason: 'upstream_error' });
     });
 });
+
+
+// ─── The flight refund record, and the key that guards it ────────────────────
+//
+// ADR-0004. Flights wrote their refunds into a JSON blob on the booking row, which the payments
+// back office cannot read, and keyed Stripe on the booking id alone, which meant a corrected
+// amount silently replayed the first refund and returned the old figure while reporting the new.
+
+describe('the flight refund record', () => {
+    const ORDER = 'ord_test_1';
+
+    const settled = (refundAmount: string) => {
+        const repo = (service as any).repo;
+        repo.getFlightBookingByOrderId.mockResolvedValue({
+            ...MOCK_BOOKING, status: 'ticketed', user_id: 'the-traveller',
+        });
+        vi.mocked(getDuffelOrder).mockResolvedValue({ id: ORDER, cancelled_at: new Date().toISOString() } as any);
+        vi.mocked(listDuffelOrderCancellations).mockResolvedValue([{
+            id: 'can_1', confirmed_at: new Date().toISOString(),
+            refund_amount: refundAmount, refund_currency: 'USD', refund_to: 'original_form_of_payment',
+        }] as any);
+        return repo;
+    };
+
+    beforeEach(() => {
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 10250, currency: 'usd' } as any);
+        vi.mocked(stripe.refunds.create).mockResolvedValue({ status: 'succeeded', id: 're_1' } as any);
+    });
+
+    it('opens a record against the traveller before Stripe is asked', async () => {
+        settled('100.00');
+
+        await service.syncSupplierCancellation(ORDER);
+
+        expect(refundLog.openRefund).toHaveBeenCalledWith(expect.objectContaining({
+            bookingId: BOOKING_ID,
+            userId:    'the-traveller',
+            product:   'flight',
+        }));
+    });
+
+    it('calls a refund with a penalty partial, and one without full', async () => {
+        settled('60.00'); // of a 100.00 fare
+        await service.syncSupplierCancellation(ORDER);
+        expect(refundLog.openRefund).toHaveBeenCalledWith(expect.objectContaining({ refundType: 'partial_refund' }));
+
+        vi.mocked(refundLog.openRefund).mockClear();
+        settled('100.00');
+        await service.syncSupplierCancellation(ORDER);
+        expect(refundLog.openRefund).toHaveBeenCalledWith(expect.objectContaining({ refundType: 'full_refund' }));
+    });
+
+    it('closes the record as processed when Stripe took the refund', async () => {
+        settled('100.00');
+
+        await service.syncSupplierCancellation(ORDER);
+
+        expect(refundLog.closeRefund).toHaveBeenCalledWith('refund-log-1', expect.objectContaining({ issued: true }));
+    });
+
+    /** The row must never read processed when the customer has not been paid. */
+    it('closes the record as failed, with the reason, when Stripe refused', async () => {
+        settled('100.00');
+        vi.mocked(stripe.refunds.create).mockRejectedValue(new Error('charge_already_refunded'));
+
+        await service.syncSupplierCancellation(ORDER);
+
+        expect(refundLog.closeRefund).toHaveBeenCalledWith('refund-log-1', {
+            issued: false, reason: 'charge_already_refunded',
+        });
+    });
+
+    /**
+     * The bug the key fixes. Two cancellations of the same booking for different amounts must
+     * reach Stripe as two distinct requests; sharing a key returns the first refund's amount
+     * while the caller reports the second.
+     */
+    it('keys Stripe on the amount, so a corrected figure is a new refund', async () => {
+        settled('60.00');
+        await service.syncSupplierCancellation(ORDER);
+        const first = vi.mocked(stripe.refunds.create).mock.calls[0][1];
+
+        vi.mocked(stripe.refunds.create).mockClear();
+        settled('100.00');
+        await service.syncSupplierCancellation(ORDER);
+        const second = vi.mocked(stripe.refunds.create).mock.calls[0][1];
+
+        expect((first as any).idempotencyKey).not.toBe((second as any).idempotencyKey);
+        expect((first as any).idempotencyKey).toContain(BOOKING_ID);
+    });
+
+    /** A fare that returns nothing is not a refund, and should not leave a record saying it was. */
+    it('opens no record when the supplier returned nothing', async () => {
+        settled('0.00');
+
+        await service.syncSupplierCancellation(ORDER);
+
+        expect(refundLog.openRefund).not.toHaveBeenCalled();
+    });
+});
+

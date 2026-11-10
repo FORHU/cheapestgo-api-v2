@@ -12,6 +12,7 @@ import { adminSettingsService } from '@/services/adminSettings.service';
 import { adminStripeService } from '@/services/adminStripe.service';
 import { adminRevenueService } from '@/services/adminRevenue.service';
 import { adminMobileService } from '@/services/adminMobile.service';
+import { adminTravelgatexService } from '@/services/adminTravelgatex.service';
 import { AppError } from '@/middleware/error.middleware';
 import { mergeAdminBookings } from '@/lib/admin/normaliseBooking';
 import { prisma } from '@/lib/prisma';
@@ -19,11 +20,62 @@ import { validateRoleChange } from '@/lib/auth/roleChange';
 import { roleLabel } from '@/lib/auth/roles';
 import { logAdminAction } from '@/lib/admin/audit';
 import { createNotification } from '@/lib/admin/notify';
+import { adminPaymentsService } from '@/services/adminPayments.service';
+import { z } from 'zod';
+import { paymentEvidenceService } from '@/services/paymentEvidence.service';
+import React from 'react';
+import { renderToBuffer } from '@react-pdf/renderer';
+import { EvidencePdfDocument } from '@/components/EvidencePdfDocument';
+import { attachmentsConfigured, putObject, signedUrlFor } from '@/lib/support/attachmentStorage';
+import { HotelsService } from '@/services/hotels.service';
+import { FlightsService } from '@/services/flights.service';
 
 const router: Router = Router();
 
+// The same two services the customer's own Cancel button goes through. Held here rather than
+// reached for through a controller, because ADR-0004's whole point is that there is no second
+// implementation for the team to drift away from.
+const hotels = new HotelsService();
+const flights = new FlightsService();
+
 // All admin routes below require a valid JWT AND the 'admin' role
 router.use(requireAuth, requireRole('admin'));
+
+/** Query for the payments table. Dates arrive as strings and are parsed at the route. */
+
+/**
+ * What the team sends to cancel on a customer's behalf.
+ *
+ * `refundInFull` is the override from ADR-0004: it returns the whole charge regardless of the
+ * recorded terms. It defaults to false, so the policy binds the team exactly as it binds the
+ * customer, and giving back more is something somebody has to ask for.
+ */
+const adminCancelBody = z.object({
+    refundInFull:   z.boolean().optional().default(false),
+    reason:         z.string().trim().max(500).optional(),
+    /** Duffel prices a flight cancellation first; this is that quote's id. */
+    cancellationId: z.string().trim().max(120).optional(),
+});
+
+/** Query for the webhook delivery list. */
+const webhookListQuery = z.object({
+    stuck:     z.coerce.boolean().optional(),
+    eventType: z.string().trim().max(80).optional(),
+    reference: z.string().trim().max(120).optional(),
+    limit:     z.coerce.number().int().min(1).max(200).optional(),
+    page:      z.coerce.number().int().min(1).optional(),
+});
+const paymentListQuery = z.object({
+    search:        z.string().trim().min(1).max(200).optional(),
+    product:       z.enum(['hotel', 'flight', 'unknown']).optional(),
+    bookingStatus: z.string().trim().max(60).optional(),
+    currency:      z.string().trim().length(3).optional(),
+    provider:      z.string().trim().max(40).optional(),
+    from:          z.string().datetime().optional(),
+    to:            z.string().datetime().optional(),
+    limit:         z.coerce.number().int().min(1).max(100).optional(),
+    page:          z.coerce.number().int().min(1).optional(),
+});
 
 /** The legs of a flight booking, oldest first, as JSON on the booking row. */
 const SEGMENTS_SUBQUERY = `(
@@ -584,6 +636,18 @@ router.get('/tgx-health', async (_req: Request, res: Response, next: NextFunctio
 });
 
 /**
+ * GET /api/v2/admin/travelgatex — the supplier page.
+ *
+ * app-v2 has called this since the port and it was never written, so that page has always shown
+ * Not Found. Wider than /tgx-health above: that one says whether OTV is answering, this says what
+ * we have sold through them. Both read the same health check, so the two cannot disagree.
+ */
+router.get('/travelgatex', async (_req: Request, res: Response, next: NextFunction) => {
+    try { res.json(await adminTravelgatexService.overview()); }
+    catch (err) { next(err); }
+});
+
+/**
  * Run the supplier canary now, from the settings screen's "Check now".
  *
  * The same check the scheduled job runs, reached with a session instead of the cron secret —
@@ -721,7 +785,7 @@ router.post('/stripe', async (req: Request, res: Response, next: NextFunction) =
             ? req.body.reason
             : 'requested_by_customer';
 
-        const result = await adminStripeService.refundBooking(bookingId, reason);
+        const result = await adminStripeService.refundBooking(bookingId, reason, { id: req.user?.sub, email: req.user?.email });
         await adminSettingsService.logAction({
             action: result.alreadyRefunded ? 'refund_skipped_already_refunded' : 'refund_booking',
             adminId: req.user?.sub,
@@ -729,6 +793,117 @@ router.post('/stripe', async (req: Request, res: Response, next: NextFunction) =
             targetId: bookingId,
             details: result as Record<string, unknown>,
         });
+
+        res.json({ success: true, ...result });
+    } catch (err) { next(err); }
+});
+
+// ─── Cancellations: the team on the customer's own path ───────────────────────
+//
+// ADR-0004. These call the same service method the traveller's own Cancel button calls, with an
+// `admin` on it. The policy engine, the supplier call, the refund and the lifecycle are therefore
+// the same code for both, and the only recorded differences are who asked and whether they
+// deliberately returned more than the recorded terms allow.
+//
+// Not to be confused with `POST /stripe` above, which moves money and nothing else, has no button,
+// and exists for the case where the booking record itself is too broken for this path to run.
+
+/**
+ * GET /api/v2/admin/bookings/hotel/:reference/cancel-preview — what cancelling would return.
+ *
+ * Read-only, and the thing an agent needs before they can answer the customer: what the recorded
+ * terms give back, the penalty, and the deadline it was judged against.
+ */
+router.get('/bookings/hotel/:reference/cancel-preview', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const reference = String(req.params.reference ?? '').trim();
+        if (!reference) throw new AppError(400, 'A booking reference is required.', 'VALIDATION_ERROR');
+        res.json(await hotels.getCancelPreview(reference, req.user?.sub ?? '', undefined, true));
+    } catch (err) { next(err); }
+});
+
+/**
+ * POST /api/v2/admin/bookings/hotel/:reference/cancel — cancel a stay for a customer.
+ *
+ * The supplier is asked first and the money moves only if it agrees, which is the order the
+ * customer's own cancellation uses: refunding a guest whose room the supplier still holds costs
+ * us the room (ADR-0023).
+ */
+router.post('/bookings/hotel/:reference/cancel', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const reference = String(req.params.reference ?? '').trim();
+        if (!reference) throw new AppError(400, 'A booking reference is required.', 'VALIDATION_ERROR');
+        const body = adminCancelBody.parse(req.body ?? {});
+
+        const result = await hotels.cancelBooking({
+            bookingRef: reference,
+            // Ignored while `admin` is set: the service takes the refund's owner from the booking.
+            userId:     req.user?.sub ?? '',
+            admin: {
+                id:           req.user?.sub ?? '',
+                email:        req.user?.email ?? 'unknown admin',
+                refundInFull: body.refundInFull,
+                reason:       body.reason,
+            },
+        });
+
+        await adminSettingsService.logAction({
+            action:     body.refundInFull ? 'hotel_cancel_refund_override' : 'hotel_cancel',
+            adminId:    req.user?.sub,
+            adminEmail: req.user?.email,
+            targetId:   reference,
+            details:    { refundInFull: body.refundInFull, reason: body.reason ?? null },
+        }).catch(() => undefined);
+
+        res.json(result);
+    } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/v2/admin/bookings/flight/:id/cancel-quote — what the airline will give back.
+ *
+ * Duffel prices a cancellation before it is made, and the quote carries an id the cancellation
+ * then refers to. It is a deliberate separate step for that reason: it is not read-only at the
+ * supplier.
+ */
+router.get('/bookings/flight/:id/cancel-quote', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const id = String(req.params.id ?? '').trim();
+        if (!id) throw new AppError(400, 'A booking id is required.', 'VALIDATION_ERROR');
+        // Returned as the service gives it: the quote carries its own `success`, and a supplier
+        // that declined to price the cancellation is not a failed request.
+        res.json(await flights.cancelQuote(id, req.user?.sub ?? '', {
+            id: req.user?.sub ?? '', email: req.user?.email ?? 'unknown admin',
+        }));
+    } catch (err) { next(err); }
+});
+
+/**
+ * POST /api/v2/admin/bookings/flight/:id/cancel — cancel a flight for a customer.
+ *
+ * No `refundInFull` here. A flight refund is whatever the airline gives back, applied to what the
+ * traveller paid; there is no local policy to override, and returning more than the airline
+ * returned is a goodwill payment, not a cancellation. That case goes to Stripe by hand.
+ */
+router.post('/bookings/flight/:id/cancel', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const id = String(req.params.id ?? '').trim();
+        if (!id) throw new AppError(400, 'A booking id is required.', 'VALIDATION_ERROR');
+        const body = adminCancelBody.parse(req.body ?? {});
+
+        const result = await flights.cancelBooking(id, req.user?.sub ?? '', body.cancellationId, {
+            id:     req.user?.sub ?? '',
+            email:  req.user?.email ?? 'unknown admin',
+            reason: body.reason,
+        });
+
+        await adminSettingsService.logAction({
+            action:     'flight_cancel',
+            adminId:    req.user?.sub,
+            adminEmail: req.user?.email,
+            targetId:   id,
+            details:    { reason: body.reason ?? null, status: result.status },
+        }).catch(() => undefined);
 
         res.json({ success: true, ...result });
     } catch (err) { next(err); }
@@ -760,3 +935,164 @@ router.post('/mobile', async (req, res, next) => {
 });
 
 export default router;
+
+// ─── Payments: the back office's view of money ────────────────────────────────
+//
+// Derived, not stored: there is no `payments` table, and these read across the tables that each
+// own a product. See ADR-0003, and `Payment` in CONTEXT.md for why the grain is the PaymentIntent
+// and not the booking.
+//
+// Read-only on purpose. Refunding stays where it already is, at POST /stripe above, so there is
+// exactly one route in this service that moves money.
+
+/** GET /api/v2/admin/payments — one page of the payment table, filtered in the database. */
+router.get('/payments', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const q = paymentListQuery.parse(req.query);
+        res.json({ success: true, ...(await adminPaymentsService.list({
+            ...q,
+            from: q.from ? new Date(q.from) : undefined,
+            to:   q.to   ? new Date(q.to)   : undefined,
+        })) });
+    } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/v2/admin/payments/:paymentIntentId — every internal record of one payment.
+ *
+ * A list rather than an object: two records for one PaymentIntent is the double-write an
+ * investigation is looking for, so the route reports it instead of choosing a winner.
+ */
+router.get('/payments/:paymentIntentId', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const id = String(req.params.paymentIntentId ?? '').trim();
+        if (!id) throw new AppError(400, 'A payment intent id is required.', 'VALIDATION_ERROR');
+
+        const result = await adminPaymentsService.sources(id);
+        if (!result.sources.length) {
+            // Not an error. A PaymentIntent that exists in Stripe and nowhere here is the
+            // Unrecorded Reservation of ADR-0026 — the most important thing this page can say.
+            return res.status(404).json({
+                success: false,
+                error: 'NOT_RECORDED',
+                message: 'No internal record references this payment.',
+                paymentIntentId: id,
+            });
+        }
+        res.json({ success: true, ...result });
+    } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/v2/admin/payments/:paymentIntentId/evidence — everything knowable, with provenance.
+ *
+ * Every item says how it is known: verified with the provider just now, recorded from the
+ * provider at the time, our own row, or looked for and not found. Nothing in the response
+ * asserts that a service was delivered — see ADR-0003.
+ */
+router.get('/payments/:paymentIntentId/evidence', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const id = String(req.params.paymentIntentId ?? '').trim();
+        if (!id) throw new AppError(400, 'A payment intent id is required.', 'VALIDATION_ERROR');
+
+        const pack = await paymentEvidenceService.gather(id);
+        // Who looked at a customer's payment evidence is itself auditable (§14), and a failure
+        // to write that line must not withhold the evidence from the person investigating.
+        await adminSettingsService.logAction({
+            action: 'payment_evidence_viewed',
+            adminId: (req as any).user?.id,
+            adminEmail: (req as any).user?.email,
+            targetId: id,
+        }).catch(() => undefined);
+
+        res.json({ success: true, ...pack });
+    } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/v2/admin/payment-webhooks — Stripe deliveries, newest first.
+ *
+ * `?stuck=true` narrows to the rows that matter: claimed and never completed, which is a delivery
+ * that died part-way through doing real work. There is deliberately **no retry button** — the
+ * handlers behind these events are not all idempotent, and replaying one by hand could book or
+ * refund twice.
+ */
+router.get('/payment-webhooks', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const q = webhookListQuery.parse(req.query);
+        const limit = Math.min(q.limit ?? 50, 200);
+
+        const where: any = {};
+        if (q.stuck) where.completed_at = null;
+        if (q.eventType) where.event_type = q.eventType;
+        if (q.reference) {
+            where.OR = [
+                { booking_reference: q.reference },
+                { payment_intent_id: q.reference },
+                { event_id: q.reference },
+            ];
+        }
+
+        const [rows, total] = await Promise.all([
+            prisma.stripe_processed_events.findMany({
+                where, orderBy: { processed_at: 'desc' }, take: limit, skip: ((q.page ?? 1) - 1) * limit,
+            }),
+            prisma.stripe_processed_events.count({ where }),
+        ]);
+
+        res.json({
+            success: true,
+            total,
+            items: rows.map(r => ({
+                eventId:         r.event_id,
+                eventType:       r.event_type,
+                paymentIntentId: r.payment_intent_id,
+                bookingReference: r.booking_reference,
+                receivedAt:      r.processed_at.toISOString(),
+                lastReceivedAt:  r.last_received_at?.toISOString() ?? null,
+                completedAt:     r.completed_at?.toISOString() ?? null,
+                deliveryCount:   r.delivery_count,
+                errorMessage:    r.error_message,
+                // The one derived field, and the reason the page exists.
+                stuck:           r.completed_at === null,
+            })),
+        });
+    } catch (err) { next(err); }
+});
+
+/**
+ * POST /api/v2/admin/payments/:paymentIntentId/evidence/export — the pack as a PDF.
+ *
+ * Rendered server-side, stored in the attachments bucket, and handed back as a signed URL that
+ * expires. The bytes never pass through the browser's address bar, and the link dies on its own
+ * — §14, and the same mechanism support attachments already use.
+ */
+router.post('/payments/:paymentIntentId/evidence/export', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const id = String(req.params.paymentIntentId ?? '').trim();
+        if (!id) throw new AppError(400, 'A payment intent id is required.', 'VALIDATION_ERROR');
+        if (!attachmentsConfigured()) {
+            throw new AppError(503, 'Evidence storage is not configured on this deployment.', 'STORAGE_UNCONFIGURED');
+        }
+
+        const pack = await paymentEvidenceService.gather(id);
+        // `as any` as the invoice route does: @react-pdf types the root element as DocumentProps,
+        // which a component returning a Document does not structurally satisfy.
+        const pdf = await renderToBuffer(React.createElement(EvidencePdfDocument, { pack }) as any);
+
+        // Keyed by the moment it was made, so an earlier pack is never overwritten: §8 asks for
+        // historical versions, and a pack is evidence of what was known *then*.
+        const key = `payment-evidence/${id}/${pack.generatedAt.toISOString().replace(/[:.]/g, '-')}.pdf`;
+        await putObject({ key, body: pdf, contentType: 'application/pdf' });
+        const url = await signedUrlFor(key, `payment-evidence-${id}.pdf`);
+
+        await adminSettingsService.logAction({
+            action: 'payment_evidence_exported',
+            adminId: (req as any).user?.id,
+            adminEmail: (req as any).user?.email,
+            targetId: id,
+        }).catch(() => undefined);
+
+        res.json({ success: true, url, key, generatedAt: pack.generatedAt.toISOString() });
+    } catch (err) { next(err); }
+});

@@ -9,6 +9,7 @@ import { config } from '@/config';
 import { stripe } from '@/lib/stripe';
 import { FlightsRepository } from '@/repositories/flights.repository';
 import { AppError } from '@/middleware/error.middleware';
+import { openRefund, closeRefund, recordRefund } from '@/lib/refundLog';
 import { searchFlights, searchFlightsWithStatus, applyServerFilters, ServerFilters } from '@/lib/flights/search';
 import {
     parseDuffelOffer, normalizedToFlightOffer, getDuffelAvailableServices, getDuffelOffer,
@@ -800,7 +801,7 @@ export class FlightsService {
 
     // ── Cancel quote ──────────────────────────────────────────────────────────
 
-    async cancelQuote(bookingId: string, userId: string): Promise<{
+    async cancelQuote(bookingId: string, userId: string, admin?: { id: string; email: string }): Promise<{
         success: boolean;
         refundAmount?: number;
         refundCurrency?: string;
@@ -816,7 +817,7 @@ export class FlightsService {
     }> {
         const booking = await this.repo.getFlightBookingById(bookingId);
         if (!booking) throw new AppError(404, 'Booking not found', 'NOT_FOUND');
-        if (booking.user_id !== userId) throw new AppError(403, 'Unauthorized', 'FORBIDDEN');
+        if (!admin && booking.user_id !== userId) throw new AppError(403, 'Unauthorized', 'FORBIDDEN');
         if (booking.provider !== 'duffel') return { success: false, noQuote: true };
 
         const duffelToken = config.DUFFEL_ACCESS_TOKEN;
@@ -882,7 +883,9 @@ export class FlightsService {
 
     // ── Cancel booking ────────────────────────────────────────────────────────
 
-    async cancelBooking(bookingId: string, userId: string, preQuotedCancellationId?: string): Promise<{
+    async cancelBooking(bookingId: string, userId: string, preQuotedCancellationId?: string, admin?: {
+        id: string; email: string; reason?: string;
+    }): Promise<{
         status: string;
         refundAmount?: number;
         refundCurrency?: string;
@@ -906,7 +909,9 @@ export class FlightsService {
             }
         }
 
-        if (booking.user_id !== userId) throw new AppError(403, 'Unauthorized', 'FORBIDDEN');
+        // A customer may cancel their own booking; an admin may cancel anyone's, and which of
+        // them it was is recorded on the refund rather than inferred (ADR-0004).
+        if (!admin && booking.user_id !== userId) throw new AppError(403, 'Unauthorized', 'FORBIDDEN');
 
         const terminalStatuses = ['cancelled', 'refund_pending', 'refunded'];
         if (terminalStatuses.includes(booking.status)) {
@@ -1010,7 +1015,25 @@ export class FlightsService {
                             payment_intent: effectivePaymentIntentId,
                             reason: 'requested_by_customer',
                             metadata: { bookingId, note: 'provider_missing_full_refund' },
-                        }, { idempotencyKey: `refund-${bookingId}` });
+                        }, { idempotencyKey: `flight-refund-missing-${bookingId}-${pi.amount}` });
+                        // Recorded in one call: the outcome and the amount are known together
+                        // here, so there is no window between them to protect.
+                        if (booking.user_id) {
+                            await recordRefund({
+                                bookingId,
+                                userId:          booking.user_id,
+                                product:         'flight',
+                                refundType:      'full_refund',
+                                requestedAmount: Number(booking.total_price),
+                                penaltyAmount:   0,
+                                currency:        booking.payment_currency ?? 'USD',
+                                reason:          'supplier has no record of this order — refunded in full',
+                            }, {
+                                issued:         true,
+                                approvedAmount: Number(booking.total_price),
+                                externalRef:    effectivePaymentIntentId,
+                            });
+                        }
                     }
                     await this.repo.updateFlightBookingCancellation(bookingId, {
                         status: 'refunded',
@@ -1036,6 +1059,7 @@ export class FlightsService {
         }
 
         return this.settleCancellation(booking, {
+            requestedBy:            admin?.email ?? null,
             paymentIntentId: effectivePaymentIntentId,
             refundAmount, penaltyAmount, refundCurrency, supplierCancellationId, refundTo,
             log: [...currentLog, logEntry],
@@ -1155,6 +1179,9 @@ export class FlightsService {
      */
     private async settleCancellation(booking: {
         id: string; provider: string; session_id: string | null; payment_currency: string | null;
+        /** The traveller the refund belongs to. Absent on rows predating the column. */
+        user_id?: string | null;
+        total_price?: unknown;
     }, args: {
         paymentIntentId:        string | null;
         refundAmount:           number;
@@ -1164,6 +1191,8 @@ export class FlightsService {
         refundTo:               string | undefined;
         /** The cancellation log so far, through the step that claimed the booking. */
         log:                    any[];
+        /** The admin's email when a member of the team asked for this (ADR-0004). */
+        requestedBy?:           string | null;
     }) {
         const bookingId = booking.id;
         const { refundAmount, penaltyAmount, refundCurrency, supplierCancellationId, refundTo } = args;
@@ -1198,6 +1227,25 @@ export class FlightsService {
         let stripeError: string | undefined;
         let actualStripeRefundAmount = 0;
         let actualStripeCurrency = refundCurrency.toUpperCase();
+
+        // Opened before any money moves, so a crash between Stripe and the row below still leaves
+        // a trace of the refund that was on its way. Flights recorded this only as a JSON blob on
+        // the booking row, which the back office cannot read (ADR-0004).
+        const refundLogId = booking.user_id && refundAmount > 0
+            ? await openRefund({
+                bookingId,
+                userId:          booking.user_id,
+                product:         'flight',
+                refundType:      penaltyAmount > 0 ? 'partial_refund' : 'full_refund',
+                requestedAmount: refundAmount,
+                penaltyAmount,
+                currency:        refundCurrency,
+                reason:          supplierCancellationId
+                    ? `supplier cancellation ${supplierCancellationId}`
+                    : 'cancellation settled',
+                requestedBy:     args.requestedBy ?? null,
+            })
+            : null;
 
         if (!effectivePaymentIntentId && booking.session_id) {
             try {
@@ -1250,7 +1298,13 @@ export class FlightsService {
                         amount: refundAmountCents,
                         reason: 'requested_by_customer',
                         metadata: { bookingId, provider: booking.provider, penaltyAmount: String(penaltyAmount) },
-                    }, { idempotencyKey: `refund-${bookingId}` });
+                    }, {
+                        // Scoped to the amount, as the hotel path is. The key used to be
+                        // `refund-${bookingId}` alone, so a corrected figure — a re-quoted penalty,
+                        // an admin override — silently replayed the first refund, returning the old
+                        // amount while reporting the new one (ADR-0004).
+                        idempotencyKey: `flight-refund-${bookingId}-${refundAmountCents}`,
+                    });
 
                     if (stripeRefund.status === 'failed') throw new Error(`Stripe refund created but failed: ${stripeRefund.id}`);
 
@@ -1284,6 +1338,18 @@ export class FlightsService {
                 status: 'cancelled',
                 cancellationLog: [...args.log, cancelLog],
             });
+        }
+
+        // Close the record with the outcome. `refunded` is the only state in which money has
+        // demonstrably moved; a hold voided before capture counts, because the customer is whole.
+        if (refundLogId) {
+            await closeRefund(refundLogId, refunded
+                ? {
+                    issued:         true,
+                    approvedAmount: actualStripeRefundAmount || refundAmount,
+                    externalRef:    effectivePaymentIntentId ?? bookingId,
+                }
+                : { issued: false, reason: stripeError ?? 'No refund was issued' });
         }
 
         // Nothing to refund (a non-refundable fare, or no payment found) is written `cancelled`

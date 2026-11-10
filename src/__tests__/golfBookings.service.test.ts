@@ -2,6 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The real client reads the app's config on import; these tests hand the service fake payments.
 vi.mock('@/lib/stripe', () => ({ stripe: {} }));
+
+// The shared refund record (ADR-0004). Golf wrote nothing down at all before it, so a refunded
+// tee time was invisible to the payments back office.
+const refundLog = vi.hoisted(() => ({
+    openRefund:   vi.fn().mockResolvedValue('refund-log-1'),
+    closeRefund:  vi.fn().mockResolvedValue(undefined),
+    recordRefund: vi.fn(),
+}));
+vi.mock('@/lib/refundLog', () => refundLog);
 vi.mock('@/lib/golf/teamAlerts', () => ({ golfTeamAlerts: {} }));
 vi.mock('@/lib/golf/emails', () => ({ sendGolfBookingEmail: vi.fn(async () => undefined) }));
 
@@ -763,3 +772,61 @@ describe('extras', () => {
         });
     });
 });
+
+
+// ─── The golf refund record ──────────────────────────────────────────────────
+//
+// ADR-0004. Golf's full-refund rule is correct for a tee time — the course resells the slot, so
+// no supplier cost is left stranded — and the decision deliberately left it alone. What it owed
+// was the record, not a rewrite.
+
+describe('the golf refund record', () => {
+    beforeEach(() => {
+        refundLog.openRefund.mockReset().mockResolvedValue('refund-log-1');
+        refundLog.closeRefund.mockReset().mockResolvedValue(undefined);
+        f.repo.findByReference.mockResolvedValue(booking({ status: 'confirmed' }));
+    });
+
+    it('opens a record against the golfer before the card is touched', async () => {
+        const order: string[] = [];
+        refundLog.openRefund.mockImplementation(async () => { order.push('log'); return 'refund-log-1'; });
+        f.payments.refund.mockImplementation(async () => { order.push('stripe'); });
+
+        await f.svc.cancelByTeam('CG-ABC123');
+
+        expect(order).toEqual(['log', 'stripe']);
+        expect(refundLog.openRefund).toHaveBeenCalledWith(expect.objectContaining({
+            product: 'golf', refundType: 'full_refund',
+        }));
+    });
+
+    /** Who cancelled it is the difference between a customer's right and a staff decision. */
+    it('names the admin when the team cancelled, and nobody when the customer did', async () => {
+        await f.svc.cancelByTeam('CG-ABC123', NOW, { email: 'agent@cheapestgo.com' });
+        expect(refundLog.openRefund).toHaveBeenCalledWith(expect.objectContaining({
+            requestedBy: 'agent@cheapestgo.com',
+        }));
+
+        refundLog.openRefund.mockClear();
+        await f.svc.cancelByCustomer('CG-ABC123', USER.id, NOW);
+        expect(refundLog.openRefund).toHaveBeenCalledWith(expect.objectContaining({ requestedBy: null }));
+    });
+
+    it('closes the record as processed once Stripe has taken it', async () => {
+        await f.svc.cancelByTeam('CG-ABC123');
+
+        expect(refundLog.closeRefund).toHaveBeenCalledWith('refund-log-1', expect.objectContaining({ issued: true }));
+    });
+
+    /** A refund that failed must never be written down as processed. */
+    it('closes the record as failed when the card could not be refunded', async () => {
+        f.payments.refund.mockRejectedValue(new Error('charge_disputed'));
+
+        await expect(f.svc.cancelByTeam('CG-ABC123')).rejects.toMatchObject({ statusCode: 502 });
+
+        expect(refundLog.closeRefund).toHaveBeenCalledWith('refund-log-1', {
+            issued: false, reason: 'charge_disputed',
+        });
+    });
+});
+
