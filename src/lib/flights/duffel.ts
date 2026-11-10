@@ -346,11 +346,23 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
 
     interface TryResult {
         isPriceChangedError: boolean; isOfferUnavailable: boolean;
-        /** The request was aborted; the order may still exist at Duffel. */
+        /** No answer came back — timed out, or the connection died; the order may still exist at Duffel. */
         timedOut?: boolean;
         oldPrice?: number; newPrice?: number; newCurrency?: string;
         res?: Response; data?: any; finalTotal?: string; finalCurrency?: string;
     }
+
+    /**
+     * An order request that went out and got no answer we can read. It may well have become an
+     * order, so whoever handles this has to look for it (findOrderFromTimedOutAttempt) — never
+     * read it as a refusal, which releases the money, or as a gone offer, which orders again.
+     */
+    const unanswered = (total: string, currency: string): TryResult => ({
+        isPriceChangedError: false, isOfferUnavailable: false, timedOut: true,
+        res: new Response(null, { status: 504 }),
+        data: { errors: [{ code: 'timeout', message: 'Airline booking system timed out. Please try again.' }] },
+        finalTotal: total, finalCurrency: currency,
+    });
 
     const tryPlaceOrder = async (
         offerId: string, paxList: any[], total: string, currency: string,
@@ -373,14 +385,11 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
             });
             data = await res.json();
         } catch (fetchErr: any) {
+            // Aborted by our timeout, or the connection died after the request went out: the
+            // request is gone, the order may well not be.
             clearTimeout(tmo);
-            if (fetchErr?.name === 'AbortError') {
-                // The request is gone; the order may well not be. Whoever handles this result
-                // has to look for it — see findOrderFromTimedOutAttempt.
-                const synRes = new Response(null, { status: 504 });
-                return { isPriceChangedError: false, isOfferUnavailable: false, timedOut: true, res: synRes, data: { errors: [{ code: 'timeout', message: 'Airline booking system timed out. Please try again.' }] }, finalTotal: currentTotal, finalCurrency: currentCurrency };
-            }
-            throw fetchErr;
+            console.error(`[Duffel] order request for ${offerId} got no answer: ${fetchErr?.message}`);
+            return unanswered(currentTotal, currentCurrency);
         }
         clearTimeout(tmo);
 
@@ -453,9 +462,13 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
                 });
                 data = await res.json();
             } catch (e: any) {
+                // The re-priced order went out and nothing came back. Stopping here used to
+                // hand back the first attempt's 422, which reads as an expired offer: the
+                // flight was ordered again from a fresh search, or the hold released, while
+                // this order may exist.
                 clearTimeout(retTmo);
-                console.error(`[Duffel] price_changed retry failed: ${e.message}`);
-                break;
+                console.error(`[Duffel] price_changed retry got no answer: ${e.message}`);
+                return unanswered(currentTotal, currentCurrency);
             }
             clearTimeout(retTmo);
             if (res.ok) break;
@@ -562,7 +575,7 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
 
             const attempt2 = await tryPlaceOrder(freshOffer.id, refreshedPassengers, freshBaseTotal.toFixed(2), freshOffer.total_currency, false, crypto.randomUUID());
 
-            if (attempt2.res?.status && attempt2.res.status >= 500) return { kind: 'error', status: attempt2.res.status, data: attempt2.data };
+            if (attempt2.res?.status && attempt2.res.status >= 500) return { kind: 'error', status: attempt2.res.status, data: attempt2.data, timedOut: attempt2.timedOut };
             if (attempt2.isOfferUnavailable) continue;
             if (attempt2.isPriceChangedError) return { kind: 'price_changed', oldPrice: attempt2.oldPrice!, newPrice: attempt2.newPrice!, currency: attempt2.newCurrency ?? params.currency };
             if (attempt2.res?.ok) return { kind: 'success', order: attempt2.data.data, finalTotal: attempt2.finalTotal!, finalCurrency: attempt2.finalCurrency!, usedOffer: freshOffer };

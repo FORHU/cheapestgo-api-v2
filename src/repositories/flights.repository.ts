@@ -13,6 +13,8 @@ const CANCELLABLE_BOOKING_FIELDS = {
     payment_currency: true, refund_amount: true, refund_penalty_amount: true,
     refund_currency: true, supplier_currency: true, provider_order_id: true,
     duffel_order_id: true,
+    // What the airline charged, in the fare's currency: a cancellation refund is a share of it.
+    supplier_cost: true,
 } as const;
 
 export class FlightsRepository {
