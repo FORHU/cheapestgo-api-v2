@@ -1,0 +1,53 @@
+{
+ "steps": {
+  "authorise": {
+   "status": "requires_capture"
+  },
+  "confirm": {
+   "status": 409,
+   "error": "PRICE_CHANGED",
+   "message": "The fare changed from 219.65 to 329.48 USD before the airline confirmed it. Your card has not been charged. Please review the new price and "
+  }
+ },
+ "expect": "confirm 409 PRICE_CHANGED; hold voided; nothing ordered",
+ "held": {
+  "amount": 239.86,
+  "currency": "USD",
+  "fare": 219.65,
+  "fee": 20.21
+ },
+ "st": {
+  "stripe": {
+   "status": "canceled",
+   "amount": 23986,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 0,
+   "refunded": 23986
+  },
+  "session": {
+   "lifecycle": "FAILED",
+   "status": "failed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [browser] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [browser] claimed for the airline order",
+   "SUPPLIER_BOOKING→FAILED [browser] not ordered: PRICE_CHANGED (PRICE_CHANGED)"
+  ],
+  "sale": null,
+  "supplierAttempts": [],
+  "duffelOrder": null
+ },
+ "v": {
+  "pass": true,
+  "taken": 0,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": []
+ },
+ "orders": [],
+ "case": "priceRose",
+ "seconds": 9
+}

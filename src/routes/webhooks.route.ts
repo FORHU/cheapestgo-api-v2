@@ -405,6 +405,22 @@ router.post(
                     break;
                 }
 
+                // A refund Stripe accepted and then failed — a closed card, a bank that sent it
+                // back. The booking was written `refunded` at acceptance; this puts it back to
+                // `refund_failed` and tells the team (BUG-1, sandbox run 2026-11-11). Older API
+                // versions send only `charge.refund.updated`, so a failed one there counts too.
+                // Thrown errors are not swallowed: a 500 makes Stripe deliver it again.
+                case 'refund.failed':
+                case 'charge.refund.updated': {
+                    const refund = event.data.object as Stripe.Refund;
+                    if (refund.status === 'failed') {
+                        const { settleFailedFlightRefund } = await import('@/services/flightRefundFailure');
+                        const out = await settleFailedFlightRefund(refund);
+                        logger.warn('[webhooks/stripe] Refund failed after it was accepted', { refundId: refund.id, ...out });
+                    }
+                    break;
+                }
+
                 case 'charge.refunded': {
                     const charge = event.data.object as Stripe.Charge;
                     if (charge.payment_intent) {

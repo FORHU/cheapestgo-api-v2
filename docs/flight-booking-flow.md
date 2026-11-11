@@ -399,8 +399,15 @@ timeout, capture failure, the sweeper's selectivity), with Stripe and Duffel fak
 
 ## 9. Known limits
 
-- **Not exercised against the Duffel sandbox, real Stripe, a real browser, or 3DS.** The suites
-  stub both. The sandbox run in the plan's Task 12 is still to do.
+- **Run end to end against the Duffel sandbox and Stripe test mode on 2026-11-11**
+  (`docs/flight-money-safety-sandbox-run.md`): 21 cases, 20 pass. The failure was a refund that
+  Stripe fails *after* accepting it; the booking now goes back to `refund_failed` and the team is
+  alerted (`services/flightRefundFailure.ts`) — **the Stripe endpoint must subscribe to
+  `refund.failed`**. The traveller is still repaid by a person: a closed card cannot take it.
+  Not yet exercised: a real browser, a real 3DS challenge, capture failure after the order.
+- **Only a gone offer is searched for again.** A 422 from the order that is not an expired or
+  replaced offer (or an unsettled `price_changed`) is the airline refusing this order:
+  `DUFFEL_ORDER_FAILED` with its reason, hold voided, nothing ordered twice (`isOfferGoneError`).
 - **`NEEDS_REVIEW` is settled by hand** (§7). There is no admin action for it.
 - **The webhook waits for completion**, and a Duffel order can take up to 130s — longer than
   Stripe waits. A retried event loses the claim and is answered from the record; it cannot

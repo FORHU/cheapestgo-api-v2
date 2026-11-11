@@ -1,0 +1,50 @@
+{
+ "steps": {
+  "authorise": {
+   "status": "requires_action"
+  },
+  "confirm": {
+   "status": 402,
+   "error": "PAYMENT_NOT_COMPLETED",
+   "message": "Payment not authorised (status: requires_action)"
+  }
+ },
+ "expect": "PaymentIntent requires_action; confirm 402; nothing ordered or captured",
+ "held": {
+  "amount": 235.56,
+  "currency": "USD",
+  "fare": 215.63,
+  "fee": 19.93
+ },
+ "st": {
+  "stripe": {
+   "status": "requires_action",
+   "amount": 23556,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 0,
+   "refunded": 0
+  },
+  "session": {
+   "lifecycle": "PAYMENT_PENDING",
+   "status": "payment_initiated",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created"
+  ],
+  "sale": null,
+  "supplierAttempts": [],
+  "duffelOrder": null
+ },
+ "v": {
+  "pass": true,
+  "taken": 0,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": []
+ },
+ "orders": [],
+ "case": "threeDSAbandoned",
+ "seconds": 7
+}

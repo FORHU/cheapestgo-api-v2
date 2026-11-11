@@ -1,0 +1,53 @@
+{
+ "steps": {
+  "authorise": {
+   "status": "error",
+   "code": "card_declined",
+   "decline": "insufficient_funds",
+   "message": "Your card has insufficient funds. Use a different payment method to complete this purchase."
+  },
+  "confirm": {
+   "status": 402,
+   "error": "PAYMENT_NOT_COMPLETED",
+   "message": "Payment not authorised (status: requires_payment_method)"
+  }
+ },
+ "expect": "confirm 402; nothing ordered; nothing captured",
+ "held": {
+  "amount": 245.47,
+  "currency": "USD",
+  "fare": 224.88,
+  "fee": 20.59
+ },
+ "st": {
+  "stripe": {
+   "status": "requires_payment_method",
+   "amount": 24547,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 0,
+   "refunded": 0
+  },
+  "session": {
+   "lifecycle": "PAYMENT_PENDING",
+   "status": "payment_initiated",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created"
+  ],
+  "sale": null,
+  "supplierAttempts": [],
+  "duffelOrder": null
+ },
+ "v": {
+  "pass": true,
+  "taken": 0,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": []
+ },
+ "orders": [],
+ "case": "insufficientFunds",
+ "seconds": 7
+}

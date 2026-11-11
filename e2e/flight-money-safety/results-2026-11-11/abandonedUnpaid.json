@@ -1,0 +1,51 @@
+{
+ "steps": {
+  "sweep": {
+   "status": 200
+  },
+  "payAfterSweep": {
+   "status": "error",
+   "code": "payment_intent_unexpected_state",
+   "message": "This PaymentIntent's payment_method could not be updated because it has a status of canceled. You may only update the payment_method of a PaymentIntent with one of the following statuses: requires_payment_method, requires_confirmation, requires_action."
+  }
+ },
+ "expect": "session EXPIRED; PaymentIntent canceled so it cannot be paid later; nothing ordered",
+ "held": {
+  "amount": 242.34,
+  "currency": "USD",
+  "fare": 221.96,
+  "fee": 20.38
+ },
+ "st": {
+  "stripe": {
+   "status": "canceled",
+   "amount": 24234,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 0,
+   "refunded": 0
+  },
+  "session": {
+   "lifecycle": "EXPIRED",
+   "status": "expired",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→EXPIRED [sweeper] payment never started (ABANDONED)"
+  ],
+  "sale": null,
+  "supplierAttempts": [],
+  "duffelOrder": null
+ },
+ "v": {
+  "pass": true,
+  "taken": 0,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": []
+ },
+ "orders": [],
+ "case": "abandonedUnpaid",
+ "seconds": 6
+}
