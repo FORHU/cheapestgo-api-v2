@@ -5,6 +5,7 @@ import { AppError } from '@/middleware/error.middleware';
 import { AuthRepository } from '@/repositories/auth.repository';
 import { JwtPayload } from '@/types';
 import { checkName } from '@/lib/users/names';
+import { assertPasswordFitsBcrypt } from '@/lib/auth/password';
 
 export class AuthService {
     private repo = new AuthRepository();
@@ -27,6 +28,7 @@ export class AuthService {
             names[key] = checked.value;
         }
 
+        assertPasswordFitsBcrypt(data.password);
         const password_hash = await bcrypt.hash(data.password, 12);
         const user = await this.repo.create({ email: data.email, password_hash, ...names });
         return { user: this.sanitize(user), ...this.generateTokens(user) };
