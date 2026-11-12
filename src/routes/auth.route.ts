@@ -11,6 +11,7 @@ import { prisma } from '@/lib/prisma';
 import { redis } from '@/lib/redis';
 import { config } from '@/config';
 import { BASE_COOKIE_OPTIONS, SESSION_COOKIE, SESSION_MAX_AGE_MS } from '@/lib/auth/cookie';
+import { AuthRepository } from '@/repositories/auth.repository';
 import { assertPasswordAcceptable } from '@/lib/auth/password';
 import { originOfRequest, resolveCallbackOrigin, resolveReturnOrigin } from '@/lib/auth/returnOrigin';
 
@@ -35,6 +36,7 @@ function googleRedirectUri(req: Request): string {
     return `${resolveCallbackOrigin(originOfRequest(req.headers))}/api/v2/auth/google/callback`;
 }
 const controller = new AuthController();
+const authRepository = new AuthRepository();
 
 router.post('/register', authRateLimit, controller.register);
 router.post('/login',    authRateLimit, controller.login);
@@ -55,10 +57,9 @@ router.post('/request-reset', authRateLimit, async (req: Request, res: Response,
             throw new AppError(400, 'Email required.', 'VALIDATION_ERROR');
         }
 
-        const user = await prisma.users.findUnique({
-            where: { email: email.toLowerCase().trim() },
-            select: { id: true, email: true },
-        });
+        // The shared lookup, not a lower-cased exact match: an account made with capitals
+        // before sign-up normalised would otherwise never get its reset email.
+        const user = await authRepository.findByEmail(email);
 
         // Always return success to prevent email enumeration
         if (!user) {
