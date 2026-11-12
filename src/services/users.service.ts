@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import { AppError } from '@/middleware/error.middleware';
 import { usersRepository, UsersRepository } from '@/repositories/users.repository';
 import { checkName } from '@/lib/users/names';
-import { assertPasswordFitsBcrypt } from '@/lib/auth/password';
+import { assertPasswordAcceptable } from '@/lib/auth/password';
 
 /**
  * What an account holder may change about their own account: their name, their password, their
@@ -36,10 +36,7 @@ export class UsersService {
         if (!currentPassword || !newPassword) {
             throw new AppError(400, 'currentPassword and newPassword are required', 'VALIDATION_ERROR');
         }
-        if (newPassword.length < 8) {
-            throw new AppError(400, 'New password must be at least 8 characters', 'VALIDATION_ERROR');
-        }
-        assertPasswordFitsBcrypt(newPassword, 'New password');
+        assertPasswordAcceptable(newPassword, 'New password');
 
         const hash = await this.repo.findPasswordHash(userId);
         if (!hash) throw new AppError(400, 'No password set on this account', 'VALIDATION_ERROR');

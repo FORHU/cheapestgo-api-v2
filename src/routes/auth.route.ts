@@ -11,7 +11,7 @@ import { prisma } from '@/lib/prisma';
 import { redis } from '@/lib/redis';
 import { config } from '@/config';
 import { BASE_COOKIE_OPTIONS, SESSION_COOKIE, SESSION_MAX_AGE_MS } from '@/lib/auth/cookie';
-import { assertPasswordFitsBcrypt } from '@/lib/auth/password';
+import { assertPasswordAcceptable } from '@/lib/auth/password';
 import { originOfRequest, resolveCallbackOrigin, resolveReturnOrigin } from '@/lib/auth/returnOrigin';
 
 const router: Router = Router();
@@ -123,10 +123,7 @@ router.put('/reset-password', async (req: Request, res: Response, next: NextFunc
         if (!token || !password) {
             throw new AppError(400, 'Token and password required.', 'VALIDATION_ERROR');
         }
-        if (typeof password !== 'string' || password.length < 8) {
-            throw new AppError(400, 'Password must be 8+ characters.', 'VALIDATION_ERROR');
-        }
-        assertPasswordFitsBcrypt(password);
+        assertPasswordAcceptable(password);
 
         const resetToken = await prisma.password_reset_tokens.findFirst({
             where: {

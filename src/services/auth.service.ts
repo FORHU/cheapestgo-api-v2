@@ -5,12 +5,15 @@ import { AppError } from '@/middleware/error.middleware';
 import { AuthRepository } from '@/repositories/auth.repository';
 import { JwtPayload } from '@/types';
 import { checkName } from '@/lib/users/names';
-import { assertPasswordFitsBcrypt } from '@/lib/auth/password';
+import { assertPasswordAcceptable } from '@/lib/auth/password';
 
 export class AuthService {
     private repo = new AuthRepository();
 
     async register(data: { email: string; password: string; first_name?: string; last_name?: string }) {
+        // First, ahead of the email lookup: a weak password is refused the same whether or not
+        // the address is taken, so the answer does not say which addresses have accounts.
+        assertPasswordAcceptable(data.password);
         const existing = await this.repo.findByEmail(data.email);
         if (existing) throw new AppError(409, 'Email already in use', 'EMAIL_TAKEN');
 
@@ -28,7 +31,6 @@ export class AuthService {
             names[key] = checked.value;
         }
 
-        assertPasswordFitsBcrypt(data.password);
         const password_hash = await bcrypt.hash(data.password, 12);
         const user = await this.repo.create({ email: data.email, password_hash, ...names });
         return { user: this.sanitize(user), ...this.generateTokens(user) };

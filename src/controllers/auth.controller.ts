@@ -7,7 +7,8 @@ import {
 
 const registerSchema = z.object({
     email:      z.string().email(),
-    password:   z.string().min(8),
+    // The rule itself is `assertPasswordAcceptable`, run by the service: one place for it.
+    password:   z.string(),
     first_name: z.string().optional(),
     last_name:  z.string().optional(),
 });
