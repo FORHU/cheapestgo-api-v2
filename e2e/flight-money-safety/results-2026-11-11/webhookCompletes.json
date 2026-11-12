@@ -1,0 +1,80 @@
+{
+ "steps": {
+  "authorise": {
+   "status": "requires_capture"
+  },
+  "webhook": {
+   "status": 200,
+   "body": "{\"received\":true}"
+  },
+  "lateConfirm": {
+   "status": 200,
+   "pnr": "HHVXUM",
+   "bookingStatus": "ticketed"
+  }
+ },
+ "expect": "webhook confirms and captures; a late confirm is answered from the record; one order",
+ "held": {
+  "amount": 236.09,
+  "currency": "USD",
+  "fare": 216.13,
+  "fee": 19.96
+ },
+ "st": {
+  "stripe": {
+   "status": "succeeded",
+   "amount": 23609,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 23609,
+   "refunded": 0
+  },
+  "session": {
+   "lifecycle": "CONFIRMED",
+   "status": "completed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [webhook] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [webhook] claimed for the airline order",
+   "SUPPLIER_BOOKING→CONFIRMED [webhook] airline ordered and payment captured"
+  ],
+  "sale": {
+   "id": "c392fd8d-6bdc-485c-96f7-dd97f3aa0c7c",
+   "status": "ticketed",
+   "pnr": "HHVXUM",
+   "provider_order_id": "ord_0000BCKeHfbUPFKCmMtiRU",
+   "total_price": "236.09",
+   "charged_price": "236.09",
+   "currency": "USD",
+   "supplier_cost": "216.13"
+  },
+  "supplierAttempts": [],
+  "duffelOrder": {
+   "id": "ord_0000BCKeHfbUPFKCmMtiRU",
+   "booking_reference": "HHVXUM",
+   "cancelled_at": null,
+   "documents": 1,
+   "total": "216.13",
+   "currency": "USD"
+  }
+ },
+ "v": {
+  "pass": true,
+  "taken": 23609,
+  "saleLive": true,
+  "orderLive": true,
+  "notes": []
+ },
+ "orders": [
+  {
+   "id": "ord_0000BCKeHfbUPFKCmMtiRU",
+   "created_at": "2026-11-11T07:43:53.229443Z",
+   "cancelled_at": null,
+   "documents": 1
+  }
+ ],
+ "case": "webhookCompletes",
+ "seconds": 9
+}

@@ -1,0 +1,74 @@
+{
+ "steps": {
+  "quote": {
+   "status": 200,
+   "body": {
+    "success": true,
+    "refundAmount": 234.54,
+    "refundCurrency": "USD",
+    "penaltyAmount": 0,
+    "cancellationId": "ore_0000BCKeQ9R7pobbg0YTwv"
+   }
+  },
+  "cancel": {
+   "status": 200,
+   "body": {
+    "status": "refunded",
+    "refundAmount": 234.54,
+    "refundCurrency": "USD",
+    "penaltyAmount": 0,
+    "currency": "USD"
+   }
+  }
+ },
+ "expect": "Duffel order cancelled; Stripe refund = airline refund share of what was paid; booking cancelled",
+ "st": {
+  "stripe": {
+   "status": "succeeded",
+   "amount": 23454,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 23454,
+   "refunded": 23454
+  },
+  "session": {
+   "lifecycle": "CONFIRMED",
+   "status": "completed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [browser] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [browser] claimed for the airline order",
+   "SUPPLIER_BOOKING→CONFIRMED [browser] airline ordered and payment captured"
+  ],
+  "sale": {
+   "id": "7460a96b-d014-496c-8659-00c2efe33a2d",
+   "status": "refunded",
+   "pnr": "QEXLO3",
+   "provider_order_id": "ord_0000BCKePhvvd1ZqJyI4T6",
+   "total_price": "234.54",
+   "charged_price": "234.54",
+   "currency": "USD",
+   "supplier_cost": "214.68"
+  },
+  "supplierAttempts": [],
+  "duffelOrder": {
+   "id": "ord_0000BCKePhvvd1ZqJyI4T6",
+   "booking_reference": "QEXLO3",
+   "cancelled_at": "2026-11-11T07:45:26.687367Z",
+   "documents": 1,
+   "total": "214.68",
+   "currency": "USD"
+  }
+ },
+ "v": {
+  "pass": true,
+  "taken": 0,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": []
+ },
+ "orders": [],
+ "case": "customerCancels"
+}

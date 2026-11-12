@@ -1,0 +1,84 @@
+{
+ "steps": {
+  "booked": {
+   "status": 200,
+   "pnr": "U6GNN7",
+   "bookingStatus": "ticketed"
+  },
+  "quote": {
+   "success": true,
+   "refundAmount": 119.76,
+   "refundCurrency": "USD",
+   "penaltyAmount": 0,
+   "cancellationId": "ore_0000BCKezzocYlnru6xsM4"
+  },
+  "cancel": {
+   "status": "refunded",
+   "refundAmount": 119.76,
+   "refundCurrency": "USD",
+   "penaltyAmount": 109.67999999999999,
+   "currency": "USD"
+  },
+  "check": {
+   "airlineRefund": "119.76",
+   "airlinePenalty": "109.68",
+   "supplierCost": "219.35",
+   "share": 0.4999772053795304,
+   "expectedStripeRefund": 11976,
+   "actualStripeRefund": 11976
+  }
+ },
+ "expect": "Stripe refund = card amount × airline refund ÷ (refund + penalty); order cancelled",
+ "st": {
+  "stripe": {
+   "status": "succeeded",
+   "amount": 23954,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 23954,
+   "refunded": 11976
+  },
+  "session": {
+   "lifecycle": "CONFIRMED",
+   "status": "completed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [browser] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [browser] claimed for the airline order",
+   "SUPPLIER_BOOKING→CONFIRMED [browser] airline ordered and payment captured"
+  ],
+  "sale": {
+   "id": "1e765f08-7fa7-4495-8ae8-5fcb37df1e4a",
+   "status": "refunded",
+   "pnr": "U6GNN7",
+   "provider_order_id": "ord_0000BCKezddB2dZr6FRQRa",
+   "total_price": "239.54",
+   "charged_price": "239.54",
+   "currency": "USD",
+   "supplier_cost": "219.35"
+  },
+  "supplierAttempts": [],
+  "duffelOrder": {
+   "id": "ord_0000BCKezddB2dZr6FRQRa",
+   "booking_reference": "U6GNN7",
+   "cancelled_at": "2026-11-11T07:51:55.356589Z",
+   "documents": 1,
+   "total": "219.35",
+   "currency": "USD"
+  }
+ },
+ "v": {
+  "pass": true,
+  "taken": 11978,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": [
+   "pass = Stripe refund equals the airline refund share of what the card paid"
+  ]
+ },
+ "orders": [],
+ "case": "partialRefund",
+ "seconds": 15
+}

@@ -292,6 +292,20 @@ describe('an airline that said no', () => {
         expect(finishSupplierAttempt).toHaveBeenCalledWith('attempt-1', expect.objectContaining({ status: 'failed' }));
     });
 
+    it('calls a 422 refusal a refusal, not an expired offer', async () => {
+        // Every 422 used to read as OFFER_EXPIRED, which sends the traveller back to search for
+        // a fare that is still on sale when the problem was their own details (BUG-2).
+        vi.mocked(placeDuffelOrder).mockResolvedValue({
+            kind: 'error', status: 422, data: { errors: [{ code: 'validation_error', message: 'The passenger name is not accepted by the airline' }] },
+        });
+
+        const out = await complete();
+
+        expect(out).toMatchObject({ kind: 'failed', code: 'DUFFEL_ORDER_FAILED' });
+        expect((out as { message: string }).message).toMatch(/passenger name is not accepted/);
+        expect(stripe.paymentIntents.cancel).toHaveBeenCalledWith(PI);
+    });
+
     it('calls an expired offer what it is', async () => {
         vi.mocked(placeDuffelOrder).mockResolvedValue({
             kind: 'error', status: 422, data: { errors: [{ code: 'offer_no_longer_available', message: 'Please select another offer' }] },

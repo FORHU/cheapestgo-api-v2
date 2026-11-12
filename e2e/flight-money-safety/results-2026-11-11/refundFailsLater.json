@@ -1,0 +1,91 @@
+{
+ "steps": {
+  "authorise": {
+   "status": "requires_capture"
+  },
+  "confirm": {
+   "status": 200,
+   "pnr": "ZN2F7W",
+   "bookingStatus": "ticketed"
+  },
+  "cancel": {
+   "status": 200,
+   "body": {
+    "status": "refunded",
+    "refundAmount": 246.2,
+    "refundCurrency": "USD",
+    "penaltyAmount": 0,
+    "currency": "USD"
+   }
+  },
+  "stripeRefund": {
+   "id": "re_3UaWF8CJsDyAXJ3J1gETssFW",
+   "status": "succeeded",
+   "amount": 24620
+  }
+ },
+ "expect": "the refund fails at Stripe: the booking must not keep saying refunded while the money is kept",
+ "held": {
+  "amount": 246.2,
+  "currency": "USD",
+  "fare": 225.56,
+  "fee": 20.64
+ },
+ "st": {
+  "stripe": {
+   "status": "succeeded",
+   "amount": 24620,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 24620,
+   "refunded": 0
+  },
+  "session": {
+   "lifecycle": "CONFIRMED",
+   "status": "completed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [browser] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [browser] claimed for the airline order",
+   "SUPPLIER_BOOKING→CONFIRMED [browser] airline ordered and payment captured"
+  ],
+  "sale": {
+   "id": "c70ab2ca-de47-4bd1-a17b-8137ec66e589",
+   "status": "refunded",
+   "pnr": "ZN2F7W",
+   "provider_order_id": "ord_0000BCKeYbiGaTfVgubZPZ",
+   "total_price": "246.20",
+   "charged_price": "246.20",
+   "currency": "USD",
+   "supplier_cost": "225.56"
+  },
+  "supplierAttempts": [],
+  "duffelOrder": {
+   "id": "ord_0000BCKeYbiGaTfVgubZPZ",
+   "booking_reference": "ZN2F7W",
+   "cancelled_at": "2026-11-11T07:47:02.466978Z",
+   "documents": 1,
+   "total": "225.56",
+   "currency": "USD"
+  }
+ },
+ "v": {
+  "pass": false,
+  "taken": 24620,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": []
+ },
+ "orders": [
+  {
+   "id": "ord_0000BCKeYbiGaTfVgubZPZ",
+   "created_at": "2026-11-11T07:46:56.890119Z",
+   "cancelled_at": "2026-11-11T07:47:02.466978Z",
+   "documents": 1
+  }
+ ],
+ "case": "refundFailsLater",
+ "seconds": 149
+}

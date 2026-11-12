@@ -1,4 +1,4 @@
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { config } from '@/config';
 
 /**
@@ -58,6 +58,20 @@ export const BASE_COOKIE_OPTIONS = {
     secure:   SECURE,
     path:     '/' as const,
 };
+
+/**
+ * Sign this browser out: the session, the one it replaced, and the refresh token.
+ *
+ * `sameSite` is repeated because a cookie is cleared by matching the attributes it was set with,
+ * and password sign-in sets `strict`. Both old and new names, as logout does: a session issued
+ * before the rename lives under the old one.
+ */
+export function clearSessionCookies(res: Response): void {
+    const options = { ...BASE_COOKIE_OPTIONS, sameSite: 'strict' as const };
+    res.clearCookie(SESSION_COOKIE, options);
+    res.clearCookie(LEGACY_SESSION_COOKIE, options);
+    res.clearCookie('refresh_token', options);
+}
 
 /** One day, matching the token's own lifetime. */
 export const SESSION_MAX_AGE_MS = 86_400_000;

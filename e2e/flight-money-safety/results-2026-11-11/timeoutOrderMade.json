@@ -1,0 +1,77 @@
+{
+ "steps": {
+  "authorise": {
+   "status": "requires_capture"
+  },
+  "confirm": {
+   "status": 200,
+   "pnr": "RC55J4",
+   "bookingStatus": "ticketed"
+  }
+ },
+ "expect": "read-back finds the order → captured, sale written (confirm 200, or 409 processing then settled)",
+ "held": {
+  "amount": 240.44,
+  "currency": "USD",
+  "fare": 220.19,
+  "fee": 20.25
+ },
+ "st": {
+  "stripe": {
+   "status": "succeeded",
+   "amount": 24044,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 24044,
+   "refunded": 0
+  },
+  "session": {
+   "lifecycle": "CONFIRMED",
+   "status": "completed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [browser] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [browser] claimed for the airline order",
+   "SUPPLIER_BOOKING→SUPPLIER_BOOKING [browser] read back after an unanswered order: the order exists",
+   "SUPPLIER_BOOKING→CONFIRMED [browser] airline ordered and payment captured"
+  ],
+  "sale": {
+   "id": "0039c55d-be21-462e-85df-1f864c023516",
+   "status": "ticketed",
+   "pnr": "RC55J4",
+   "provider_order_id": "ord_0000BCKeE3vbxvU6l9NUbv",
+   "total_price": "240.44",
+   "charged_price": "240.44",
+   "currency": "USD",
+   "supplier_cost": "220.19"
+  },
+  "supplierAttempts": [],
+  "duffelOrder": {
+   "id": "ord_0000BCKeE3vbxvU6l9NUbv",
+   "booking_reference": "RC55J4",
+   "cancelled_at": null,
+   "documents": 1,
+   "total": "220.19",
+   "currency": "USD"
+  }
+ },
+ "v": {
+  "pass": true,
+  "taken": 24044,
+  "saleLive": true,
+  "orderLive": true,
+  "notes": []
+ },
+ "orders": [
+  {
+   "id": "ord_0000BCKeE3vbxvU6l9NUbv",
+   "created_at": "2026-11-11T07:43:14.108953Z",
+   "cancelled_at": null,
+   "documents": 1
+  }
+ ],
+ "case": "timeoutOrderMade",
+ "seconds": 11
+}
