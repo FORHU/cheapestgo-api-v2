@@ -1,4 +1,5 @@
 import type { RoomType } from '@/types/hotels';
+import { groupRoomsByName } from './roomGrouping';
 import type { AmenityGroup, DetailSection, RoomContent } from './roomContent.types';
 
 export interface RateRow {
@@ -42,50 +43,48 @@ const BOARD_LABELS: Record<string, string> = {
 };
 
 /**
- * Groups the flat per-rate options a hotel-scoped TGX search returns into one
- * card per room name, each carrying every board/cancellation variant TGX
- * quoted for it — matching the property page's room cards, which show one
- * room with several selectable rates rather than a duplicate card per rate.
+ * The flat per-rate lines a hotel-scoped TGX search returns, as one card per **Room** with
+ * its **Offers** inside it.
+ *
+ * The rules are [groupRoomsByName]'s and live there — which Room a line belongs to, and which
+ * Offers are the same promise, are domain decisions under ADR-0017 and ADR-0007. This is the
+ * adapter that puts them in the shape the property response has always used; until
+ * 2026-11-12 it was a second, simpler implementation that grouped on the raw supplier name,
+ * and the browser had to redo the work to get a readable page.
  */
 export function groupByRoomName(roomTypes: RoomType[]): RoomOption[] {
-    const groups = new Map<string, RoomType[]>();
-    for (const rt of roomTypes) {
-        const key = rt.roomName ?? 'Room';
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key)!.push(rt);
-    }
+    const grouped = groupRoomsByName(roomTypes.map(rt => ({
+        id:            rt.offerId ?? rt.roomCode ?? rt.roomName ?? 'Room',
+        offerId:       rt.offerId ?? '',
+        name:          rt.roomName ?? 'Room',
+        price:         rt.price,
+        currency:      rt.currency,
+        refundableTag: rt.refundableTag ?? 'NON_REFUNDABLE',
+        cancelPolicy:  rt.cancelPolicy,
+        boardType:     rt.boardCode,
+        roomCode:      rt.roomCode,
+    })));
 
-    const result: RoomOption[] = [];
-    for (const [name, opts] of groups) {
-        opts.sort((a, b) => a.price - b.price);
-        const best = opts[0];
+    const named = (code?: string) => BOARD_LABELS[code ?? ''] ?? code ?? 'Room only';
+    const original = new Map(roomTypes.map(rt => [rt.offerId, rt]));
 
-        const rates: RateRow[] = opts.map(rt => ({
-            offerId:              rt.offerId ?? '',
-            price:                rt.price,
-            currency:             rt.currency,
-            boardCode:            rt.boardCode,
-            boardName:            BOARD_LABELS[rt.boardCode] ?? rt.boardCode ?? 'Room only',
-            refundable:           rt.refundable ?? false,
-            refundableTag:        rt.refundableTag ?? 'NON_REFUNDABLE',
-            cancellationDeadline: rt.cancelPolicy?.cancelPenalties?.[0]?.deadline,
-        }));
-
-        result.push({
-            id:                   best.offerId ?? best.roomCode ?? name,
-            offerId:              best.offerId,
-            name,
-            price:                best.price,
-            currency:             best.currency,
-            refundableTag:        best.refundableTag,
-            boardType:            best.boardCode,
-            boardName:            BOARD_LABELS[best.boardCode] ?? best.boardCode ?? 'Room only',
-            cancellationDeadline: best.cancelPolicy?.cancelPenalties?.[0]?.deadline,
-            cancelPolicy:         best.cancelPolicy,
-            rates,
-        });
-    }
-    return result;
+    return grouped.map(room => ({
+        id:                   room.id,
+        offerId:              room.offerId,
+        name:                 room.name,
+        price:                room.price,
+        currency:             room.currency,
+        refundableTag:        room.refundableTag,
+        boardType:            room.boardType,
+        boardName:            named(room.boardType),
+        cancellationDeadline: room.rates[0]?.cancellationDeadline,
+        // The headline Offer's own policy, which checkout and the cancellation copy read.
+        cancelPolicy:         original.get(room.offerId)?.cancelPolicy,
+        rates: room.rates.map(rate => ({
+            ...rate,
+            boardName: named(rate.boardCode),
+        })),
+    }));
 }
 
 function formatDateForApi(date: Date): string {

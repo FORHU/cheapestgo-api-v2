@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+    splitRoomName,
     normalizeRoomName,
     isMeaningfulRoomName,
     extractRoomVariantLabel,
@@ -11,6 +12,39 @@ import {
  * on TGX's raw name, so the rate leaked into card titles and a supplier code could title
  * a card outright. Only the rules crossed; v1's file is typed on LiteAPI's model.
  */
+
+/**
+ * ADR-0007. A supplier hangs the bed, the room's features and the offer's terms in the same
+ * parentheses; only the last of those three is a term, and reading any of them as identity —
+ * or stripping all of them as noise — sells somebody a room they did not choose.
+ */
+describe('splitRoomName', () => {
+    it('takes the bed off the name and gives it to the offer', () => {
+        expect(splitRoomName('Deluxe Twin room (twin beds)'))
+            .toEqual({ name: 'Deluxe Twin room', bed: 'twin beds', offerTerms: [] });
+    });
+
+    it('lifts an offer qualifier off the name, as a chip', () => {
+        // The pair reported as a rendering fault on 2026-11-04: one card promised twin beds
+        // in its title while its own bullet said the bed type was not guaranteed.
+        expect(splitRoomName('Deluxe Twin room (twin beds) (bed type is subject to availability)'))
+            .toEqual({ name: 'Deluxe Twin room', bed: 'twin beds', offerTerms: ['bed not guaranteed'] });
+    });
+
+    it('splits a parenthetical a supplier packed with both kinds', () => {
+        expect(splitRoomName('Suite (bed type is subject to availability, lounge access)'))
+            .toEqual({ name: 'Suite', bed: 'lounge access', offerTerms: ['bed not guaranteed'] });
+    });
+
+    it('keeps a room feature, which is identity rather than a term', () => {
+        expect(splitRoomName('Standard Double room (shared bathroom)').bed).toBe('shared bathroom');
+    });
+
+    it('keeps the whole name when stripping would leave a supplier code', () => {
+        expect(splitRoomName('U (Superior Double room)'))
+            .toEqual({ name: 'U (Superior Double room)', bed: null, offerTerms: [] });
+    });
+});
 
 describe('normalizeRoomName', () => {
     it('strips the rate TGX appends to the name', () => {
