@@ -92,27 +92,30 @@ export function buildCancelPreview(input: {
 }
 
 /**
- * The end of the window the figure above is true for.
+ * When the figure above stops being true: **the next deadline still ahead.**
  *
- * For a tier, that is when the tier in force expires — and only if that is still ahead, because
- * once every deadline has passed the last tier is simply the permanent answer. For a plain
- * free-cancellation rate it is the free deadline. Anything that never refunded has nothing to
- * wait for.
+ * A tier's deadline is when its penalty starts, so the tier in force has by definition already
+ * begun and its own date is in the past. What the guest needs is the next escalation — before any
+ * penalty has started that is the end of the free window, and inside a penalty step it is when
+ * the next step begins. This used to return the applied tier's own deadline, which under the
+ * corrected reading is always behind us and so always resolved to null.
+ *
+ * Only offered while something is still refundable. A rate that returns nothing has no window
+ * left to wait out, and naming a date would imply there is.
  */
 function deadlineOf(
     decision: CancellationResult,
     policy: CancellationPolicyInput | null,
     now: number,
 ): string | null {
-    const ahead = (value: string | Date | null | undefined): string | null => {
-        if (!value) return null;
-        const t = new Date(value).getTime();
-        return Number.isFinite(t) && t > now ? new Date(t).toISOString() : null;
-    };
+    if (!decision.refundable) return null;
 
-    if (decision.appliedTier) return ahead(decision.appliedTier.cancelDeadline);
-    if (decision.policyUsed === 'free_cancellation' && decision.refundable) {
-        return ahead(policy?.freeCancelDeadline);
-    }
-    return null;
+    const nextTier = (policy?.tiers ?? [])
+        .map(t => new Date(t.cancelDeadline).getTime())
+        .filter(t => Number.isFinite(t) && t > now)
+        .sort((a, b) => a - b)[0];
+    if (nextTier !== undefined) return new Date(nextTier).toISOString();
+
+    const free = policy?.freeCancelDeadline ? new Date(policy.freeCancelDeadline).getTime() : null;
+    return free !== null && Number.isFinite(free) && free > now ? new Date(free).toISOString() : null;
 }

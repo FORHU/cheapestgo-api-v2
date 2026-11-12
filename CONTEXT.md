@@ -48,3 +48,62 @@ A customer's request to play a tee time, paid for but not final until the team h
 
 A booking can carry **extras** — club rental, a caddie, a cart, a golf lesson or a bucket of range balls — up to one of each per player, at a price per item the course sets; a course offers only what it has a price for. Their prices lock at the hold, so changing them means a new hold, and the service fee is charged on green fee plus extras. The team arranges them with the course when it confirms; there is no stock to run out of.
 _Avoid_: calling a requested booking confirmed — the customer has not been charged and the course has not agreed.
+
+## Payment
+One attempt to take money — a Stripe PaymentIntent — and the grain the back office counts in. Not
+the same thing as a **Booking**: one booking may carry several payments where the first was
+abandoned or declined, and a payment may carry no booking at all. That last case is the one worth
+having the word for, because a payment with no booking is a guest who has paid for a stay nobody
+can see ([ADR-0026](../cheapest-go-app/docs/adr/0026-the-supplier-owns-reservation-state-and-divergence-is-derived.md)
+calls it an *Unrecorded Reservation*), and it only exists as a row in Stripe.
+_Avoid_: counting payments per booking. A booking-shaped view cannot represent a payment that
+never became one, which is the failure the back office exists to find.
+_Avoid_: reading a payment's status as the booking's. The money and the reservation move
+independently: captured with no ticket issued is normal for a few minutes and a defect after an
+hour, and a view that collapses them cannot tell those apart.
+_Avoid_: totalling payments from this Stripe account without scoping them. FORHU settles several
+products into it under one pooled payout, so an unscoped total is other products' money as well
+as ours — and for the same reason a **per-product payout** cannot be derived at all.
+
+## Cancellation
+Ending a reservation that was made. Not the same act as a **Refund**: a cancellation decides
+whether money comes back and how much, but the two part company often enough to need separate
+words — a supplier can refuse a cancellation after the card has already been refunded, and a
+non-refundable stay can be cancelled with nothing returned at all. How much comes back is read
+from the policy snapshot taken when the booking was made, never from what the supplier would
+quote today ([ADR-0023](../cheapest-go-app/docs/adr/0023-a-cancellation-refunds-what-the-recorded-terms-allow.md)).
+A customer cancels their own booking and the team cancels on a customer's behalf; both travel the
+same path, so one policy decides both and one record describes both. A cancellation the supplier
+never answers is not a failed cancellation — the reservation may well be gone.
+_Avoid_: treating "cancelled" as one state. Cancelled-and-refunded, cancelled-with-a-penalty and
+cancelled-but-the-refund-failed are three different answers to "where is my money", and a view
+that prints one word cannot tell a customer which of them they got.
+_Avoid_: calling a cancellation by the team an override. The policy binds the team too; an
+override is the separate, deliberate act of returning more than the policy allows.
+
+## Refund
+Money going back to the card. Stripe is the only authority on whether it happened; our own refund
+record holds what Stripe cannot know — who asked for it, under which policy, and what was refused.
+A refund **issued** is not a refund **settled**: Stripe reports it pending until the card network
+completes it, which takes days, and the customer is asking about the second one. A **Refund
+Override** is a refund larger than the policy allows, granted by the team and recorded as an
+override against the admin who granted it, because on a non-refundable stay the supplier still
+bills us and that difference is a decision somebody made, not an accident.
+_Avoid_: inferring a refund from a booking's status. Most of the paths that move money write no
+refund record at all, so a booking reading `cancelled` may have refunded in full, in part, or not
+at all.
+_Avoid_: using "refunded" for a released authorisation. A hold that is voided was never captured:
+no money left the customer, and nothing appears on their statement for them to look for.
+
+## Evidence Provenance
+How a fact in an evidence pack came to be known, which the pack states beside every fact rather
+than presenting them all as equally true. Four kinds: **re-verified** (asked of the provider at
+the moment of export), **provider-recorded** (what the provider told us at the time, with that
+time), **internally-recorded** (our own row), and **unavailable** (looked for, not found).
+_Avoid_: asserting that a service was delivered. The pack is read by a card network and the
+platform is not in a position to know: a hotel reservation can be cancelled in the supplier's own
+dashboard and leave no trace here, so our record saying `confirmed` is evidence of what we were
+told, never of what happened.
+_Avoid_: labelling a hotel fact *re-verified*. TravelgateX exposes no booking-read — search,
+quote, book and cancel only — so a hotel booking cannot be re-read at export. Flights can, through
+Duffel's order endpoint, and the asymmetry belongs on the document.

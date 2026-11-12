@@ -380,9 +380,14 @@ Rules that matter:
 - **Only an increase beyond tolerance prompts.** Comparing the absolute difference used to ask
   people to "approve" a fare that had got *cheaper*. A drop is adopted silently: the page replaces
   the offer's total with `newPrice`, so checkout shows what the supplier now quotes.
-- **It soft-fails.** A 404, a non-2xx, a thrown error or a missing offer id all return
+- **It soft-fails.** A non-2xx, a thrown error or a missing offer id all return
   `success: true, priceChanged: false`. A provider hiccup must not block a booking the order path
   can still complete; the real error will surface there in its own words.
+- **Except a gone offer.** A 404/410 from Price Action is checked against the offer read
+  (`getDuffelOffer`, the one `book` and the checkout call a fare gone on). When that agrees, the
+  answer is `offerExpired: true, seatsAvailable: false`, and the results page searches again in
+  place with a note saying why. A 404 on Price Action's word alone still soft-passes: a wrong
+  "gone" would refresh the results on every pick.
 - **One tolerance for every gate** (`getFlightPriceTolerance`: `0.50` on a live token, `10.00`
   on a `duffel_test_` token, overridable with `FLIGHT_PRICE_TOLERANCE`; compared against **base
   fares**, never a total that includes seats or bags). When two gates had

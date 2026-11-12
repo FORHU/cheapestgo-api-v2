@@ -242,6 +242,18 @@ jobs:
           # the Stripe authorisation all still work, only the supplier call is blocked.
           # Unset books for real against the live supplier.
           HOTEL_BOOKING_ENABLED: ${{ secrets.HOTEL_BOOKING_ENABLED || vars.HOTEL_BOOKING_ENABLED }}
+          # Which supplier this host talks to. Absent from this workflow until 2026-11-10, which
+          # meant the dev container silently defaulted to `travelgatex` — the live one. Set it to
+          # `mock` to make this host a test bed: a supplier that always answers, and that can be
+          # told to fail on command. See ADR-0002's amendment.
+          HOTEL_PROVIDER: ${{ secrets.HOTEL_PROVIDER || vars.HOTEL_PROVIDER }}
+          # Required alongside HOTEL_PROVIDER=mock, because `NODE_ENV=production` is written into
+          # this container (below) and config.ts refuses a mock supplier in production without it.
+          ALLOW_MOCK_HOTEL_PROVIDER: ${{ secrets.ALLOW_MOCK_HOTEL_PROVIDER || vars.ALLOW_MOCK_HOTEL_PROVIDER }}
+          # Which failure the mock should produce: ok, sold_out, book_rejected, book_timeout,
+          # cancel_rejected, cancel_timeout, price_up, price_down, prebook_timeout. Unset is `ok`.
+          MOCK_HOTEL_SCENARIO: ${{ secrets.MOCK_HOTEL_SCENARIO || vars.MOCK_HOTEL_SCENARIO }}
+          MOCK_HOTEL_CURRENCY: ${{ secrets.MOCK_HOTEL_CURRENCY || vars.MOCK_HOTEL_CURRENCY }}
           INTERNAL_API_URL: ${{ secrets.INTERNAL_API_URL || vars.INTERNAL_API_URL }}
           JWT_EXPIRES_IN: ${{ secrets.JWT_EXPIRES_IN || vars.JWT_EXPIRES_IN }}
           JWT_REFRESH_EXPIRES_IN: ${{ secrets.JWT_REFRESH_EXPIRES_IN || vars.JWT_REFRESH_EXPIRES_IN }}
@@ -255,6 +267,9 @@ jobs:
           # behaviour exactly, so this is safe to leave empty.
           OAUTH_RETURN_ORIGINS: ${{ secrets.OAUTH_RETURN_ORIGINS || vars.OAUTH_RETURN_ORIGINS }}
           SITE_URL: ${{ secrets.SITE_URL || vars.SITE_URL }}
+          # The Stripe account this host's key must belong to. Set it and the API refuses to start
+          # on a mismatch — a live key against this database, or a test key against production.
+          # Unset is unenforced. See lib/stripeAccount.ts.
           STRIPE_EXPECTED_ACCOUNT: ${{ secrets.STRIPE_EXPECTED_ACCOUNT || vars.STRIPE_EXPECTED_ACCOUNT }}
           SUPPORT_ATTACHMENTS_BUCKET: ${{ secrets.SUPPORT_ATTACHMENTS_BUCKET || vars.SUPPORT_ATTACHMENTS_BUCKET }}
           TRANSLATION_BASE_URL: ${{ secrets.TRANSLATION_BASE_URL || vars.TRANSLATION_BASE_URL }}
@@ -280,13 +295,26 @@ jobs:
           # them: on this host the instance role supplies credentials, and an
           # explicit pair makes the SDK stop walking its provider chain.
           #
-          # The hotel suppliers ARE published here, and that is the whole exposure:
-          # TravelgateX has no sandbox, so these are live keys and `book` creates a
-          # real reservation at a real hotel with nothing marking it as a test.
-          # `NODE_ENV=production` above means config.ts's non-production guard does
-          # not fire on this host either. The lever is HOTEL_BOOKING_ENABLED=false,
-          # which refuses at the one `provider.book` call site and releases the
-          # payment hold. Set it before handing this URL to anyone. See ADR-0002.
+          # The hotel suppliers ARE published here. TravelgateX has no sandbox, so
+          # these are live keys: with HOTEL_PROVIDER unset or `travelgatex`, `book`
+          # creates a real reservation at a real hotel with nothing marking it as a
+          # test, and `NODE_ENV=production` above means config.ts's non-production
+          # guard does not fire on this host to stop it.
+          #
+          # Two levers, in order of preference:
+          #
+          #   HOTEL_PROVIDER=mock + ALLOW_MOCK_HOTEL_PROVIDER=true
+          #     The supplier cannot be reached at all, by any route, and search still
+          #     works. This is what makes the host a test bed. Use MOCK_HOTEL_SCENARIO
+          #     to make it fail on demand — including cancel_rejected and
+          #     cancel_timeout, which the live supplier cannot be asked to produce.
+          #
+          #   HOTEL_BOOKING_ENABLED=false
+          #     Keeps the live supplier for search but refuses at the one
+          #     `provider.book` call site and releases the payment hold. Narrower:
+          #     it blocks booking only, so a cancellation still reaches OTV.
+          #
+          # One of the two before handing this URL to anyone. See ADR-0002.
           #
           # Written only when set. `add` returns 0 on purpose: under `set -e` a
           # bare `[ -n "$x" ] && printf ...` aborts on the first empty value.
@@ -315,7 +343,11 @@ jobs:
           add GOOGLE_CLIENT_ID                 "${GOOGLE_CLIENT_ID:-}"
           add GOOGLE_CLIENT_SECRET             "${GOOGLE_CLIENT_SECRET:-}"
           add GOOGLE_PLACES_API_KEY            "${GOOGLE_PLACES_API_KEY:-}"
+          add ALLOW_MOCK_HOTEL_PROVIDER        "${ALLOW_MOCK_HOTEL_PROVIDER:-}"
           add HOTEL_BOOKING_ENABLED            "${HOTEL_BOOKING_ENABLED:-}"
+          add HOTEL_PROVIDER                   "${HOTEL_PROVIDER:-}"
+          add MOCK_HOTEL_CURRENCY              "${MOCK_HOTEL_CURRENCY:-}"
+          add MOCK_HOTEL_SCENARIO              "${MOCK_HOTEL_SCENARIO:-}"
           add INTERNAL_API_URL                 "${INTERNAL_API_URL:-}"
           add JWT_EXPIRES_IN                   "${JWT_EXPIRES_IN:-}"
           add JWT_REFRESH_EXPIRES_IN           "${JWT_REFRESH_EXPIRES_IN:-}"

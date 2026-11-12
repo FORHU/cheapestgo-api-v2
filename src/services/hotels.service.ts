@@ -1252,27 +1252,71 @@ export class HotelsService {
 
     async cancelBooking(params: {
         bookingRef: string;
+        /** The customer cancelling their own booking. Ignored when `admin` is set. */
         userId:     string;
         paymentIntentId?: string;
+        /**
+         * Set when a member of the team is cancelling on a customer's behalf (ADR-0004).
+         *
+         * There is one cancellation path and the team travels it, so the policy, the supplier
+         * call, the refund and the lifecycle are the same code for both. The only differences are
+         * recorded here: who did it, and whether they deliberately returned more than the terms
+         * allow.
+         */
+        admin?: {
+            id:    string;
+            email: string;
+            /**
+             * Return the whole charge regardless of the policy.
+             *
+             * On a non-refundable stay the supplier still bills us, so this is a loss somebody
+             * chose to take. It is written to the refund log as an override against this admin,
+             * because the difference between a mistake and a decision is whether it is recorded.
+             */
+            refundInFull?: boolean;
+            /** Why. Goes on the refund record. */
+            reason?: string;
+        };
     }) {
-        const { bookingRef, userId } = params;
+        const { bookingRef, userId, admin } = params;
+        const actor: LifecycleActor = admin ? 'admin' : 'browser';
 
-        // 1. Ownership check
+        // 1. Who may cancel this. A customer may cancel their own booking; an admin may cancel
+        //    anyone's, and which of them it was is recorded rather than inferred.
         const booking = await prisma.bookings.findFirst({ where: { booking_id: bookingRef } });
         if (!booking) throw new AppError(404, 'Booking not found', 'BOOKING_NOT_FOUND');
-        if (booking.user_id !== userId) throw new AppError(403, 'Not authorized to cancel this booking', 'FORBIDDEN');
+        if (!admin && booking.user_id !== userId) throw new AppError(403, 'Not authorized to cancel this booking', 'FORBIDDEN');
 
         // 1b. What the recorded terms say this cancellation returns. Decided before
         //     anything is cancelled, so the supplier call and the refund agree on the
         //     same answer, and computed from the snapshot taken at booking time rather
         //     than from whatever the supplier quotes today (ADR-0023).
         const policy = await this.repo.findPolicySnapshot(bookingRef);
-        const cancellation = calculateCancellation({
+        const policyDecision = calculateCancellation({
             totalPrice: Number(booking.total_price),
             currency:   booking.currency ?? 'PHP',
             checkIn:    booking.check_in ?? new Date(),
             policy,
         });
+
+        // An override replaces what the terms allow, and nothing else: the supplier is still
+        // cancelled the same way, and the row still records the penalty the policy wanted so the
+        // size of the goodwill is legible afterwards.
+        const overridden = Boolean(admin?.refundInFull);
+        const cancellation = overridden
+            ? {
+                ...policyDecision,
+                refundable:    true,
+                refundType:    'admin_override',
+                refundRatio:   1,
+                refundAmount:  Number(booking.total_price),
+                penaltyAmount: 0,
+                message:       `Full refund authorised by ${admin!.email}`
+                    + (admin!.reason ? `: ${admin!.reason}` : '')
+                    + ` (policy would have returned ${policyDecision.refundAmount} ${policyDecision.currency}`
+                    + ` with a ${policyDecision.penaltyAmount} penalty)`,
+            }
+            : policyDecision;
 
         // 2. Resolve payment_intent_id â from params, then DB, then Stripe search
         let paymentIntentId = params.paymentIntentId || booking.payment_intent_id || null;
@@ -1289,7 +1333,7 @@ export class HotelsService {
             } catch { /* non-fatal */ }
         }
 
-        await this.lifecycle.recordCancelStart(bookingRef, 'browser');
+        await this.lifecycle.recordCancelStart(bookingRef, actor);
 
         // 3. TGX cancellation (skip on refund-failed retry to avoid duplicate cancel)
         const isRefundRetry = booking.status === 'cancelled_refund_failed';
@@ -1311,7 +1355,7 @@ export class HotelsService {
                 const settled = await this.settleFailedSupplierCancel(supplier, supplierErr, bookingRef, meta?.supplierRef);
                 if (settled === 'refused') {
                     console.warn('[hotels.cancelBooking] supplier refused:', supplierErr?.message?.slice(0, 200));
-                    await this.lifecycle.cancelRefused(bookingRef, supplierErr?.message ?? 'refused', 'browser');
+                    await this.lifecycle.cancelRefused(bookingRef, supplierErr?.message ?? 'refused', actor);
                     throw new AppError(
                         409,
                         'The hotel did not accept the cancellation, so your booking has not changed and you have not been refunded. Please contact support.',
@@ -1320,7 +1364,7 @@ export class HotelsService {
                 }
                 if (settled === 'unknown') {
                     console.error('[hotels.cancelBooking] supplier outcome unknown:', supplierErr?.message?.slice(0, 200));
-                    await this.lifecycle.cancelUnconfirmed(bookingRef, supplierErr?.message ?? 'unknown', 'browser');
+                    await this.lifecycle.cancelUnconfirmed(bookingRef, supplierErr?.message ?? 'unknown', actor);
                     throw new AppError(
                         502,
                         'We could not confirm the cancellation with the hotel. Nothing has been refunded and your booking has not been changed — please check again shortly or contact support.',
@@ -1340,7 +1384,10 @@ export class HotelsService {
         const refundLogId = paymentIntentId && cancellation.refundable && cancellation.refundAmount > 0
             ? await this.repo.openRefund({
                 bookingId:       bookingRef,
-                userId,
+                // The booking's owner, not the caller: an admin cancelling for a customer is
+                // still a refund to that customer, and the column is a foreign key to the user.
+                userId:          booking.user_id,
+                requestedBy:     admin?.email ?? null,
                 refundType:      cancellation.refundType,
                 requestedAmount: cancellation.refundAmount,
                 penaltyAmount:   cancellation.penaltyAmount,
@@ -1412,7 +1459,7 @@ export class HotelsService {
             data:  { status: finalStatus, updated_at: new Date() },
         });
 
-        await this.lifecycle.recordCancelEnd(bookingRef, finalStatus, 'browser');
+        await this.lifecycle.recordCancelEnd(bookingRef, finalStatus, actor);
 
         return {
             success: true,
@@ -1565,9 +1612,11 @@ export class HotelsService {
      * nothing and asks no supplier. Another traveller's reference is a 404, not a 403: that
      * a booking exists is not theirs to learn.
      */
-    async getCancelPreview(reference: string, userId: string, now?: number) {
+    async getCancelPreview(reference: string, userId: string, now?: number, asAdmin = false) {
         const booking = await prisma.bookings.findFirst({ where: { booking_id: reference } });
-        if (!booking || booking.user_id !== userId) throw new AppError(404, 'Booking not found', 'BOOKING_NOT_FOUND');
+        // A 404 rather than a 403 for a booking someone else owns: a customer probing references
+        // learns nothing from it. An admin may preview anyone's (ADR-0004).
+        if (!booking || (!asAdmin && booking.user_id !== userId)) throw new AppError(404, 'Booking not found', 'BOOKING_NOT_FOUND');
 
         const policy = await this.repo.findPolicySnapshot(reference);
         return {

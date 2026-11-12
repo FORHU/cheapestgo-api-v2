@@ -836,11 +836,20 @@ model sessions {
 }
 
 model stripe_processed_events {
-  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  event_id     String    @unique
-  event_type   String?
-  processed_at DateTime  @default(now()) @db.Timestamptz(6)
-  completed_at DateTime? @db.Timestamptz(6)
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  event_id          String    @unique
+  event_type        String?
+  processed_at      DateTime  @default(now()) @db.Timestamptz(6)
+  completed_at      DateTime? @db.Timestamptz(6)
+  // Diagnosis, added 2026-11-09. All optional: the claim must never fail for want of one.
+  payment_intent_id String?
+  booking_reference String?
+  error_message     String?
+  delivery_count    Int       @default(1)
+  last_received_at  DateTime? @db.Timestamptz(6)
+
+  @@index([payment_intent_id], map: "stripe_processed_events_pi_idx")
+  @@index([booking_reference], map: "stripe_processed_events_ref_idx")
 }
 
 model tgx_destination_cache {
@@ -1001,8 +1010,15 @@ model hotel_prebook_quotes {
   gross      Decimal  @default(0) @db.Decimal(12, 4)
   currency   String   @default("USD")
   room_name  String?
-  check_in   String?
-  check_out  String?
+  // `date` in the database, not text. The schema said `String?` from the first commit, which
+  // made Prisma bind these as text against a `date` column: Postgres answered "incorrect binary
+  // data format in bind parameter 6" and the whole upsert failed — taking `gross`, `currency`
+  // and `expires_at` with it, which checkout *does* read. Every prebook recorded nothing and
+  // every hotel checkout answered QUOTE_NOT_FOUND. v1's own migration
+  // (20260816000001_hotel_prebook_quotes.sql) creates them as DATE, and api-v2 shares that
+  // database (ADR-0001), so the database was right and this file was wrong.
+  check_in   DateTime? @db.Date
+  check_out  DateTime? @db.Date
   expires_at DateTime @default(dbgenerated("(now() + '00:30:00'::interval)")) @db.Timestamptz(6)
   created_at DateTime @default(now()) @db.Timestamptz(6)
 

@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma';
+import { openRefund, closeRefund, type CloseRefundOutcome } from '@/lib/refundLog';
 import { Prisma } from '@prisma/client';
 import { hotelLocationNames } from '@/lib/geo/hotelLocation';
 import type { EtgHotelContent } from '@/lib/hotels/etg';
@@ -407,13 +408,25 @@ export class HotelsRepository {
         checkOut:  string | null;
         expiresAt: Date;
     }) {
+        // The suppliers hand these over as plain `YYYY-MM-DD`; the columns are `date`. Coerced
+        // here rather than at each caller, because a bad value must not cost us the row: the
+        // figures checkout charges from (`gross`, `currency`, `expires_at`) share this upsert,
+        // and a rejected bind parameter fails all of them together.
+        const asDate = (value: string | null): Date | null => {
+            if (!value) return null;
+            // Pinned to midnight UTC. A bare `new Date('2026-11-26')` is already UTC, but a
+            // value that arrives with a time would drift the day in a negative-offset zone.
+            const date = new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
+            return Number.isNaN(date.getTime()) ? null : date;
+        };
+
         const row = {
             net:        new Prisma.Decimal(quote.net),
             gross:      new Prisma.Decimal(quote.gross),
             currency:   quote.currency.toUpperCase(),
             room_name:  quote.roomName,
-            check_in:   quote.checkIn,
-            check_out:  quote.checkOut,
+            check_in:   asDate(quote.checkIn),
+            check_out:  asDate(quote.checkOut),
             expires_at: quote.expiresAt,
         };
 
@@ -493,13 +506,10 @@ export class HotelsRepository {
     }
 
     /**
-     * Open a refund in the log, before any money moves (ported from v1's
-     * `createRefundRequest`).
+     * Open a refund in the log, before any money moves.
      *
-     * Written first so that a crash between Stripe issuing the refund and the booking being
-     * updated still leaves a row saying a refund of this amount was on its way for this
-     * booking — the difference between a trace and an afternoon in the Stripe dashboard.
-     * Returns null rather than throwing: the caller decides what a missing log costs.
+     * Delegates to `lib/refundLog`, which flights, golf and the admin route also write through
+     * (ADR-0004). Kept as a method so the hotel service reads the same as it always did.
      */
     async openRefund(input: {
         bookingId:       string;
@@ -509,55 +519,14 @@ export class HotelsRepository {
         penaltyAmount:   number;
         currency:        string;
         reason:          string;
+        requestedBy?:    string | null;
     }): Promise<string | null> {
-        try {
-            const snapshot = await prisma.booking_policy_snapshots.findUnique({
-                where:  { booking_id: input.bookingId },
-                select: { id: true },
-            });
-            const row = await prisma.refund_logs.create({
-                data: {
-                    booking_id:         input.bookingId,
-                    user_id:            input.userId,
-                    policy_snapshot_id: snapshot?.id ?? null,
-                    refund_type:        input.refundType,
-                    requested_amount:   input.requestedAmount,
-                    penalty_amount:     input.penaltyAmount,
-                    currency:           input.currency,
-                    status:             'pending',
-                    status_reason:      input.reason.slice(0, 500),
-                },
-                select: { id: true },
-            });
-            return row.id;
-        } catch (err: any) {
-            console.error('[refund_logs] could not open a refund:', err?.message);
-            return null;
-        }
+        return openRefund({ ...input, product: 'hotel' });
     }
 
-    /**
-     * Close a refund with what actually happened.
-     *
-     * **`failed` when no refund was issued.** v1's `processRefund` marked the row
-     * `processed`, with the full amount approved, whether or not Stripe had refunded
-     * anything — its caller then set the booking to `cancelled_refund_failed`, so the booking
-     * and the log disagreed about the one fact the log exists to record.
-     */
-    async closeRefund(refundLogId: string, outcome:
-        | { issued: true; approvedAmount: number; externalRef: string }
-        | { issued: false; reason: string },
-    ): Promise<void> {
-        await prisma.refund_logs.update({
-            where: { id: refundLogId },
-            data: outcome.issued
-                ? { status: 'processed', approved_amount: outcome.approvedAmount, external_ref: outcome.externalRef, processed_at: new Date() }
-                : { status: 'failed', status_reason: outcome.reason.slice(0, 500), processed_at: new Date() },
-        }).catch((err: any) => {
-            // Stripe has already done whatever it did; a log that failed to close does not
-            // undo it, and the pending row is still there to say so.
-            console.error(`[refund_logs] could not close ${refundLogId}:`, err?.message);
-        });
+    /** Close a refund with what actually happened. See `lib/refundLog`. */
+    async closeRefund(refundLogId: string, outcome: CloseRefundOutcome): Promise<void> {
+        return closeRefund(refundLogId, outcome);
     }
 
     /** The recorded terms a cancellation must be judged against, tiers included. */

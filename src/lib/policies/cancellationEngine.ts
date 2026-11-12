@@ -62,18 +62,37 @@ function penaltyFor(tier: PolicyTier, totalPrice: number): number {
 }
 
 /**
- * The tier in force right now: the first whose deadline has not yet passed. Tiers are
- * ordered cheapest-to-dearest by `tierOrder`, so the earliest surviving deadline is the
- * one the customer still qualifies for. Once every deadline has passed the last tier
- * stands, which is the full penalty.
+ * The penalty in force right now: **the last one whose deadline has already passed.**
+ *
+ * A tier's `cancelDeadline` is the moment its penalty *starts*, not a date to cancel before.
+ * Everything else in the system reads it that way — the mock supplier's own `refundFor` ("the
+ * last one whose deadline has passed; before the first, none"), the confirmation email ("free to
+ * cancel until {deadline}. After that a cancellation fee applies"), and the Trips page ("After
+ * {date}: penalty of {amount}").
+ *
+ * This function used to take the opposite reading: the *first* tier whose deadline had **not**
+ * passed, falling back to the last tier. That charged the first penalty to a guest who was still
+ * inside the free window. On 2026-11-10, a booking whose own page read "Free cancellation until
+ * November 23, 2026" refunded 0.37 of 120.37 USD, because the 23 November tier was the first one
+ * still ahead and so was treated as the one in force.
+ *
+ * Ordered by deadline rather than by `tierOrder`: the order a supplier numbers its steps in is
+ * its own business, and the question here is which deadline has most recently passed.
+ *
+ * Returns null when no deadline has passed — the free window before the first penalty. The caller
+ * reads that as a full refund, and distinguishes it from a policy carrying no tiers at all, which
+ * is incoherent rather than free.
  */
 function tierInForce(tiers: PolicyTier[], now: number): PolicyTier | null {
-    if (!tiers.length) return null;
+    const started = tiers
+        .filter(t => {
+            const at = new Date(t.cancelDeadline).getTime();
+            // An unreadable deadline cannot be shown to have started, so it never applies.
+            return Number.isFinite(at) && at <= now;
+        })
+        .sort((a, b) => new Date(a.cancelDeadline).getTime() - new Date(b.cancelDeadline).getTime());
 
-    const ordered = [...tiers].sort((a, b) => a.tierOrder - b.tierOrder);
-    const upcoming = ordered.find(t => new Date(t.cancelDeadline).getTime() > now);
-
-    return upcoming ?? ordered[ordered.length - 1];
+    return started.length ? started[started.length - 1] : null;
 }
 
 export function calculateCancellation(
@@ -145,14 +164,32 @@ export function calculateCancellation(
         }
     }
 
-    const tier = tierInForce(policy.tiers, now);
-    if (!tier) {
-        // Tiered or partial-refund policy with no tiers is incoherent; refuse rather
-        // than guess in the customer's favour and absorb a supplier penalty.
+    // Tiered or partial-refund policy with no tiers is incoherent; refuse rather
+    // than guess in the customer's favour and absorb a supplier penalty.
+    if (!policy.tiers.length) {
         return noRefund(
             'This booking\'s cancellation terms could not be read. Contact support to cancel.',
             'standard',
         );
+    }
+
+    const tier = tierInForce(policy.tiers, now);
+
+    // Tiers exist, but none has started yet: the free window runs up to the first deadline, so
+    // cancelling now costs nothing. This is the case that was being charged a penalty — see
+    // `tierInForce`.
+    if (!tier) {
+        return {
+            refundable: true,
+            refundAmount: round2(totalPrice),
+            penaltyAmount: 0,
+            currency,
+            refundType: 'full_refund',
+            message: 'Free cancellation — the full amount is refunded.',
+            appliedTier: null,
+            policyUsed: 'free_cancellation',
+            refundRatio: 1,
+        };
     }
 
     const penalty = Math.min(penaltyFor(tier, totalPrice), round2(totalPrice));

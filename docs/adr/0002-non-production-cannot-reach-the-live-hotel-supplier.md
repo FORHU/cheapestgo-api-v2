@@ -93,3 +93,32 @@ out the URL believing it was safe.
 
 A supplier added later with no sandbox inherits none of this automatically. The rule is about
 TravelgateX by name; the next one needs its own line.
+
+## Amendment, 2026-11-10 — the dev host becomes a test bed
+
+The paragraph above describes the dev host as an unsolved problem. Testing cancellation and refund
+end to end made it one that had to be solved, because that work needs a supplier that answers — and
+answers badly on request — which the live one cannot be asked to do.
+
+**The dev host runs the mock supplier.** `deploy-dev.yml` gains `HOTEL_PROVIDER`,
+`ALLOW_MOCK_HOTEL_PROVIDER` and `MOCK_HOTEL_SCENARIO`, none of which it could set before:
+`HOTEL_PROVIDER` was not in its env list at all, so the dev container has been defaulting to
+`travelgatex` this whole time. `ALLOW_MOCK_HOTEL_PROVIDER=true` is needed because that host writes
+`NODE_ENV=production`, which is the same reason the guard in the other direction never fired there.
+
+`TRAVELGATEX_*` stays published. The credentials are what make hotel *content* work, and the
+provider selection — not the absence of a key — is now what decides whether anything is booked.
+This is a deliberate reversal of the "configuration discipline alone" alternative rejected above,
+and it is only acceptable because the selection is enforced in code at startup rather than written
+down in a runbook.
+
+**The Stripe key is checked the same way the supplier is.** `assertStripeAccount` already existed,
+used by the reconciliation cron alone, where it refuses to run when the key's account and the
+database belong to different environments. That check now also runs once at boot: a key whose
+account does not match `STRIPE_EXPECTED_ACCOUNT` stops the process, the way a mock provider in
+production does. It fails open when the variable is unset or Stripe is unreachable, because a
+supplier outage must not be able to take the fleet down.
+
+This closes the mirror of the original incident. That one was a test Stripe key paired with a live
+supplier. The one this prevents is a live Stripe key paired with a test database — the shape that
+`v2.cheapestgo.com` has today, and the reason a tester cannot safely be sent there yet.

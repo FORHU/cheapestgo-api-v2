@@ -71,3 +71,54 @@ describe('originOfRequest', () => {
         expect(originOfRequest({})).toBeNull();
     });
 });
+
+/**
+ * The API is not a place to send a person.
+ *
+ * `API_URL` used to sit in the same allowlist as the return origins, because one list answered
+ * two questions. Where the API and the site share an origin — every deployed environment — that
+ * conflation is invisible. Split them across ports, as local development does, and it is not:
+ * the Google button navigates the browser to the API's `/auth/google`, so the origin carried
+ * through the flow is the API's own. The session was set correctly and the person was then
+ * redirected to the API root, which serves no pages. Sign-in read as broken while working.
+ */
+describe('resolveReturnOrigin, when the API and the site are different origins', () => {
+    const ORIGINAL = process.env.OAUTH_RETURN_ORIGINS;
+    beforeEach(() => { delete process.env.OAUTH_RETURN_ORIGINS; });
+    afterEach(() => {
+        if (ORIGINAL === undefined) delete process.env.OAUTH_RETURN_ORIGINS;
+        else process.env.OAUTH_RETURN_ORIGINS = ORIGINAL;
+    });
+
+    it('never returns the browser to the API, and falls back to the site', async () => {
+        vi.resetModules();
+        vi.doMock('@/config', () => ({
+            config: { SITE_URL: 'http://localhost:3002', API_URL: 'http://localhost:4000', NODE_ENV: 'development' },
+        }));
+        const { resolveReturnOrigin: resolve } = await import('@/lib/auth/returnOrigin');
+
+        expect(resolve('http://localhost:4000')).toBe('http://localhost:3002');
+    });
+
+    /** The callback still has to be served from the API — that is where the route lives. */
+    it('still serves the callback from the API origin', async () => {
+        vi.resetModules();
+        vi.doMock('@/config', () => ({
+            config: { SITE_URL: 'http://localhost:3002', API_URL: 'http://localhost:4000', NODE_ENV: 'development' },
+        }));
+        const { resolveCallbackOrigin: resolve } = await import('@/lib/auth/returnOrigin');
+
+        expect(resolve('http://localhost:4000')).toBe('http://localhost:4000');
+    });
+
+    /** Where the two share an origin, nothing about this changes. */
+    it('is unchanged when the API and the site are the same origin', async () => {
+        vi.resetModules();
+        vi.doMock('@/config', () => ({
+            config: { SITE_URL: 'https://dev.cheapestgo.com', API_URL: 'https://dev.cheapestgo.com', NODE_ENV: 'production' },
+        }));
+        const { resolveReturnOrigin: resolve } = await import('@/lib/auth/returnOrigin');
+
+        expect(resolve('https://dev.cheapestgo.com')).toBe('https://dev.cheapestgo.com');
+    });
+});

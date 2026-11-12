@@ -83,6 +83,7 @@ import { runTgxSearch } from '@/lib/hotels/search';
 import { bookTgx, cancelTgx } from '@/lib/hotels/travelgatex';
 import { stripe } from '@/lib/stripe';
 import { HotelsService } from '@/services/hotels.service';
+import { HotelProviderError } from '@/lib/hotels/providers/types';
 import { prisma } from '@/lib/prisma';
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -581,7 +582,9 @@ describe('HotelsService.cancelBooking()', () => {
             policyType: 'tiered',
             freeCancelDeadline: new Date(Date.now() - 86_400_000),
             tiers: [{
-                cancelDeadline: new Date(Date.now() + 3 * 86_400_000),
+                // Started three days ago: a deadline is when the penalty begins, so a future one
+                // would mean the guest is still inside the free window (ADR-0023).
+                cancelDeadline: new Date(Date.now() - 3 * 86_400_000),
                 penaltyAmount: 250, penaltyType: 'fixed', currency: 'PHP', tierOrder: 0,
             }],
         });
@@ -715,3 +718,182 @@ describe('HotelsService.featuredStayByCity()', () => {
         expect(stay!.name).toBe('Myeongdong Stay');
     });
 });
+
+
+// ─── cancelBooking(), by the team ─────────────────────────────────────────────
+//
+// ADR-0004: there is one cancellation path per product and the team travels it. These tests exist
+// to stop a second one growing — if someone adds an admin-only cancel service, the behaviours
+// below are what it would have to reproduce, and that is the argument for not adding one.
+
+describe('HotelsService.cancelBooking() as an admin', () => {
+    const OWNER_ID = 'the-customer';
+    const ADMIN = { id: 'admin-1', email: 'agent@cheapestgo.com' };
+
+    const MOCK_BOOKING = {
+        booking_id:        BOOKING_REF,
+        user_id:           OWNER_ID,
+        payment_intent_id: PI_ID,
+        status:            'confirmed',
+        provider:          'travelgatex',
+        provider_metadata: { hotelCode: '10000352', supplierRef: 'SUP-REF' },
+        property_name:     'The Grand Hotel',
+        total_price:       1000,
+        currency:          'PHP',
+        check_in:          new Date(Date.now() + 30 * 86_400_000),
+    };
+
+    const mockBookingRow = (overrides: Partial<typeof MOCK_BOOKING> = {}) => {
+        vi.mocked(prisma.bookings.findFirst).mockResolvedValue({ ...MOCK_BOOKING, ...overrides } as any);
+        vi.mocked(prisma.bookings.update).mockResolvedValue({} as any);
+    };
+
+    /** Terms that keep half as a penalty, so an override has something visible to override. */
+    const halfBack = {
+        policyType: 'tiered' as const,
+        freeCancelDeadline: new Date(Date.now() - 86_400_000),
+        tiers: [{
+            // Already begun. A deadline in the future has not started, and the booking would be
+            // free to cancel — which is a different test.
+            cancelDeadline: new Date(Date.now() - 86_400_000),
+            penaltyAmount:  50,
+            penaltyType:    'percent',
+            tierOrder:      1,
+        }],
+    };
+
+    const settleCleanly = () => {
+        vi.mocked(cancelTgx).mockResolvedValue({ status: 'CANCELLED' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue({ status: 'succeeded', amount: 100_000 } as any);
+        vi.mocked(stripe.refunds.create).mockResolvedValue({ id: 're_admin', status: 'succeeded' } as any);
+    };
+
+    it('lets the team cancel a booking they do not own', async () => {
+        mockBookingRow();
+        settleCleanly();
+
+        const result = await service.cancelBooking({
+            bookingRef: BOOKING_REF, userId: 'not-the-owner', paymentIntentId: PI_ID, admin: ADMIN,
+        });
+
+        expect(result.success).toBe(true);
+    });
+
+    /** The bypass is for the team, not for anybody who omits an id. */
+    it('still refuses a customer who does not own the booking', async () => {
+        mockBookingRow();
+
+        await expect(service.cancelBooking({ bookingRef: BOOKING_REF, userId: 'someone-else' }))
+            .rejects.toMatchObject({ status: 403 });
+    });
+
+    /**
+     * The decision ADR-0004 turns on. Golf refunds in full whatever the deadline says, which is
+     * right for a tee time the course resells. A hotel room is billed to us either way, so the
+     * policy binds the team until somebody deliberately says otherwise.
+     */
+    it('applies the policy by default, exactly as it would for the customer', async () => {
+        mockBookingRow();
+        (service as any).repo.findPolicySnapshot.mockResolvedValue(halfBack);
+        settleCleanly();
+
+        await service.cancelBooking({
+            bookingRef: BOOKING_REF, userId: OWNER_ID, paymentIntentId: PI_ID, admin: ADMIN,
+        });
+
+        expect(stripe.refunds.create).toHaveBeenCalledWith(
+            expect.objectContaining({ amount: 50_000 }),
+            expect.anything(),
+        );
+    });
+
+    it('returns the whole charge when the override is ticked', async () => {
+        mockBookingRow();
+        (service as any).repo.findPolicySnapshot.mockResolvedValue(halfBack);
+        settleCleanly();
+
+        await service.cancelBooking({
+            bookingRef: BOOKING_REF, userId: OWNER_ID, paymentIntentId: PI_ID,
+            admin: { ...ADMIN, refundInFull: true, reason: 'supplier double-charged us' },
+        });
+
+        expect(stripe.refunds.create).toHaveBeenCalledWith(
+            expect.objectContaining({ amount: 100_000 }),
+            expect.anything(),
+        );
+    });
+
+    /**
+     * On a non-refundable stay the supplier still bills us, so an override is a loss somebody
+     * chose to take. It has to read like a decision afterwards, not like a bug.
+     */
+    it('records the override against the admin, with what the policy would have given', async () => {
+        mockBookingRow();
+        (service as any).repo.findPolicySnapshot.mockResolvedValue(halfBack);
+        settleCleanly();
+
+        await service.cancelBooking({
+            bookingRef: BOOKING_REF, userId: OWNER_ID, paymentIntentId: PI_ID,
+            admin: { ...ADMIN, refundInFull: true, reason: 'supplier double-charged us' },
+        });
+
+        const logged = (service as any).repo.openRefund.mock.calls[0][0];
+        expect(logged.refundType).toBe('admin_override');
+        expect(logged.requestedBy).toBe('agent@cheapestgo.com');
+        expect(logged.reason).toContain('agent@cheapestgo.com');
+        expect(logged.reason).toContain('supplier double-charged us');
+        // The figure the terms wanted, so the size of the goodwill is legible.
+        expect(logged.reason).toContain('500');
+    });
+
+    /** The refund belongs to the traveller. Writing the admin's id here would corrupt the row. */
+    it('logs the refund against the booking owner, never the admin', async () => {
+        mockBookingRow();
+        (service as any).repo.findPolicySnapshot.mockResolvedValue(halfBack);
+        settleCleanly();
+
+        await service.cancelBooking({
+            bookingRef: BOOKING_REF, userId: 'not-the-owner', paymentIntentId: PI_ID, admin: ADMIN,
+        });
+
+        expect((service as any).repo.openRefund).toHaveBeenCalledWith(expect.objectContaining({
+            userId: OWNER_ID,
+        }));
+    });
+
+    /** A customer's own cancellation must not start claiming a member of staff asked for it. */
+    it('leaves requestedBy null when the customer cancels', async () => {
+        mockBookingRow();
+        (service as any).repo.findPolicySnapshot.mockResolvedValue(halfBack);
+        settleCleanly();
+
+        await service.cancelBooking({ bookingRef: BOOKING_REF, userId: OWNER_ID, paymentIntentId: PI_ID });
+
+        expect((service as any).repo.openRefund).toHaveBeenCalledWith(expect.objectContaining({
+            requestedBy: null,
+        }));
+    });
+
+    /**
+     * An override returns more money; it does not make the supplier agree. The order is still
+     * supplier-first, because refunding a guest whose room the supplier still holds costs us the
+     * room (ADR-0023).
+     */
+    it('does not refund at all when the supplier refuses, override or not', async () => {
+        mockBookingRow();
+        (service as any).repo.findPolicySnapshot.mockResolvedValue(halfBack);
+        // A refusal, not an unknown outcome: only a supplier that says no outright leaves the
+        // booking untouched. Anything ambiguous is a 502, because the room may already be gone.
+        vi.mocked(cancelTgx).mockRejectedValue(
+            new HotelProviderError('REJECTED', 'Cancellation not permitted', { provider: 'travelgatex' }),
+        );
+
+        await expect(service.cancelBooking({
+            bookingRef: BOOKING_REF, userId: OWNER_ID, paymentIntentId: PI_ID,
+            admin: { ...ADMIN, refundInFull: true },
+        })).rejects.toMatchObject({ status: 409 });
+
+        expect(stripe.refunds.create).not.toHaveBeenCalled();
+    });
+});
+

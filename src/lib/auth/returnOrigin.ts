@@ -12,15 +12,42 @@ import { config } from '@/config';
  * `OAUTH_RETURN_ORIGINS` is a comma-separated list. `SITE_URL` is always permitted whether
  * or not it appears there, so the behaviour with nothing configured is exactly what it was.
  */
-function configured(): string[] {
-    const extra = (process.env.OAUTH_RETURN_ORIGINS ?? '')
+function extraOrigins(): string[] {
+    return (process.env.OAUTH_RETURN_ORIGINS ?? '')
         .split(',')
         .map(s => s.trim())
         .filter(Boolean);
-    // `API_URL` is here because the OAuth callback is served from it — `resolveCallbackOrigin`
-    // matches against this same list. Both are our own origins, so neither widens what an
-    // unrecognised candidate can reach.
-    return [config.SITE_URL, config.API_URL, ...extra].map(normalise).filter((o): o is string => o !== null);
+}
+
+const clean = (list: string[]): string[] =>
+    list.map(normalise).filter((o): o is string => o !== null);
+
+/**
+ * Origins a **browser** may be sent back to when the sign-in finishes.
+ *
+ * `API_URL` is deliberately absent. It used to be here, because one list answered both this
+ * question and `callbackOrigins()` below — and where the API and the site share an origin, as
+ * they do in every deployed environment, that conflation is invisible. Split them across ports
+ * and it is not: a sign-in started by clicking a button on the site navigates to the API's
+ * `/auth/google`, so the origin carried through the flow is the API's. The session was set
+ * correctly and the person was then redirected to the API's root, which serves no pages and
+ * answers `Cannot GET /`. Sign-in looked broken while working perfectly.
+ *
+ * A browser is never returned to the API. There is nothing there to return it to.
+ */
+function returnOrigins(): string[] {
+    return clean([config.SITE_URL, ...extraOrigins()]);
+}
+
+/**
+ * Origins the OAuth **callback** may be served from.
+ *
+ * `API_URL` belongs here and only here: the callback is an API route, so the redirect_uri
+ * given to Google names an API origin. Both are our own origins, so neither widens what an
+ * unrecognised candidate can reach.
+ */
+function callbackOrigins(): string[] {
+    return clean([config.SITE_URL, config.API_URL, ...extraOrigins()]);
 }
 
 /** An origin with no trailing slash and a lowercase host, or null if it is not one. */
@@ -44,7 +71,7 @@ function normalise(value: string | null | undefined): string | null {
  */
 export function resolveReturnOrigin(candidate: string | null | undefined): string {
     const wanted = normalise(candidate);
-    if (wanted && configured().includes(wanted)) return wanted;
+    if (wanted && returnOrigins().includes(wanted)) return wanted;
     return normalise(config.SITE_URL) ?? config.SITE_URL;
 }
 
@@ -85,6 +112,6 @@ export function originOfRequest(headers: {
  */
 export function resolveCallbackOrigin(candidate: string | null | undefined): string {
     const wanted = normalise(candidate);
-    if (wanted && configured().includes(wanted)) return wanted;
+    if (wanted && callbackOrigins().includes(wanted)) return wanted;
     return normalise(config.API_URL) ?? config.API_URL;
 }

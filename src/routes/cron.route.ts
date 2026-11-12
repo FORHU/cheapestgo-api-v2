@@ -25,8 +25,7 @@ import { HotelBookingLifecycleService } from '@/services/hotelBookingLifecycle.s
 import { FlightBookingLifecycleService } from '@/services/flightBookingLifecycle.service';
 import { FlightsRepository } from '@/repositories/flights.repository';
 import { createNotification } from '@/lib/admin/notify';
-import { ticketNumbersFrom } from '@/lib/flights/duffelTickets';
-import { sendFlightConfirmationEmail } from '@/lib/email/flightConfirmation';
+import { pollPendingTickets } from '@/services/flightTicketPoll';
 import { makeStrictConverter } from '@/lib/payments/convertStrict';
 import { ExchangeRatesService } from '@/services/exchange-rates.service';
 import { fromStripeAmount } from '@/lib/pricing';
@@ -506,63 +505,8 @@ router.get('/poll-pending-tickets', async (_req: Request, res: Response, next: N
             return res.json({ ok: true, skipped: true, reason: 'DUFFEL_ACCESS_TOKEN not configured' });
         }
 
-        // Find Duffel bookings with status 'booked' whose ticket_time_limit is still in future
-        // (or null — no TTL means ticketing may be in progress)
-        const pending = await prisma.$queryRaw<any[]>`
-            SELECT id, provider_order_id, user_id
-            FROM flight_bookings
-            WHERE provider = 'duffel'
-              AND status = 'booked'
-              AND provider_order_id IS NOT NULL
-              AND (ticket_time_limit IS NULL OR ticket_time_limit > NOW())
-            LIMIT 50
-        `;
-
-        let ticketed = 0;
-        let unchanged = 0;
-        const errs: string[] = [];
-
-        for (const fb of pending) {
-            try {
-                const res2 = await fetch(
-                    `https://api.duffel.com/air/orders/${fb.provider_order_id}`,
-                    { headers: duffelHeaders(), signal: AbortSignal.timeout(8000) }
-                );
-                if (!res2.ok) continue;
-                const data = await res2.json() as any;
-                const isTicketed = (data?.data?.metadata?.payment_status === 'fully_paid')
-                    || (Array.isArray(data?.data?.documents) && data.data.documents.length > 0);
-
-                if (isTicketed) {
-                    // The numbers, not just the status. An e-ticket number is what an airline
-                    // desk asks for, and this used to mark a booking ticketed while leaving
-                    // the column empty — the same field the webhook path fills.
-                    const tickets = ticketNumbersFrom(data?.data);
-                    await prisma.$executeRaw`
-                        UPDATE flight_bookings
-                        SET status         = 'ticketed',
-                            ticket_numbers = COALESCE(${tickets.length ? JSON.stringify(tickets) : null}::jsonb, ticket_numbers),
-                            updated_at     = NOW()
-                        WHERE id = ${fb.id}::uuid
-                    `;
-                    ticketed++;
-                    console.log(`[cron/poll-pending-tickets] Ticketed flight booking ${fb.id}`);
-
-                    // The traveller was told the ticket was on its way. This is the third
-                    // route by which it can arrive — after the webhook and the booking call —
-                    // and the only one that catches a webhook we never received. Suppressed
-                    // by email_logs when one of the others got there first.
-                    await sendFlightConfirmationEmail(fb.id)
-                        .catch((e: any) => console.error(`[cron/poll-pending-tickets] Ticket email failed for ${fb.id}:`, e?.message));
-                } else {
-                    unchanged++;
-                }
-            } catch (err: any) {
-                errs.push(`fb ${fb.id}: ${err.message}`);
-            }
-        }
-
-        return res.json({ ok: true, ticketed, unchanged, errors: errs.length ? errs : undefined });
+        const { ticketed, unchanged, errors } = await pollPendingTickets();
+        return res.json({ ok: true, ticketed, unchanged, errors: errors.length ? errors : undefined });
     } catch (err) {
         next(err);
     }
@@ -1389,7 +1333,7 @@ router.get('/etg-dump-sync', async (req: Request, res: Response, next: NextFunct
 const RECONCILIATION_WINDOW_DAYS = 30;
 
 /**
- * Hotel charges that succeeded in Stripe with no booking row behind them — **Unrecorded
+ * Hotel, flight and golf charges that succeeded in Stripe with no booking row behind them — **Unrecorded
  * Reservations** — raised as one notification per reference, ever.
  *
  * It deliberately repairs nothing. A reconciler that writes based on payment evidence
@@ -1414,15 +1358,21 @@ router.get('/hotel-reconciliation', async (_req: Request, res: Response, next: N
             // unrecorded-charge alert that understates the money by 100× reads as noise.
             const amount = fromStripeAmount(item.amount, item.currency)
                 .toLocaleString('en-US', { maximumFractionDigits: 2 });
+            const where = item.product === 'flight'
+                ? `Check Duffel${item.lookup.bookingSessionId ? ` (checkout session ${item.lookup.bookingSessionId})` : ''} before acting.`
+                : item.product === 'golf'
+                    ? `Check golf booking ${item.lookup.golfBookingId ?? '(no id on the charge)'} before acting.`
+                    : 'Check the supplier dashboard, then rebuild it from Admin → Reconciliation.';
             await createNotification(
                 UNRECORDED_NOTIFICATION_TITLE,
-                `${item.bookingReference} — ${item.currency.toUpperCase()} ${amount} charged ${item.created.slice(0, 10)} `
+                `[${item.product}] ${item.bookingReference} — ${item.currency.toUpperCase()} ${amount} charged ${item.created.slice(0, 10)} `
                 + `to ${item.holderEmail ?? 'unknown'} (${item.brand ?? 'brand unknown'}) has no booking row. `
                 + `PaymentIntent: ${item.paymentIntentId}. ${item.refunded ? 'Charge was refunded. ' : ''}`
-                + 'The guest may be holding a reservation the platform cannot see — check the supplier dashboard before acting.',
+                + `The customer may be holding a reservation the platform cannot see. ${where}`,
             );
-            console.warn(`[hotel-reconciliation] unrecorded reservation: ${item.bookingReference} (${item.paymentIntentId})`);
+            console.warn(`[hotel-reconciliation] unrecorded ${item.product}: ${item.bookingReference} (${item.paymentIntentId})`);
         }
+        for (const w of result.warnings) console.error('[hotel-reconciliation] NOT CHECKED —', w);
 
         res.json({
             success:       true,
@@ -1431,6 +1381,7 @@ router.get('/hotel-reconciliation', async (_req: Request, res: Response, next: N
             unrecorded:    result.unrecorded.length,
             newlyNotified: fresh.length,
             references:    result.unrecorded.map((u) => u.bookingReference),
+            warnings:      result.warnings,
         });
     } catch (err) { next(err); }
 });
