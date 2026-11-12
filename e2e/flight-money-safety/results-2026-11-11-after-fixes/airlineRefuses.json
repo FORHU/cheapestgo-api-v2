@@ -1,0 +1,53 @@
+{
+ "steps": {
+  "authorise": {
+   "status": "requires_capture"
+  },
+  "confirm": {
+   "status": 400,
+   "error": "DUFFEL_ORDER_FAILED",
+   "message": "The passenger name is not accepted by the airline Your card has not been charged."
+  }
+ },
+ "expect": "confirm 400 DUFFEL_ORDER_FAILED; hold voided; nothing ordered",
+ "held": {
+  "amount": 236.21,
+  "currency": "USD",
+  "fare": 216.24,
+  "fee": 19.97
+ },
+ "st": {
+  "stripe": {
+   "status": "canceled",
+   "amount": 23621,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 0,
+   "refunded": 23621
+  },
+  "session": {
+   "lifecycle": "FAILED",
+   "status": "failed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [browser] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [browser] claimed for the airline order",
+   "SUPPLIER_BOOKING→FAILED [browser] not ordered: DUFFEL_ORDER_FAILED (DUFFEL_ORDER_FAILED)"
+  ],
+  "sale": null,
+  "supplierAttempts": [],
+  "duffelOrder": null
+ },
+ "v": {
+  "pass": true,
+  "taken": 0,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": []
+ },
+ "orders": [],
+ "case": "airlineRefuses",
+ "seconds": 8
+}

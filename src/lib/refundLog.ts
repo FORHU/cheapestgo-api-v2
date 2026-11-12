@@ -118,6 +118,23 @@ export async function closeRefund(refundLogId: string, outcome: CloseRefundOutco
 }
 
 /**
+ * A refund recorded as issued that Stripe has since failed (the card was closed, the bank returned
+ * it). Moves the booking's `processed` rows for that payment to `failed`, so the back office stops
+ * counting money as returned that never reached the customer.
+ *
+ * Matched on booking and payment rather than a row id: the failure arrives days later in a
+ * webhook, which knows only the payment. Never throws, like the rest of this log.
+ */
+export async function markRefundFailed(bookingId: string, paymentIntentId: string, reason: string): Promise<void> {
+    await prisma.refund_logs.updateMany({
+        where: { booking_id: bookingId, external_ref: paymentIntentId, status: 'processed' },
+        data:  { status: 'failed', status_reason: reason.slice(0, 500) },
+    }).catch((err: any) => {
+        console.error(`[refund_logs] could not mark the refund for ${bookingId} failed:`, err?.message);
+    });
+}
+
+/**
  * Open and close in one call, for a refund that is already decided when it is recorded.
  *
  * The two-step form exists so a crash mid-refund leaves a `pending` row. Where the caller only
