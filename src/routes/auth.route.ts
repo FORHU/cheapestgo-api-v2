@@ -12,6 +12,8 @@ import { redis } from '@/lib/redis';
 import { config } from '@/config';
 import { BASE_COOKIE_OPTIONS, SESSION_COOKIE, SESSION_MAX_AGE_MS } from '@/lib/auth/cookie';
 import { AuthRepository } from '@/repositories/auth.repository';
+import { clearSessionCookies } from '@/lib/auth/cookie';
+import { revokeSessions } from '@/lib/auth/sessionRevocation';
 import { assertPasswordAcceptable } from '@/lib/auth/password';
 import { originOfRequest, resolveCallbackOrigin, resolveReturnOrigin } from '@/lib/auth/returnOrigin';
 
@@ -147,6 +149,12 @@ router.put('/reset-password', async (req: Request, res: Response, next: NextFunc
         await prisma.password_reset_tokens.delete({
             where: { user_id: resetToken.user_id },
         });
+
+        // Whoever held this account's sessions — the person, a second device, someone who
+        // had got in, which is often why a password is reset — is signed out, and this
+        // browser's cookies go with them. The next sign-in needs the new password.
+        await revokeSessions(resetToken.user_id);
+        clearSessionCookies(res);
 
         return res.json({ success: true });
     } catch (err) {

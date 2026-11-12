@@ -5,6 +5,7 @@ import { AppError } from '@/middleware/error.middleware';
 import { AuthRepository } from '@/repositories/auth.repository';
 import { JwtPayload } from '@/types';
 import { checkName } from '@/lib/users/names';
+import { isRevoked } from '@/lib/auth/sessionRevocation';
 import { assertPasswordAcceptable } from '@/lib/auth/password';
 
 export class AuthService {
@@ -52,6 +53,9 @@ export class AuthService {
         if (!token) throw new AppError(401, 'No refresh token', 'AUTH_REQUIRED');
         try {
             const payload = jwt.verify(token, config.JWT_REFRESH_SECRET) as JwtPayload;
+            // Without this a revoked session renews itself: the refresh token outlives the
+            // access token by days, and would mint a fresh one after the password changed.
+            if (await isRevoked(payload)) throw new AppError(401, 'Invalid refresh token', 'AUTH_INVALID');
             const user = await this.repo.findById(payload.sub);
             if (!user) throw new AppError(401, 'User not found', 'AUTH_INVALID');
             return this.generateTokens(user);
