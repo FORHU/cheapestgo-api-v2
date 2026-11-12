@@ -74,9 +74,13 @@ router.post('/request-reset', authRateLimit, async (req: Request, res: Response,
             create: { user_id: user.id, token, expires_at: expiresAt },
         });
 
-        const siteUrl = config.NODE_ENV === 'production'
-            ? 'https://cheapestgo.com'
-            : 'http://localhost:3000';
+        // The link goes back to the site the reset was asked from. It used to be a literal
+        // `https://cheapestgo.com` in production — v1's address — so a reset begun on v2
+        // opened v1's reset page, and every link on that page led further into v1. The
+        // browser's `Origin` names the site that made the call; `resolveReturnOrigin` only
+        // honours it when it is one of ours, and otherwise answers `SITE_URL`, so a forged
+        // header cannot put someone else's address in an email we send.
+        const siteUrl = resolveReturnOrigin(req.get('origin'));
         const resetUrl = `${siteUrl}/auth/reset-password?token=${token}`;
 
         if (config.RESEND_API_KEY) {
