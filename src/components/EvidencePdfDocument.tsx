@@ -1,6 +1,7 @@
 import React from 'react';
 import { Document, Page, View, Text, StyleSheet } from '@react-pdf/renderer';
 import { canonicalBrandName } from '@/lib/brand';
+import { pdfSafe } from '@/lib/pdfText';
 import type { EvidencePack, Provenance } from '@/services/paymentEvidence.service';
 
 // Same reason as the invoice: a financial document must name the company the customer actually
@@ -48,7 +49,10 @@ const styles = StyleSheet.create({
  * the supplier's own dashboard leaves no trace here (ADR-0026). The caution block says so in the
  * document itself, so the omission cannot be read as an oversight.
  */
-export function EvidencePdfDocument({ pack }: { pack: EvidencePack }) {
+export function EvidencePdfDocument({ pack: raw }: { pack: EvidencePack }) {
+    // Everything the font cannot draw is made visible as `?` rather than printed as a different,
+    // plausible glyph (an arrow came out as an apostrophe). See lib/pdfText.
+    const pack = pdfSafe(raw);
     const generated = pack.generatedAt.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
 
     return (

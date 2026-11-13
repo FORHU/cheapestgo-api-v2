@@ -42,7 +42,7 @@ beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     repo.findPaymentSources.mockResolvedValue([hotelSource]);
-    repo.keysFrom.mockReturnValue({ hotelBookingIds: ['hb-1'], sessionIds: [], bookingReferences: ['CG-ABC123'] });
+    repo.keysFrom.mockReturnValue({ hotelBookingIds: ['hb-1'], sessionIds: [], bookingReferences: ['CG-ABC123'], bookingIds: ['CG-ABC123'] });
     repo.timelineFor.mockResolvedValue([]);
     pay.retrieve.mockResolvedValue(paymentIntent);
     pay.refundList.mockResolvedValue({ data: [] });
@@ -90,6 +90,27 @@ describe('money and card details', () => {
         expect(find(pack.items, 'pi_captured')?.value).toBe('8557.36 PHP');
     });
 
+    /**
+     * Stripe's integers are minor units, and a zero-decimal currency has none: ¥72,576 is 72576.
+     * Dividing by 100 by hand printed "725.76 JPY" in a document a card network reads, and the
+     * same arithmetic in v1 quoted a ₩12,000 refund on a ₩1,200,000 booking (pricing.ts).
+     */
+    it('prints a zero-decimal charge as whole units, not a hundredth of them', async () => {
+        pay.retrieve.mockResolvedValue({ ...paymentIntent, amount: 72576, amount_received: 72576, currency: 'jpy' });
+        const pack = await service.gather('pi_1');
+        expect(find(pack.items, 'pi_amount')?.value).toBe('72576 JPY');
+        expect(find(pack.items, 'pi_captured')?.value).toBe('72576 JPY');
+    });
+
+    it('prints a zero-decimal refund and the total refunded as whole units', async () => {
+        pay.refundList.mockResolvedValue({ data: [
+            { id: 're_k', amount: 252693, currency: 'krw', status: 'succeeded', created: 1761472440 },
+        ] });
+        const pack = await service.gather('pi_1');
+        expect(find(pack.items, 'refund_re_k')?.value).toContain('252693 KRW');
+        expect(find(pack.items, 'refund_total')?.value).toBe('252693 KRW');
+    });
+
     /** §14: never the full number, never the CVV. Brand and last four is the whole allowance. */
     it('carries only the brand and last four of the card', async () => {
         const pack = await service.gather('pi_1');
@@ -128,6 +149,29 @@ describe('when a source cannot be reached', () => {
         expect(find(pack.items, 'supplier_ref_hotel_bookings')).toBeDefined();
     });
 
+    /**
+     * The mail log is keyed by whatever `booking_id` the product stored: a hotel's minted
+     * reference, a flight's uuid. Searching a flight by anything else would find nothing and the
+     * pack would then say no email was sent, which is a claim, not an absence.
+     */
+    it('searches the mail log by the keys the products actually store', async () => {
+        repo.keysFrom.mockReturnValue({
+            hotelBookingIds: [], sessionIds: [], bookingReferences: [], bookingIds: ['fb-uuid-1'],
+        });
+        db.emailFindMany.mockResolvedValue([{
+            id: 'm1', email_type: 'ticketed', recipient: 'a@example.test', status: 'sent',
+            sent_at: at, created_at: at, error_message: null,
+        }]);
+
+        const pack = await service.gather('pi_1');
+
+        expect(db.emailFindMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: { booking_id: { in: ['fb-uuid-1'] } },
+        }));
+        expect(find(pack.items, 'email_m1')?.value).toBe('sent');
+        expect(find(pack.items, 'email')).toBeUndefined();
+    });
+
     it('says no email was logged rather than leaving the section empty', async () => {
         const pack = await service.gather('pi_1');
         const email = find(pack.items, 'email');
@@ -143,7 +187,7 @@ describe('when a source cannot be reached', () => {
 describe('a payment with no internal record at all', () => {
     it('states plainly that nothing here references the payment', async () => {
         repo.findPaymentSources.mockResolvedValue([]);
-        repo.keysFrom.mockReturnValue({ hotelBookingIds: [], sessionIds: [], bookingReferences: [] });
+        repo.keysFrom.mockReturnValue({ hotelBookingIds: [], sessionIds: [], bookingReferences: [], bookingIds: [] });
 
         const pack = await service.gather('pi_orphan');
 

@@ -1,0 +1,84 @@
+{
+ "steps": {
+  "booked": {
+   "status": 200,
+   "pnr": "HRSO2F",
+   "bookingStatus": "ticketed"
+  },
+  "quote": {
+   "success": true,
+   "refundAmount": 124.4,
+   "refundCurrency": "USD",
+   "penaltyAmount": 124.39,
+   "cancellationId": "ore_0000BCKi53V1HyMVQOzJJt"
+  },
+  "cancel": {
+   "status": "refunded",
+   "refundAmount": 124.4,
+   "refundCurrency": "USD",
+   "penaltyAmount": 113.99,
+   "currency": "USD"
+  },
+  "check": {
+   "airlineRefund": "124.40",
+   "airlinePenalty": "113.99",
+   "supplierCost": "227.98",
+   "share": 0.5,
+   "expectedStripeRefund": 12440,
+   "actualStripeRefund": 12440
+  }
+ },
+ "expect": "Stripe refund = card amount × airline refund ÷ (refund + penalty); order cancelled",
+ "st": {
+  "stripe": {
+   "status": "succeeded",
+   "amount": 24879,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 24879,
+   "refunded": 12440
+  },
+  "session": {
+   "lifecycle": "CONFIRMED",
+   "status": "completed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [browser] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [browser] claimed for the airline order",
+   "SUPPLIER_BOOKING→CONFIRMED [browser] airline ordered and payment captured"
+  ],
+  "sale": {
+   "id": "fe34c90a-dd0a-4969-aef7-460170e8d50e",
+   "status": "refunded",
+   "pnr": "HRSO2F",
+   "provider_order_id": "ord_0000BCKi4hVYVBk7qXOK4e",
+   "total_price": "248.79",
+   "charged_price": "248.79",
+   "currency": "USD",
+   "supplier_cost": "227.98"
+  },
+  "supplierAttempts": [],
+  "duffelOrder": {
+   "id": "ord_0000BCKi4hVYVBk7qXOK4e",
+   "booking_reference": "HRSO2F",
+   "cancelled_at": "2026-11-11T08:26:27.139870Z",
+   "documents": 1,
+   "total": "227.98",
+   "currency": "USD"
+  }
+ },
+ "v": {
+  "pass": true,
+  "taken": 12439,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": [
+   "pass = Stripe refund equals the airline refund share of what the card paid"
+  ]
+ },
+ "orders": [],
+ "case": "partialRefund",
+ "seconds": 13
+}

@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { ZERO_DECIMAL_CURRENCIES } from '@/lib/pricing';
 
 /**
  * The back office's view of money, derived rather than stored — see ADR-0003.
@@ -135,7 +136,10 @@ export function unionSelect(): Prisma.Sql {
                NULLIF(TRIM(CONCAT(b.holder_first_name, ' ', b.holder_last_name)), '') AS customer_name,
                b.user_id::text                             AS user_id,
                b.total_price                               AS amount,
-               b.currency                                  AS currency,
+               -- Upper-cased in every arm: sessions keep Stripe's lower-case usd and the booking
+               -- tables keep USD, so as stored the currency filter matched one set and skipped
+               -- the other. (No backticks in here: this is inside a JS template literal.)
+               UPPER(b.currency)                           AS currency,
                b.created_at                                AS created_at
           FROM bookings b
          WHERE b.payment_intent_id IS NOT NULL
@@ -153,9 +157,14 @@ export function unionSelect(): Prisma.Sql {
                u.email,
                NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''),
                hb.user_id::text,
-               -- Stored in minor units here and as a decimal everywhere else.
-               (hb.amount_minor::numeric / 100),
-               hb.currency,
+               -- Stored in Stripe's minor units here and as a decimal everywhere else. Dividing by
+               -- 100 is right only for two-decimal currencies: a zero-decimal one (JPY, KRW) is
+               -- already whole units, and a blanket "/ 100" showed ¥72,576 as 725.76. The list is
+               -- pricing's own, so it cannot drift from the one that wrote this column.
+               CASE WHEN LOWER(hb.currency) IN (${Prisma.join([...ZERO_DECIMAL_CURRENCIES])})
+                    THEN hb.amount_minor::numeric
+                    ELSE hb.amount_minor::numeric / 100 END,
+               UPPER(hb.currency),
                hb.created_at
           FROM hotel_bookings hb
           LEFT JOIN users u ON u.id = hb.user_id
@@ -167,7 +176,10 @@ export function unionSelect(): Prisma.Sql {
                'flight_bookings',
                fb.id::text,
                'flight',
-               fb.booking_reference,
+               -- A flight is identified by its PNR everywhere else (admin search, the confirmation
+               -- email, the booking list); nothing writes its booking_reference column, so reading
+               -- only that printed no booking beside every flight and made PNR search match nothing.
+               COALESCE(NULLIF(TRIM(fb.booking_reference), ''), NULLIF(TRIM(fb.pnr), '')),
                fb.status,
                fb.provider_order_id,
                fb.provider,
@@ -175,7 +187,7 @@ export function unionSelect(): Prisma.Sql {
                NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''),
                fb.user_id::text,
                fb.total_price,
-               fb.currency,
+               UPPER(fb.currency),
                fb.created_at
           FROM flight_bookings fb
           LEFT JOIN users u ON u.id = fb.user_id
@@ -198,7 +210,7 @@ export function unionSelect(): Prisma.Sql {
                NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''),
                bs.user_id::text,
                bs.charged_price,
-               bs.currency,
+               UPPER(bs.currency),
                bs.created_at
           FROM booking_sessions bs
           LEFT JOIN users u ON u.id = bs.user_id
@@ -231,7 +243,8 @@ function whereFor(f: PaymentListFilters): Prisma.Sql {
     }
     if (f.product)       clauses.push(Prisma.sql`p.product = ${f.product}`);
     if (f.bookingStatus) clauses.push(Prisma.sql`p.booking_status = ${f.bookingStatus}`);
-    if (f.currency)      clauses.push(Prisma.sql`p.currency = ${f.currency}`);
+    // Compared against the normalised column, so the case the caller typed does not matter.
+    if (f.currency)      clauses.push(Prisma.sql`p.currency = ${f.currency.trim().toUpperCase()}`);
     if (f.provider)      clauses.push(Prisma.sql`p.provider = ${f.provider}`);
     if (f.from)          clauses.push(Prisma.sql`p.created_at >= ${f.from}`);
     if (f.to)            clauses.push(Prisma.sql`p.created_at <= ${f.to}`);

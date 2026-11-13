@@ -6,8 +6,11 @@ const { stripeMock, prismaMock } = vi.hoisted(() => ({
         paymentIntents: { list: vi.fn() },
     },
     prismaMock: {
-        bookings:      { findMany: vi.fn() },
-        notifications: { findMany: vi.fn() },
+        bookings:        { findMany: vi.fn(), count: vi.fn() },
+        flight_bookings: { findMany: vi.fn() },
+        notifications:   { findMany: vi.fn() },
+        $queryRaw:       vi.fn(),
+        $queryRawUnsafe: vi.fn(),
     },
 }));
 vi.mock('@/lib/stripe', () => ({ stripe: stripeMock }));
@@ -15,6 +18,7 @@ vi.mock('@/lib/prisma', () => ({ prisma: prismaMock }));
 
 import {
     findUnrecordedReservations,
+    findBookingsMissingBrand,
     filterAlreadyNotified,
     assertStripeAccount,
     UNRECORDED_NOTIFICATION_TITLE,
@@ -43,6 +47,9 @@ beforeEach(() => {
     stripeMock.accounts.retrieve.mockResolvedValue({ id: 'acct_live' });
     prismaMock.bookings.findMany.mockResolvedValue([]);
     prismaMock.notifications.findMany.mockResolvedValue([]);
+    prismaMock.flight_bookings.findMany.mockResolvedValue([]);
+    prismaMock.$queryRaw.mockResolvedValue([]);
+    prismaMock.$queryRawUnsafe.mockResolvedValue([]);
 });
 
 describe('assertStripeAccount', () => {
@@ -127,6 +134,104 @@ describe('findUnrecordedReservations', () => {
     });
 });
 
+describe('findUnrecordedReservations — every product', () => {
+    it('asks Stripe to expand the charge, because the refund flag reads it', async () => {
+        // Unexpanded, latest_charge is a bare id and every refunded charge read as owed.
+        stripeMock.paymentIntents.list.mockReturnValue(listing());
+
+        await findUnrecordedReservations();
+
+        expect(stripeMock.paymentIntents.list).toHaveBeenCalledWith(
+            expect.objectContaining({ expand: ['data.latest_charge'] }),
+        );
+    });
+
+    it('reports a captured flight charge with no flight_bookings row, keyed on the PaymentIntent', async () => {
+        stripeMock.paymentIntents.list.mockReturnValue(listing(
+            pi({ id: 'pi_f', metadata: { type: 'flight', bookingSessionId: 'sess_9', passengerEmail: 'p@example.test' } }),
+        ));
+
+        const result = await findUnrecordedReservations();
+
+        expect(result.unrecorded).toEqual([expect.objectContaining({
+            product: 'flight', paymentIntentId: 'pi_f', hasReference: false,
+            holderEmail: 'p@example.test', lookup: { bookingSessionId: 'sess_9' },
+        })]);
+    });
+
+    it('does not report a flight whose sale row exists', async () => {
+        stripeMock.paymentIntents.list.mockReturnValue(listing(pi({ id: 'pi_f', metadata: { type: 'flight_bundle' } })));
+        prismaMock.flight_bookings.findMany.mockResolvedValue([{ payment_intent_id: 'pi_f' }]);
+
+        await expect(findUnrecordedReservations()).resolves.toMatchObject({ unrecorded: [] });
+    });
+
+    it('matches golf on the PaymentIntent or on the booking id the charge was made for', async () => {
+        stripeMock.paymentIntents.list.mockReturnValue(listing(
+            pi({ id: 'pi_g1', metadata: { type: 'golf', bookingReference: 'GO-1', golfBookingId: 'gb-1' } }),
+            pi({ id: 'pi_g2', metadata: { type: 'golf', bookingReference: 'GO-2', golfBookingId: 'gb-2' } }),
+            pi({ id: 'pi_g3', metadata: { type: 'golf', bookingReference: 'GO-3', golfBookingId: 'gb-3' } }),
+        ));
+        prismaMock.$queryRaw.mockResolvedValue([
+            { payment_intent_id: 'pi_g1', id: 'gb-1' },
+            { payment_intent_id: null,    id: 'gb-2' },
+        ]);
+
+        const result = await findUnrecordedReservations();
+
+        expect(result.unrecorded.map((u) => u.paymentIntentId)).toEqual(['pi_g3']);
+        expect(result.unrecorded[0]).toMatchObject({ product: 'golf', lookup: { golfBookingId: 'gb-3' } });
+    });
+
+    it('skips a product whose table cannot be read, and says so, rather than reporting all of it', async () => {
+        stripeMock.paymentIntents.list.mockReturnValue(listing(pi({ id: 'pi_g', metadata: { type: 'golf' } })));
+        prismaMock.$queryRaw.mockRejectedValue(new Error('relation "golf_bookings" does not exist'));
+
+        const result = await findUnrecordedReservations();
+
+        expect(result.unrecorded).toHaveLength(0);
+        expect(result.warnings[0]).toMatch(/^golf: could not read/);
+    });
+
+    it('still ignores charges from sibling products in the same Stripe account', async () => {
+        stripeMock.paymentIntents.list.mockReturnValue(listing(pi({ metadata: { type: 'hotel_cancellation' } })));
+
+        await expect(findUnrecordedReservations()).resolves.toMatchObject({ scanned: 0, unrecorded: [] });
+    });
+
+    it('carries the v2 attempt onto a hotel item, since that is what a rebuild starts from', async () => {
+        stripeMock.paymentIntents.list.mockReturnValue(listing(pi()));
+        prismaMock.$queryRawUnsafe.mockResolvedValue([{
+            id: 'h1', booking_reference: 'FORHU-1', user_id: 'u1', status: 'CONFIRMED', provider: 'travelgatex',
+            prebook_ref: 'pb', payment_intent_id: 'pi_1', hotel_code: 'H', property_name: 'Hotel Naru', room_name: 'Twin',
+            check_in: '2026-12-01', check_out: '2026-12-03', currency: 'PHP', amount_minor: 1250000, draft: {},
+            supplier_reference: 'SUP-7', failure_code: null, failure_message: null, created_at: new Date(), updated_at: new Date(),
+        }]);
+
+        const result = await findUnrecordedReservations();
+
+        expect(result.unrecorded[0].attempt).toEqual({
+            status: 'CONFIRMED', supplierReference: 'SUP-7', checkIn: '2026-12-01', checkOut: '2026-12-03', propertyName: 'Hotel Naru',
+        });
+    });
+});
+
+describe('findBookingsMissingBrand', () => {
+    it('lists bookings whose brand write never landed, newest first, with a total', async () => {
+        prismaMock.bookings.findMany.mockResolvedValue([
+            { booking_id: 'FORHU-2', payment_intent_id: 'pi_2', status: 'confirmed', created_at: new Date('2026-11-01T00:00:00Z') },
+        ]);
+        prismaMock.bookings.count.mockResolvedValue(7);
+
+        const result = await findBookingsMissingBrand();
+
+        expect(result).toEqual({ total: 7, items: [{
+            bookingReference: 'FORHU-2', paymentIntentId: 'pi_2', status: 'confirmed', createdAt: '2026-11-01T00:00:00.000Z',
+        }] });
+        expect(prismaMock.bookings.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { source_brand: null } }));
+    });
+});
+
 describe('filterAlreadyNotified', () => {
     const item = { bookingReference: 'FORHU-1', paymentIntentId: 'pi_1' } as any;
 
@@ -145,5 +250,12 @@ describe('filterAlreadyNotified', () => {
         prismaMock.notifications.findMany.mockResolvedValue([{ description: 'FORHU-99 — …' }]);
 
         await expect(filterAlreadyNotified([item])).resolves.toHaveLength(1);
+    });
+
+    it('recognises an announcement by its PaymentIntent, which flight items need', async () => {
+        const flight = { bookingReference: '(no reference — pi_f)', hasReference: false, paymentIntentId: 'pi_f' } as any;
+        prismaMock.notifications.findMany.mockResolvedValue([{ description: '[flight] … PaymentIntent: pi_f. …' }]);
+
+        await expect(filterAlreadyNotified([flight])).resolves.toHaveLength(0);
     });
 });

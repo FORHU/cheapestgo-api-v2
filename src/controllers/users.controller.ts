@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { usersService, UsersService } from '@/services/users.service';
+import { clearSessionCookies } from '@/lib/auth/cookie';
+import { revokeSessions } from '@/lib/auth/sessionRevocation';
 
 /**
  * The account holder acting on their own account. Every handler here reads the caller from the
@@ -29,7 +31,12 @@ export class UsersController {
                 newPassword?: string;
             };
             await this.service.changePassword(req.user!.sub, currentPassword, newPassword);
-            res.json({ success: true });
+            // The new password ends every session, this one included: the client signs in
+            // again with it. `signedOut` says so, so a client does not have to infer it
+            // from the next request failing.
+            await revokeSessions(req.user!.sub);
+            clearSessionCookies(res);
+            res.json({ success: true, signedOut: true });
         } catch (err) { next(err); }
     };
 

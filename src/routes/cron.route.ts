@@ -1333,7 +1333,7 @@ router.get('/etg-dump-sync', async (req: Request, res: Response, next: NextFunct
 const RECONCILIATION_WINDOW_DAYS = 30;
 
 /**
- * Hotel charges that succeeded in Stripe with no booking row behind them — **Unrecorded
+ * Hotel, flight and golf charges that succeeded in Stripe with no booking row behind them — **Unrecorded
  * Reservations** — raised as one notification per reference, ever.
  *
  * It deliberately repairs nothing. A reconciler that writes based on payment evidence
@@ -1358,15 +1358,21 @@ router.get('/hotel-reconciliation', async (_req: Request, res: Response, next: N
             // unrecorded-charge alert that understates the money by 100× reads as noise.
             const amount = fromStripeAmount(item.amount, item.currency)
                 .toLocaleString('en-US', { maximumFractionDigits: 2 });
+            const where = item.product === 'flight'
+                ? `Check Duffel${item.lookup.bookingSessionId ? ` (checkout session ${item.lookup.bookingSessionId})` : ''} before acting.`
+                : item.product === 'golf'
+                    ? `Check golf booking ${item.lookup.golfBookingId ?? '(no id on the charge)'} before acting.`
+                    : 'Check the supplier dashboard, then rebuild it from Admin → Reconciliation.';
             await createNotification(
                 UNRECORDED_NOTIFICATION_TITLE,
-                `${item.bookingReference} — ${item.currency.toUpperCase()} ${amount} charged ${item.created.slice(0, 10)} `
+                `[${item.product}] ${item.bookingReference} — ${item.currency.toUpperCase()} ${amount} charged ${item.created.slice(0, 10)} `
                 + `to ${item.holderEmail ?? 'unknown'} (${item.brand ?? 'brand unknown'}) has no booking row. `
                 + `PaymentIntent: ${item.paymentIntentId}. ${item.refunded ? 'Charge was refunded. ' : ''}`
-                + 'The guest may be holding a reservation the platform cannot see — check the supplier dashboard before acting.',
+                + `The customer may be holding a reservation the platform cannot see. ${where}`,
             );
-            console.warn(`[hotel-reconciliation] unrecorded reservation: ${item.bookingReference} (${item.paymentIntentId})`);
+            console.warn(`[hotel-reconciliation] unrecorded ${item.product}: ${item.bookingReference} (${item.paymentIntentId})`);
         }
+        for (const w of result.warnings) console.error('[hotel-reconciliation] NOT CHECKED —', w);
 
         res.json({
             success:       true,
@@ -1375,6 +1381,7 @@ router.get('/hotel-reconciliation', async (_req: Request, res: Response, next: N
             unrecorded:    result.unrecorded.length,
             newlyNotified: fresh.length,
             references:    result.unrecorded.map((u) => u.bookingReference),
+            warnings:      result.warnings,
         });
     } catch (err) { next(err); }
 });

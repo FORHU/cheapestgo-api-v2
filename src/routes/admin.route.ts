@@ -17,6 +17,8 @@ import { AppError } from '@/middleware/error.middleware';
 import { mergeAdminBookings } from '@/lib/admin/normaliseBooking';
 import { prisma } from '@/lib/prisma';
 import { validateRoleChange } from '@/lib/auth/roleChange';
+import { suspendUser } from '@/lib/auth/suspension';
+import { orAccountNotFound } from '@/lib/admin/accountNotFound';
 import { roleLabel } from '@/lib/auth/roles';
 import { logAdminAction } from '@/lib/admin/audit';
 import { createNotification } from '@/lib/admin/notify';
@@ -26,8 +28,10 @@ import { paymentEvidenceService } from '@/services/paymentEvidence.service';
 import React from 'react';
 import { renderToBuffer } from '@react-pdf/renderer';
 import { EvidencePdfDocument } from '@/components/EvidencePdfDocument';
-import { attachmentsConfigured, putObject, signedUrlFor } from '@/lib/support/attachmentStorage';
+import { saveEvidenceExport, findEvidenceExport } from '@/repositories/paymentEvidenceExport.repository';
 import { HotelsService } from '@/services/hotels.service';
+import { findUnrecordedReservations, findBookingsMissingBrand } from '@/lib/admin/reconciliation';
+import { bookingRebuildService, REBUILD_STATUSES } from '@/services/bookingRebuild.service';
 import { FlightsService } from '@/services/flights.service';
 
 const router: Router = Router();
@@ -229,11 +233,7 @@ router.get('/users', async (_req: Request, res: Response, next: NextFunction) =>
 
 router.post('/users/:id/ban', async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const { id } = req.params;
-        await prisma.users.update({
-            where: { id },
-            data:  { banned_at: new Date() },
-        });
+        await orAccountNotFound(suspendUser(req.params.id));
         return res.json({ ok: true });
     } catch (err) {
         next(err);
@@ -245,10 +245,10 @@ router.post('/users/:id/ban', async (req: Request, res: Response, next: NextFunc
 router.post('/users/:id/unban', async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { id } = req.params;
-        await prisma.users.update({
+        await orAccountNotFound(prisma.users.update({
             where: { id },
             data:  { banned_at: null },
-        });
+        }));
         return res.json({ ok: true });
     } catch (err) {
         next(err);
@@ -280,10 +280,10 @@ router.post('/users/:id/promote', async (req: Request, res: Response, next: Next
             throw new AppError(400, change.error, 'VALIDATION_ERROR');
         }
 
-        await prisma.users.update({
+        await orAccountNotFound(prisma.users.update({
             where: { id: change.targetId },
             data:  { role: change.newRole },
-        });
+        }));
 
         void logAdminAction({
             action:     'promote_user',
@@ -353,15 +353,15 @@ router.post('/customers', async (req: Request, res: Response, next: NextFunction
         if (!action || !userId) throw new AppError(400, 'action and userId are required', 'VALIDATION_ERROR');
 
         if (action === 'ban') {
-            await prisma.users.update({ where: { id: userId }, data: { banned_at: new Date() } });
+            await orAccountNotFound(suspendUser(userId));
             return res.json({ success: true });
         }
         if (action === 'unban') {
-            await prisma.users.update({ where: { id: userId }, data: { banned_at: null } });
+            await orAccountNotFound(prisma.users.update({ where: { id: userId }, data: { banned_at: null } }));
             return res.json({ success: true });
         }
         if (action === 'hard_delete') {
-            await prisma.users.delete({ where: { id: userId } });
+            await orAccountNotFound(prisma.users.delete({ where: { id: userId } }));
             return res.json({ success: true });
         }
 
@@ -1063,28 +1063,28 @@ router.get('/payment-webhooks', async (req: Request, res: Response, next: NextFu
 /**
  * POST /api/v2/admin/payments/:paymentIntentId/evidence/export — the pack as a PDF.
  *
- * Rendered server-side, stored in the attachments bucket, and handed back as a signed URL that
- * expires. The bytes never pass through the browser's address bar, and the link dies on its own
- * — §14, and the same mechanism support attachments already use.
+ * Rendered server-side and stored in the database (`payment_evidence_exports`), insert-only, so
+ * an earlier pack is never overwritten: §8 asks for historical versions, and a pack is evidence
+ * of what was known *then*. Handed back as an API path, not a signed link: access is the admin
+ * session on the download route below, and every download is audited.
  */
 router.post('/payments/:paymentIntentId/evidence/export', async (req: Request, res: Response, next: NextFunction) => {
     try {
         const id = String(req.params.paymentIntentId ?? '').trim();
         if (!id) throw new AppError(400, 'A payment intent id is required.', 'VALIDATION_ERROR');
-        if (!attachmentsConfigured()) {
-            throw new AppError(503, 'Evidence storage is not configured on this deployment.', 'STORAGE_UNCONFIGURED');
-        }
 
         const pack = await paymentEvidenceService.gather(id);
         // `as any` as the invoice route does: @react-pdf types the root element as DocumentProps,
         // which a component returning a Document does not structurally satisfy.
         const pdf = await renderToBuffer(React.createElement(EvidencePdfDocument, { pack }) as any);
 
-        // Keyed by the moment it was made, so an earlier pack is never overwritten: §8 asks for
-        // historical versions, and a pack is evidence of what was known *then*.
-        const key = `payment-evidence/${id}/${pack.generatedAt.toISOString().replace(/[:.]/g, '-')}.pdf`;
-        await putObject({ key, body: pdf, contentType: 'application/pdf' });
-        const url = await signedUrlFor(key, `payment-evidence-${id}.pdf`);
+        const saved = await saveEvidenceExport({
+            paymentIntentId: id,
+            generatedAt:     pack.generatedAt,
+            pdf,
+            exportedBy:      (req as any).user?.id,
+            exportedByEmail: (req as any).user?.email,
+        });
 
         await adminSettingsService.logAction({
             action: 'payment_evidence_exported',
@@ -1093,6 +1093,114 @@ router.post('/payments/:paymentIntentId/evidence/export', async (req: Request, r
             targetId: id,
         }).catch(() => undefined);
 
-        res.json({ success: true, url, key, generatedAt: pack.generatedAt.toISOString() });
+        res.json({
+            success: true,
+            id: saved.id,
+            // Relative to the API base, which the caller already knows and this process does not.
+            path: `/admin/payments/${encodeURIComponent(id)}/evidence/exports/${saved.id}`,
+            sizeBytes: saved.sizeBytes,
+            generatedAt: saved.generatedAt.toISOString(),
+        });
+    } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/v2/admin/payments/:paymentIntentId/evidence/exports/:exportId — a stored pack's PDF.
+ *
+ * Admin session only (the router-wide guard). Looked up by id and payment together, and the
+ * download is audited like the view is: who took a customer's evidence out is itself evidence.
+ */
+router.get('/payments/:paymentIntentId/evidence/exports/:exportId', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const id = String(req.params.paymentIntentId ?? '').trim();
+        const exportId = z.string().uuid().safeParse(req.params.exportId);
+        if (!id || !exportId.success) throw new AppError(404, 'Evidence export not found.', 'NOT_FOUND');
+
+        const stored = await findEvidenceExport(id, exportId.data);
+        if (!stored) throw new AppError(404, 'Evidence export not found.', 'NOT_FOUND');
+
+        await adminSettingsService.logAction({
+            action: 'payment_evidence_downloaded',
+            adminId: (req as any).user?.id,
+            adminEmail: (req as any).user?.email,
+            targetId: id,
+        }).catch(() => undefined);
+
+        res.setHeader('Content-Type', stored.contentType);
+        res.setHeader('Content-Length', String(stored.pdf.length));
+        // Never cached by a shared proxy or kept in a browser's disk cache: it carries a customer's data.
+        res.setHeader('Cache-Control', 'private, no-store');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        // RFC 5987, as the support attachments did: a name can carry characters a bare filename= cannot.
+        res.setHeader('Content-Disposition',
+            `inline; filename*=UTF-8''${encodeURIComponent(`payment-evidence-${id}.pdf`)}`);
+        res.end(stored.pdf);
+    } catch (err) { next(err); }
+});
+
+// ─── Reconciliation: what Stripe sold that no table records (ADR-0026) ────────
+//
+// Derived on every read, never stored, so an item leaves the list the moment its booking exists.
+// There is deliberately no dismiss: the only way off the list is the rebuild below, or a booking
+// written some other way.
+
+const reconciliationQuery = z.object({
+    windowDays: z.coerce.number().int().min(1).max(90).optional(),
+});
+
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD.');
+const rebuildBody = z.object({
+    propertyName:      z.string().trim().min(1).max(300),
+    roomName:          z.string().trim().min(1).max(300),
+    checkIn:           isoDate,
+    checkOut:          isoDate,
+    adults:            z.number().int().min(1).max(30),
+    children:          z.number().int().min(0).max(30),
+    holderFirstName:   z.string().trim().min(1).max(120),
+    holderLastName:    z.string().trim().min(1).max(120),
+    holderEmail:       z.string().trim().email().max(254),
+    supplierReference: z.string().trim().max(200).optional().default(''),
+    status:            z.enum(REBUILD_STATUSES),
+    reason:            z.string().trim().min(10, 'Say why, in at least a sentence.').max(1000),
+});
+
+/** GET /api/v2/admin/reconciliation — unrecorded hotel, flight and golf payments, and unbranded bookings. */
+router.get('/reconciliation', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const q = reconciliationQuery.parse(req.query);
+        const [result, missingBrand] = await Promise.all([
+            findUnrecordedReservations(q.windowDays ?? 30),
+            findBookingsMissingBrand(),
+        ]);
+        // A refusal is reported, not hidden behind an empty list: "cannot tell" is not "nothing wrong".
+        res.json({ success: true, ...result, missingBrand });
+    } catch (err) { next(err); }
+});
+
+/** GET /api/v2/admin/reconciliation/:paymentIntentId/rebuild — the pre-filled form. */
+router.get('/reconciliation/:paymentIntentId/rebuild', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const id = String(req.params.paymentIntentId ?? '').trim();
+        if (!id) throw new AppError(400, 'A payment intent id is required.', 'VALIDATION_ERROR');
+        res.json({ success: true, draft: await bookingRebuildService.draft(id) });
+    } catch (err) { next(err); }
+});
+
+/** POST /api/v2/admin/reconciliation/:paymentIntentId/rebuild — write the missing hotel booking. */
+router.post('/reconciliation/:paymentIntentId/rebuild', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const id = String(req.params.paymentIntentId ?? '').trim();
+        if (!id) throw new AppError(400, 'A payment intent id is required.', 'VALIDATION_ERROR');
+        const body  = rebuildBody.parse(req.body);
+        const actor = { id: (req as any).user?.id, email: (req as any).user?.email };
+
+        const result = await bookingRebuildService.rebuild(id, body, actor);
+
+        await adminSettingsService.logAction({
+            action: 'booking_rebuilt', adminId: actor.id, adminEmail: actor.email, targetId: result.bookingId,
+            details: { paymentIntentId: id, status: body.status, reason: body.reason },
+        }).catch(() => undefined);
+
+        res.status(201).json({ success: true, ...result });
     } catch (err) { next(err); }
 });

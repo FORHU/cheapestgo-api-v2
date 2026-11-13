@@ -235,18 +235,13 @@ in process under its `status` lock, the way `/internal/create-booking` finishes 
 `GET /cron/flight-booking-sweep`, every 10 minutes (`docker/cron/crontab`). It **never orders
 and never calls Duffel**.
 
-- Expires (`ABANDONED`), then releases the hold of, attempts nobody finished — `PAYMENT_PENDING`
-  > 2h, `PAYMENT_AUTHORIZED` > 30 min — **only** Duffel sessions with `capture_method = 'manual'`
-  and **no supplier call recorded against them**. Old code never writes `manual`, so a session it
+- Voids and expires (`ABANDONED`) attempts nobody finished — `PAYMENT_PENDING` > 2h,
+  `PAYMENT_AUTHORIZED` > 30 min — **only** Duffel sessions with `capture_method = 'manual'` and
+  **no supplier call recorded against them**. Old code never writes `manual`, so a session it
   writes (defaulting to `PAYMENT_PENDING` once the migration is applied) is never treated as a
   hold: its payment captures automatically.
-- **Closes before it voids**, as §2a does: a void ahead of the close could land under a claim
-  taken in between (a late confirm, a retried webhook), and the airline would order on a hold
-  that no longer exists. A close it loses was such a claim, and nothing is released. A hold it
-  then cannot release is reported, on an attempt nothing can order on any more.
 - Closes an attempt whose PaymentIntent was never created, with nothing to release.
-- Never touches a captured payment (reported as an anomaly). One whose payment it cannot read
-  is left as it was for the next sweep.
+- Never touches a captured payment or a hold it could not release (reported as anomalies).
 - Raises one notification per attempt in `SUPPLIER_BOOKING` / `NEEDS_REVIEW` for > 15 min,
   naming the Duffel order when there is one.
 
@@ -265,7 +260,7 @@ Body is always `{ error: CODE, message, ...details }`.
 
 | Code | Status | From | Meaning | Client should |
 |---|---|---|---|---|
-| `OFFER_EXPIRED` | 410 | offer read, book, confirm | Fare gone; at confirm the hold was released | Go back to the traveller's search, run again (the app: `fareGoneSearchHref`, on the details step only for the offer read) |
+| `OFFER_EXPIRED` | 410 | book, confirm | Fare gone; at confirm the hold was released | Search again |
 | `PRICE_CHANGED` | 409 | book, confirm | Fare rose; carries `oldPrice`, `newPrice`, `currency`; at confirm the hold was released | Show both, start again |
 | `SERVICE_UNAVAILABLE` | 409 | book | A seat or bag is no longer sold | Choose again |
 | `INVALID_PHONE` | 400 | book, confirm | Not a phone Duffel will take, or no contact | Fix it |
@@ -382,11 +377,6 @@ Record what you did as an `admin` event, and move the state to `CONFIRMED` or `F
 | The same offer submitted again: answered, handed back, or released (close before void) | `flightLifecycle.service.test.ts` › *an offer the traveller has already paid for*, *…an unpaid attempt at*; `flights.service.test.ts` › *the same offer, submitted again* |
 | What counts as the same attempt (jsonb key order does not) | `flightLifecycle.sameAttempt.test.ts` |
 | The open-attempts query | `flightLifecycle.repository.test.ts` › *a traveller's open attempts at an offer* |
-| An order request after the first (re-priced, or against a fresh offer) that gets no answer: reported unanswered, never reordered or voided | `duffelPlaceOrder.unanswered.test.ts` |
-| The sweeper closes before it voids; a lost close releases nothing | `flightLifecycle.service.test.ts` › *sweep* |
-| A refund is the airline's share of `supplier_cost`, in any card currency; quote, page cancel and a Duffel-side cancel agree | `flights.service.test.ts` › *the traveller's refund, from a booking as the sale writes it* |
-| A quoted cancellation is confirmed only if it is this order's; a full refund only when Duffel has no order | `flights.service.test.ts` › *cancelling with the cancellation the page was quoted*, *…whose order Duffel does not have* |
-| An order event without tickets leaves an `awaiting_ticket` booking for the ticket poll | `webhooks.duffel.cancellation.test.ts` |
 
 The app side: `src/__tests__/checkout-flight-page.test.tsx` (the flight checkout after the card,
 through a stubbed API and Stripe) and `flight-confirm-errors.test.ts`.
@@ -414,16 +404,10 @@ timeout, capture failure, the sweeper's selectivity), with Stripe and Duffel fak
 - **The receipt shows the held amount.** If the fare falls between the card and the order, the
   lifecycle captures less (§4); the receipt does not know, because `confirm` does not return
   the captured figure.
-- **Flights are charged in the traveller's currency.** The web checkout sends `displayCurrency` —
-  the currency on show — and the quote and the hold are both made in it; Duffel bills us in the
-  fare's currency. So a cancellation's refund is the airline's refund as a share of what the
-  airline charged (`flight_bookings.supplier_cost`, in the fare's currency), applied to what the
-  card paid. It is never compared with `total_price`: that is what the traveller paid, in the
-  card's currency with the fee on top — read as the airline's charge, a USD 100 refund on a
-  PHP 5,945 booking came back as PHP 100.
-- **A cancellation refunds in full only when there is no order at Duffel** — none recorded, or
-  Duffel answers 404 for it. Any other failure, whatever its wording, is `cancel_failed` for
-  support: the order may still be live.
+- **Flights are charged in the fare's currency.** The app sends `currency`, which `book` does not
+  read; it reads `displayCurrency`, which the app does not send. The two agree today only because
+  both are the fare's currency. Charging in the traveller's selected currency would mean sending
+  `displayCurrency` and quoting in it.
 - **The quote leaves out seats and bags**, which the web checkout does not offer yet.
 - **Two first submits that race both open an attempt.** §2a looks for an earlier attempt; when
   neither exists yet, both are written. Neither holds money until it is paid, and the sweeper
