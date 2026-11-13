@@ -49,6 +49,34 @@ export class AuthService {
         return { user: this.sanitize(user), ...this.generateTokens(user) };
     }
 
+    /**
+     * Signing in from a native app with a Google ID token. See mobile #45.
+     *
+     * The same account the browser flow would reach, by design: matched on the verified
+     * email, upserted the same way, and handed the same tokens `login` returns — so a
+     * traveller who signed up on the web and signs in on the phone is one person, and the
+     * client needs no second code path for the answer.
+     *
+     * No password is set or required. An account created this way has `password_hash` null
+     * and cannot sign in with a password until it sets one, which is what the web does too.
+     */
+    async signInWithGoogle(idToken: string) {
+        const identity = await verifyGoogleIdToken(idToken);
+
+        const user = await this.repo.upsertFromGoogle({
+            email: identity.email,
+            first_name: clampName(identity.givenName),
+            last_name: clampName(identity.familyName),
+            avatar_url: identity.picture,
+        });
+
+        // Checked after the upsert, as `login` checks it after finding the user: a suspended
+        // account is refused whichever door it comes to.
+        if (user.banned_at) throw new AppError(403, 'Account suspended', 'ACCOUNT_BANNED');
+
+        return { user: this.sanitize(user), ...this.generateTokens(user) };
+    }
+
     async refresh(token: string) {
         if (!token) throw new AppError(401, 'No refresh token', 'AUTH_REQUIRED');
         try {

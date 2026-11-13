@@ -46,6 +46,14 @@ router.post('/logout',                  controller.logout);
 router.post('/refresh',  authRateLimit, controller.refresh);
 router.get('/me',        authenticate,  controller.me);
 
+// Native Google sign-in. See mobile #45.
+//
+// The `/google` redirect below is for browsers: it keeps state in a cookie and ends in a
+// redirect, neither of which a phone can follow. A native app completes the dance with
+// Google itself and posts the ID token here. Rate limited with the rest of auth — it is an
+// unauthenticated endpoint that reaches an external service and creates accounts.
+router.post('/google/native', authRateLimit, controller.googleNative);
+
 /**
  * POST /api/auth/request-reset
  *
