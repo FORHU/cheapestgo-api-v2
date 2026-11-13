@@ -43,7 +43,14 @@ export interface TimelineEvent {
 export interface TimelineKeys {
     hotelBookingIds: string[];
     sessionIds: string[];
+    /** The reference this system minted for a booking (CG-…). What `client_reference` holds. */
     bookingReferences: string[];
+    /**
+     * What the `booking_id` columns of the mail and refund logs hold, which the two products do
+     * not agree on: a hotel's minted reference, a flight's own uuid. A lookup under the wrong one
+     * finds nothing, and in an evidence pack that reads as "no email was sent".
+     */
+    bookingIds: string[];
 }
 
 /** Pull the keys each event table needs out of the payment's own rows. */
@@ -51,19 +58,32 @@ export function keysFrom(sources: PaymentRow[]): TimelineKeys {
     const hotelBookingIds: string[] = [];
     const sessionIds: string[] = [];
     const bookingReferences = new Set<string>();
+    const bookingIds = new Set<string>();
 
     for (const s of sources) {
         if (s.source === 'hotel_bookings') hotelBookingIds.push(s.internalId);
         // Flight lifecycle events hang off the checkout session, not off the booking: the
         // interesting half of a flight's life happens before a `flight_bookings` row exists.
         if (s.source === 'booking_sessions') sessionIds.push(s.internalId);
-        if (s.bookingReference) bookingReferences.add(s.bookingReference);
+
+        if (s.source === 'flight_bookings') {
+            // Logged under the booking's uuid. Its `bookingReference` is the airline's PNR, which
+            // is ours to show but neither log nor `client_reference` ever stores.
+            bookingIds.add(s.internalId);
+        } else if (s.bookingReference) {
+            bookingReferences.add(s.bookingReference);
+            bookingIds.add(s.bookingReference);
+        }
     }
-    return { hotelBookingIds, sessionIds, bookingReferences: [...bookingReferences] };
+    return {
+        hotelBookingIds, sessionIds,
+        bookingReferences: [...bookingReferences],
+        bookingIds: [...bookingIds],
+    };
 }
 
 export async function timelineFor(keys: TimelineKeys): Promise<TimelineEvent[]> {
-    const { hotelBookingIds, sessionIds, bookingReferences } = keys;
+    const { hotelBookingIds, sessionIds, bookingReferences, bookingIds } = keys;
     const events: TimelineEvent[] = [];
 
     // Queried in parallel and merged here rather than unioned in SQL: the shapes have nothing in
@@ -87,15 +107,15 @@ export async function timelineFor(keys: TimelineKeys): Promise<TimelineEvent[]> 
                 orderBy: { created_at: 'asc' },
             })
             : [],
-        bookingReferences.length
+        bookingIds.length
             ? prisma.email_logs.findMany({
-                where: { booking_id: { in: bookingReferences } },
+                where: { booking_id: { in: bookingIds } },
                 orderBy: { created_at: 'asc' },
             })
             : [],
-        bookingReferences.length
+        bookingIds.length
             ? prisma.refund_logs.findMany({
-                where: { booking_id: { in: bookingReferences } },
+                where: { booking_id: { in: bookingIds } },
                 orderBy: { requested_at: 'asc' },
             })
             : [],

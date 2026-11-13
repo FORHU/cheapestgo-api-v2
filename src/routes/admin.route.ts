@@ -26,7 +26,7 @@ import { paymentEvidenceService } from '@/services/paymentEvidence.service';
 import React from 'react';
 import { renderToBuffer } from '@react-pdf/renderer';
 import { EvidencePdfDocument } from '@/components/EvidencePdfDocument';
-import { attachmentsConfigured, putObject, signedUrlFor } from '@/lib/support/attachmentStorage';
+import { saveEvidenceExport, findEvidenceExport } from '@/repositories/paymentEvidenceExport.repository';
 import { HotelsService } from '@/services/hotels.service';
 import { findUnrecordedReservations, findBookingsMissingBrand } from '@/lib/admin/reconciliation';
 import { bookingRebuildService, REBUILD_STATUSES } from '@/services/bookingRebuild.service';
@@ -1065,28 +1065,28 @@ router.get('/payment-webhooks', async (req: Request, res: Response, next: NextFu
 /**
  * POST /api/v2/admin/payments/:paymentIntentId/evidence/export — the pack as a PDF.
  *
- * Rendered server-side, stored in the attachments bucket, and handed back as a signed URL that
- * expires. The bytes never pass through the browser's address bar, and the link dies on its own
- * — §14, and the same mechanism support attachments already use.
+ * Rendered server-side and stored in the database (`payment_evidence_exports`), insert-only, so
+ * an earlier pack is never overwritten: §8 asks for historical versions, and a pack is evidence
+ * of what was known *then*. Handed back as an API path, not a signed link: access is the admin
+ * session on the download route below, and every download is audited.
  */
 router.post('/payments/:paymentIntentId/evidence/export', async (req: Request, res: Response, next: NextFunction) => {
     try {
         const id = String(req.params.paymentIntentId ?? '').trim();
         if (!id) throw new AppError(400, 'A payment intent id is required.', 'VALIDATION_ERROR');
-        if (!attachmentsConfigured()) {
-            throw new AppError(503, 'Evidence storage is not configured on this deployment.', 'STORAGE_UNCONFIGURED');
-        }
 
         const pack = await paymentEvidenceService.gather(id);
         // `as any` as the invoice route does: @react-pdf types the root element as DocumentProps,
         // which a component returning a Document does not structurally satisfy.
         const pdf = await renderToBuffer(React.createElement(EvidencePdfDocument, { pack }) as any);
 
-        // Keyed by the moment it was made, so an earlier pack is never overwritten: §8 asks for
-        // historical versions, and a pack is evidence of what was known *then*.
-        const key = `payment-evidence/${id}/${pack.generatedAt.toISOString().replace(/[:.]/g, '-')}.pdf`;
-        await putObject({ key, body: pdf, contentType: 'application/pdf' });
-        const url = await signedUrlFor(key, `payment-evidence-${id}.pdf`);
+        const saved = await saveEvidenceExport({
+            paymentIntentId: id,
+            generatedAt:     pack.generatedAt,
+            pdf,
+            exportedBy:      (req as any).user?.id,
+            exportedByEmail: (req as any).user?.email,
+        });
 
         await adminSettingsService.logAction({
             action: 'payment_evidence_exported',
@@ -1095,7 +1095,48 @@ router.post('/payments/:paymentIntentId/evidence/export', async (req: Request, r
             targetId: id,
         }).catch(() => undefined);
 
-        res.json({ success: true, url, key, generatedAt: pack.generatedAt.toISOString() });
+        res.json({
+            success: true,
+            id: saved.id,
+            // Relative to the API base, which the caller already knows and this process does not.
+            path: `/admin/payments/${encodeURIComponent(id)}/evidence/exports/${saved.id}`,
+            sizeBytes: saved.sizeBytes,
+            generatedAt: saved.generatedAt.toISOString(),
+        });
+    } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/v2/admin/payments/:paymentIntentId/evidence/exports/:exportId — a stored pack's PDF.
+ *
+ * Admin session only (the router-wide guard). Looked up by id and payment together, and the
+ * download is audited like the view is: who took a customer's evidence out is itself evidence.
+ */
+router.get('/payments/:paymentIntentId/evidence/exports/:exportId', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const id = String(req.params.paymentIntentId ?? '').trim();
+        const exportId = z.string().uuid().safeParse(req.params.exportId);
+        if (!id || !exportId.success) throw new AppError(404, 'Evidence export not found.', 'NOT_FOUND');
+
+        const stored = await findEvidenceExport(id, exportId.data);
+        if (!stored) throw new AppError(404, 'Evidence export not found.', 'NOT_FOUND');
+
+        await adminSettingsService.logAction({
+            action: 'payment_evidence_downloaded',
+            adminId: (req as any).user?.id,
+            adminEmail: (req as any).user?.email,
+            targetId: id,
+        }).catch(() => undefined);
+
+        res.setHeader('Content-Type', stored.contentType);
+        res.setHeader('Content-Length', String(stored.pdf.length));
+        // Never cached by a shared proxy or kept in a browser's disk cache: it carries a customer's data.
+        res.setHeader('Cache-Control', 'private, no-store');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        // RFC 5987, as the support attachments did: a name can carry characters a bare filename= cannot.
+        res.setHeader('Content-Disposition',
+            `inline; filename*=UTF-8''${encodeURIComponent(`payment-evidence-${id}.pdf`)}`);
+        res.end(stored.pdf);
     } catch (err) { next(err); }
 });
 

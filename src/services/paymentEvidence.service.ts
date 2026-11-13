@@ -3,6 +3,7 @@ import { stripe } from '@/lib/stripe';
 import { findPaymentSources, type PaymentRow } from '@/repositories/payments.repository';
 import { keysFrom, timelineFor, type TimelineEvent } from '@/repositories/paymentTimeline.repository';
 import { logger } from '@/lib/logger';
+import { formatStripeAmount } from '@/lib/pricing';
 
 /**
  * What can be shown about one payment, and — for every single item — how we come to know it.
@@ -63,12 +64,13 @@ async function stripeEvidence(paymentIntentId: string): Promise<EvidenceItem[]> 
             { key: 'pi_status', label: 'Payment status at Stripe', provenance: 'verified', value: pi.status, observedAt: at },
             {
                 key: 'pi_amount', label: 'Amount', provenance: 'verified',
-                // Minor units, formatted without arithmetic in a float.
-                value: `${(pi.amount / 100).toFixed(2)} ${pi.currency.toUpperCase()}`, observedAt: at,
+                // Stripe's minor units, read back with the currency's own scale: not `/ 100`,
+                // which prints a zero-decimal charge (JPY, KRW) a hundred times too small.
+                value: `${formatStripeAmount(pi.amount, pi.currency)} ${pi.currency.toUpperCase()}`, observedAt: at,
             },
             {
                 key: 'pi_captured', label: 'Amount captured', provenance: 'verified',
-                value: `${(pi.amount_received / 100).toFixed(2)} ${pi.currency.toUpperCase()}`, observedAt: at,
+                value: `${formatStripeAmount(pi.amount_received, pi.currency)} ${pi.currency.toUpperCase()}`, observedAt: at,
             },
             { key: 'pi_created', label: 'Payment created', provenance: 'verified', value: new Date(pi.created * 1000).toISOString(), observedAt: at },
         ];
@@ -139,7 +141,7 @@ async function refundEvidence(paymentIntentId: string, at: Date): Promise<Eviden
         key:   `refund_${r.id}`,
         label: ordered.length > 1 ? `Refund ${i + 1} of ${ordered.length}` : 'Refund',
         provenance: 'verified' as const,
-        value: `${(r.amount / 100).toFixed(2)} ${r.currency.toUpperCase()} — ${r.status ?? 'unknown'} (${r.id})`,
+        value: `${formatStripeAmount(r.amount, r.currency)} ${r.currency.toUpperCase()} — ${r.status ?? 'unknown'} (${r.id})`,
         observedAt: new Date(r.created * 1000),
         note: r.status === 'pending'
             ? 'Issued, not yet settled. The card network can take several days, and the customer will not see it until it does.'
@@ -152,9 +154,10 @@ async function refundEvidence(paymentIntentId: string, at: Date): Promise<Eviden
     // minor units: a float sum of currency is how a reconciliation ends up a cent out.
     const settled = ordered.filter(r => r.status === 'succeeded');
     const total = settled.reduce((sum, r) => sum + r.amount, 0);
+    const totalCurrency = ordered[0]?.currency ?? 'usd';
     items.push({
         key: 'refund_total', label: 'Total refunded', provenance: 'verified',
-        value: `${(total / 100).toFixed(2)} ${(ordered[0]?.currency ?? 'usd').toUpperCase()}`,
+        value: `${formatStripeAmount(total, totalCurrency)} ${totalCurrency.toUpperCase()}`,
         observedAt: at,
         note: settled.length === ordered.length
             ? undefined
@@ -203,14 +206,14 @@ async function supplierEvidence(sources: PaymentRow[]): Promise<EvidenceItem[]> 
 }
 
 /** Documents and messages, as the mail log recorded them. */
-async function communicationEvidence(bookingReferences: string[]): Promise<EvidenceItem[]> {
-    if (!bookingReferences.length) return [];
+async function communicationEvidence(bookingIds: string[]): Promise<EvidenceItem[]> {
+    if (!bookingIds.length) return [];
     const mail = await prisma.email_logs.findMany({
-        where: { booking_id: { in: bookingReferences } },
+        where: { booking_id: { in: bookingIds } },
         orderBy: { created_at: 'asc' },
     });
     if (!mail.length) {
-        return [missing('email', 'Confirmation email', 'No email was logged against this booking reference.')];
+        return [missing('email', 'Confirmation email', 'No email was logged against this booking.')];
     }
     return mail.map((m) => ({
         key: `email_${m.id}`,
@@ -232,7 +235,7 @@ export class PaymentEvidenceService {
         const [stripeItems, supplierItems, emailItems, timeline] = await Promise.all([
             stripeEvidence(paymentIntentId),
             supplierEvidence(sources),
-            communicationEvidence(keys.bookingReferences),
+            communicationEvidence(keys.bookingIds),
             timelineFor(keys),
         ]);
 
