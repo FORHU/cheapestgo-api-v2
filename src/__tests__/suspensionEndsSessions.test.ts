@@ -54,6 +54,11 @@ type UserRow = { id: string; email: string; role: string; banned_at: Date | null
 const users = vi.hoisted(() => new Map<string, UserRow>());
 const db = vi.hoisted(() => ({
     users: {
+        // The admin gate reads the signed-in admin's role from here (see roleIsReadFromDatabase).
+        findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+            const row = users.get(where.id);
+            return row ? { role: row.role } : null;
+        }),
         update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<UserRow> }) => {
             const row = users.get(where.id);
             if (!row) throw new Error('Record not found');
@@ -135,6 +140,7 @@ beforeEach(() => {
     users.clear();
     users.set('u1', { id: 'u1', email: 'c@example.com', role: 'user', banned_at: null });
     users.set('u2', { id: 'u2', email: 'other@example.com', role: 'user', banned_at: null });
+    users.set('admin-1', { id: 'admin-1', email: 'admin-1@example.com', role: 'admin', banned_at: null });
 });
 
 const adminHeaders = { Authorization: `Bearer ${ADMIN}` };
