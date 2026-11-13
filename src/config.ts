@@ -36,6 +36,14 @@ const schema = z.object({
     GOOGLE_PLACES_API_KEY: z.string().optional(),
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
+    // The OAuth client IDs a *native* sign-in may present, comma-separated.
+    //
+    // Google issues a separate client per platform, and the `aud` on an ID token is whichever
+    // one the app asked with — never `GOOGLE_CLIENT_ID`, which is the web client the browser
+    // redirect flow uses. Without this list the server would have to accept any audience,
+    // which is the whole attack: an ID token minted for somebody else's app is still a
+    // perfectly valid Google token.
+    GOOGLE_NATIVE_CLIENT_IDS: z.string().optional(),
     SITE_URL: z.string().default('http://localhost:3000'),
     API_URL: z.string().default('http://localhost:4000'),
     DUFFEL_WEBHOOK_SECRET: z.string().optional(),

@@ -48,6 +48,22 @@ export class AuthController {
         } catch (err) { next(err); }
     };
 
+    /**
+     * Native Google sign-in. See mobile #45.
+     *
+     * Answers exactly as `login` does — the same two cookies, the same `{ user }` body — so a
+     * client has one shape to read whichever way somebody signed in.
+     */
+    googleNative = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { idToken } = z.object({ idToken: z.string().min(1) }).parse(req.body ?? {});
+            const result = await this.service.signInWithGoogle(idToken);
+            res.cookie(SESSION_COOKIE, result.accessToken, { ...COOKIE_OPTIONS, maxAge: SESSION_MAX_AGE_MS });
+            res.cookie('refresh_token', result.refreshToken, { ...COOKIE_OPTIONS, maxAge: 604800_000 });
+            res.json({ user: result.user });
+        } catch (err) { next(err); }
+    };
+
     logout = async (_req: Request, res: Response, next: NextFunction) => {
         try {
             // Both names: a session issued before the rename is still in the browser under
