@@ -4,7 +4,8 @@ import { config } from '@/config';
 import { AppError } from '@/middleware/error.middleware';
 import { AuthRepository } from '@/repositories/auth.repository';
 import { JwtPayload } from '@/types';
-import { checkName } from '@/lib/users/names';
+import { checkName, clampName } from '@/lib/users/names';
+import { verifyGoogleIdToken } from '@/lib/auth/googleIdToken';
 import { isRevoked } from '@/lib/auth/sessionRevocation';
 import { assertPasswordAcceptable } from '@/lib/auth/password';
 

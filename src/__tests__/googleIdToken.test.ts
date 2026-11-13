@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { verifyGoogleIdToken, nativeAudiences } from '@/lib/auth/googleIdToken';
 
 /**
  * What makes a Google ID token ours. See mobile #45.
@@ -11,8 +12,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('@/config', () => ({
     config: { GOOGLE_NATIVE_CLIENT_IDS: 'ours.apps.googleusercontent.com,ios.apps.googleusercontent.com' },
 }));
-
-const { verifyGoogleIdToken, nativeAudiences } = await import('@/lib/auth/googleIdToken');
 
 /** A token info body as Google's `tokeninfo` returns it. */
 function info(over: Record<string, unknown> = {}) {
@@ -58,32 +57,32 @@ describe('verifyGoogleIdToken', () => {
     it('refuses a token minted for somebody else’s app', async () => {
         vi.stubGlobal('fetch', answers(info({ aud: 'someone-else.apps.googleusercontent.com' })));
         await expect(verifyGoogleIdToken('tok')).rejects.toMatchObject({
-            status: 401,
+            statusCode: 401,
             code: 'INVALID_CREDENTIALS',
         });
     });
 
     it('refuses a token that did not come from Google', async () => {
         vi.stubGlobal('fetch', answers(info({ iss: 'https://evil.example.com' })));
-        await expect(verifyGoogleIdToken('tok')).rejects.toMatchObject({ status: 401 });
+        await expect(verifyGoogleIdToken('tok')).rejects.toMatchObject({ statusCode: 401 });
     });
 
     // Matching on an unverified address is how an account is taken over by claiming the
     // email somewhere else first.
     it('refuses an unverified email', async () => {
         vi.stubGlobal('fetch', answers(info({ email_verified: 'false' })));
-        await expect(verifyGoogleIdToken('tok')).rejects.toMatchObject({ status: 401 });
+        await expect(verifyGoogleIdToken('tok')).rejects.toMatchObject({ statusCode: 401 });
     });
 
     it('refuses an expired token', async () => {
         vi.stubGlobal('fetch', answers(info({ exp: String(Math.floor(Date.now() / 1000) - 10) })));
-        await expect(verifyGoogleIdToken('tok')).rejects.toMatchObject({ status: 401 });
+        await expect(verifyGoogleIdToken('tok')).rejects.toMatchObject({ statusCode: 401 });
     });
 
     it('treats a rejected token as a refusal, not an outage', async () => {
         vi.stubGlobal('fetch', answers({ error_description: 'Invalid Value' }, false));
         await expect(verifyGoogleIdToken('tok')).rejects.toMatchObject({
-            status: 401,
+            statusCode: 401,
             code: 'INVALID_CREDENTIALS',
         });
     });
@@ -91,7 +90,7 @@ describe('verifyGoogleIdToken', () => {
     it('treats an unreachable Google as an outage, not the traveller’s fault', async () => {
         vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ENOTFOUND')));
         await expect(verifyGoogleIdToken('tok')).rejects.toMatchObject({
-            status: 503,
+            statusCode: 503,
             code: 'UPSTREAM_UNAVAILABLE',
         });
     });
@@ -103,7 +102,7 @@ describe('without client IDs configured', () => {
         vi.doMock('@/config', () => ({ config: { GOOGLE_NATIVE_CLIENT_IDS: undefined } }));
         const mod = await import('@/lib/auth/googleIdToken');
         await expect(mod.verifyGoogleIdToken('tok')).rejects.toMatchObject({
-            status: 500,
+            statusCode: 500,
             code: 'OAUTH_NOT_CONFIGURED',
         });
     });
