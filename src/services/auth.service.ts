@@ -58,6 +58,11 @@ export class AuthService {
             if (await isRevoked(payload)) throw new AppError(401, 'Invalid refresh token', 'AUTH_INVALID');
             const user = await this.repo.findById(payload.sub);
             if (!user) throw new AppError(401, 'User not found', 'AUTH_INVALID');
+            // The account row, not the revocation marker, is what says "suspended" — so this
+            // holds when Redis is down and for accounts suspended before the marker existed.
+            // Refused as an invalid token rather than ACCOUNT_BANNED, so the client signs out
+            // exactly as it does for an expired session.
+            if (user.banned_at) throw new AppError(401, 'Invalid refresh token', 'AUTH_INVALID');
             return this.generateTokens(user);
         } catch {
             throw new AppError(401, 'Invalid refresh token', 'AUTH_INVALID');

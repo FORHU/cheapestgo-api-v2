@@ -17,6 +17,7 @@ import { AppError } from '@/middleware/error.middleware';
 import { mergeAdminBookings } from '@/lib/admin/normaliseBooking';
 import { prisma } from '@/lib/prisma';
 import { validateRoleChange } from '@/lib/auth/roleChange';
+import { suspendUser } from '@/lib/auth/suspension';
 import { roleLabel } from '@/lib/auth/roles';
 import { logAdminAction } from '@/lib/admin/audit';
 import { createNotification } from '@/lib/admin/notify';
@@ -231,11 +232,7 @@ router.get('/users', async (_req: Request, res: Response, next: NextFunction) =>
 
 router.post('/users/:id/ban', async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const { id } = req.params;
-        await prisma.users.update({
-            where: { id },
-            data:  { banned_at: new Date() },
-        });
+        await suspendUser(req.params.id);
         return res.json({ ok: true });
     } catch (err) {
         next(err);
@@ -355,7 +352,7 @@ router.post('/customers', async (req: Request, res: Response, next: NextFunction
         if (!action || !userId) throw new AppError(400, 'action and userId are required', 'VALIDATION_ERROR');
 
         if (action === 'ban') {
-            await prisma.users.update({ where: { id: userId }, data: { banned_at: new Date() } });
+            await suspendUser(userId);
             return res.json({ success: true });
         }
         if (action === 'unban') {

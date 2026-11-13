@@ -359,6 +359,10 @@ router.get('/google/callback', async (req: Request, res: Response) => {
             },
         });
 
+        // Password sign-in refuses a suspended account; this door must too, or "Sign in with
+        // Google" is a way back in for anyone who has been suspended.
+        if (user.banned_at) return failRedirect('account_banned');
+
         // Issue JWT (same pattern as AuthService.generateTokens)
         const payload = { sub: user.id, email: user.email, role: user.role };
         const accessToken = jwt.sign(payload, config.JWT_SECRET, {

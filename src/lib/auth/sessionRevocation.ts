@@ -30,9 +30,21 @@ function ttlSeconds(): number {
     return match ? Number(match[1]) * UNIT_SECONDS[match[2] as keyof typeof UNIT_SECONDS] : 30 * 86_400;
 }
 
-/** Sign out everything the account has, everywhere, as of now. */
-export async function revokeSessions(userId: string): Promise<void> {
-    const nowSeconds = Math.floor(Date.now() / 1000);
+/**
+ * Sign out everything the account has, everywhere, as of now.
+ *
+ * `includeThisSecond` is for an account that must not sign back in. By default a token minted in
+ * the very second of the change survives, because after a password change that is the sign-in
+ * that follows it. After a suspension nothing follows, so that second's tokens are the ones a
+ * customer opened just before being suspended, and sparing them would leave that session working
+ * for the life of its token. The marker is set one second on to cover them. Nothing can mint a
+ * token in that extra second for a suspended account: sign-in, refresh and Google all refuse it.
+ */
+export async function revokeSessions(
+    userId: string,
+    { includeThisSecond = false }: { includeThisSecond?: boolean } = {},
+): Promise<void> {
+    const nowSeconds = Math.floor(Date.now() / 1000) + (includeThisSecond ? 1 : 0);
     try {
         await redis.set(key(userId), String(nowSeconds), 'EX', ttlSeconds());
     } catch (err) {
