@@ -49,15 +49,48 @@ export class BookingsController {
         } catch (err) { next(err); }
     };
 
+    /**
+     * Shortlists a hotel or a flight. See mobile ADR-0004.
+     *
+     * The old schema demanded a `hotelId` that `saved_trips` has no column for, so it
+     * rejected the payload V2's own flight button sends — which V2 caught and answered by
+     * writing to `localStorage` instead. This takes the shape of the table.
+     *
+     * `snake_case` is accepted beside `camelCase` on the two fields V2 already sends that way
+     * (`image_url`, `deep_link`), so the web keeps working unchanged.
+     */
     saveTrip = async (req: Request, res: Response, next: NextFunction) => {
         try {
-            const data = z.object({
-                hotelId:   z.string(),
-                hotelName: z.string().optional(),
-                details:   z.record(z.any()).optional(),
+            const body = z.object({
+                type:      z.enum(['hotel', 'flight']),
+                title:     z.string().min(1).max(200),
+                subtitle:  z.string().max(300).nullish(),
+                price:     z.coerce.number().nonnegative().nullish(),
+                currency:  z.string().length(3).optional(),
+                imageUrl:  z.string().max(2000).nullish(),
+                image_url: z.string().max(2000).nullish(),
+                deepLink:  z.string().min(1).max(2000).optional(),
+                deep_link: z.string().min(1).max(2000).optional(),
+                // Where identity lives: hotelId for a stay, provider + offerId for a flight.
+                snapshot:  z.record(z.any()).default({}),
             }).parse(req.body);
-            const trip = await svc.saveTrip(req.user!.sub, data);
-            res.status(201).json({ trip });
+
+            const deepLink = body.deepLink ?? body.deep_link;
+            if (!deepLink) {
+                throw new AppError(400, 'deepLink is required', 'VALIDATION_ERROR');
+            }
+
+            const trip = await svc.saveTrip(req.user!.sub, {
+                type:     body.type,
+                title:    body.title,
+                subtitle: body.subtitle ?? null,
+                price:    body.price ?? null,
+                currency: body.currency,
+                imageUrl: body.imageUrl ?? body.image_url ?? null,
+                deepLink,
+                snapshot: body.snapshot,
+            });
+            res.status(201).json({ success: true, data: trip, trip });
         } catch (err) { next(err); }
     };
 
