@@ -83,14 +83,14 @@ describe('saving a trip', () => {
     // filled, and un-saving would have nothing to delete.
     it('refuses a stay with no hotelId', async () => {
         await expect(svc.saveTrip('user-1', { ...stay, snapshot: {} }))
-            .rejects.toMatchObject({ status: 400, code: 'VALIDATION_ERROR' });
+            .rejects.toMatchObject({ statusCode: 400, code: 'VALIDATION_ERROR' });
         expect(repo.saveTrip).not.toHaveBeenCalled();
     });
 
     it('refuses a flight with no offerId', async () => {
         await expect(svc.saveTrip('user-1', {
             type: 'flight', title: 'MNL → ICN', deepLink: '/flights', snapshot: { provider: 'duffel' },
-        })).rejects.toMatchObject({ status: 400, code: 'VALIDATION_ERROR' });
+        })).rejects.toMatchObject({ statusCode: 400, code: 'VALIDATION_ERROR' });
         expect(repo.saveTrip).not.toHaveBeenCalled();
     });
 
@@ -109,6 +109,6 @@ describe('removing a saved trip', () => {
     it('is a 404 when it is not this traveller’s', async () => {
         repo.deleteSavedTrip.mockResolvedValue({ count: 0 });
         await expect(svc.deleteSavedTrip('row-1', 'user-1'))
-            .rejects.toMatchObject({ status: 404 });
+            .rejects.toMatchObject({ statusCode: 404 });
     });
 });
