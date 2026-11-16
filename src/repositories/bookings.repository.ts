@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 
 export class BookingsRepository {
@@ -164,15 +165,53 @@ export class BookingsRepository {
         });
     }
 
-    async saveTrip(data: { userId: string; hotelId: string; hotelName?: string; details?: any }) {
+    /**
+     * A shortlisted hotel or flight. See mobile ADR-0004.
+     *
+     * This wrote `hotel_id`, `hotel_name` and `details` — none of them columns — and compiled
+     * only because of an `as any`. Every call failed at the database, both clients caught the
+     * failure and kept a local copy, and `saved_trips` held no rows at all.
+     */
+    async saveTrip(data: {
+        userId:    string;
+        type:      'hotel' | 'flight';
+        title:     string;
+        subtitle?: string | null;
+        price?:    number | null;
+        currency?: string;
+        imageUrl?: string | null;
+        deepLink:  string;
+        snapshot?: unknown;
+    }) {
         return prisma.saved_trips.create({
             data: {
-                user_id:    data.userId,
-                hotel_id:   data.hotelId,
-                hotel_name: data.hotelName ?? null,
-                details:    data.details ?? {},
-            } as any,
+                user_id:   data.userId,
+                type:      data.type,
+                title:     data.title,
+                subtitle:  data.subtitle ?? null,
+                price:     data.price ?? null,
+                currency:  data.currency ?? 'USD',
+                image_url: data.imageUrl ?? null,
+                deep_link: data.deepLink,
+                snapshot:  (data.snapshot ?? {}) as Prisma.InputJsonValue,
+            },
         });
+    }
+
+    /**
+     * What this traveller has already saved, for the client that is about to save another.
+     *
+     * Identity lives in `snapshot` — `hotelId` for a stay, `provider` + `offerId` for a
+     * flight — so a duplicate is found here rather than by a column lookup. See ADR-0004.
+     */
+    async findSavedTrip(userId: string, match: { hotelId?: string; provider?: string; offerId?: string }) {
+        const rows = await prisma.saved_trips.findMany({ where: { user_id: userId } });
+        return rows.find((row) => {
+            const snap = (row.snapshot ?? {}) as Record<string, unknown>;
+            if (match.hotelId) return snap.hotelId === match.hotelId;
+            if (match.offerId) return snap.offerId === match.offerId && snap.provider === match.provider;
+            return false;
+        }) ?? null;
     }
 
     async deleteSavedTrip(id: string, userId: string) {
