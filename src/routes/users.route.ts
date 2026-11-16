@@ -20,4 +20,9 @@ router.patch('/preferences', usersController.savePreferences);
 router.patch('/password', usersController.changePassword);
 router.patch('/profile', usersController.updateProfile);
 
+// Birth date, phone and nationality: the account holder's own travel details, which mobile
+// onboarding fills in and a later booking then does not have to ask for again. See mobile #62.
+router.get('/details', usersController.getDetails);
+router.patch('/details', usersController.updateDetails);
+
 export default router;
