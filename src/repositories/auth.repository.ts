@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma';
+import { initialPreferences } from '@/lib/users/onboarding';
 
 /** An address as it is stored and compared: trimmed, lower case. Every door normalises with this. */
 export const normaliseEmail = (email: string): string => email.trim().toLowerCase();
@@ -27,13 +28,35 @@ export class AuthRepository {
         return prisma.users.findUnique({ where: { id } });
     }
 
+    /**
+     * A new account, with its onboarding start marker written alongside it. See mobile #62.
+     *
+     * In a transaction rather than two calls, because an account that exists without the marker
+     * reads as one made before onboarding existed: a failure between the two writes would
+     * quietly excuse a brand-new traveller from a flow they are supposed to complete.
+     *
+     * The profile row is **updated**, not created. A database trigger — `on_user_created`,
+     * calling `handle_new_user` — already inserts `profiles (id, email)` as the user row lands,
+     * so creating it here collides with that insert and fails the primary key. The trigger is
+     * not in this repository and not in any migration that runs, which is the only reason it is
+     * worth a comment: nothing in the code says it exists. `upsert` rather than `update` so
+     * this keeps working if the trigger is ever dropped.
+     */
     create(data: {
         email: string;
         password_hash: string;
         first_name?: string;
         last_name?: string;
     }) {
-        return prisma.users.create({ data: { ...data, email: normaliseEmail(data.email) } });
+        return prisma.$transaction(async tx => {
+            const user = await tx.users.create({ data: { ...data, email: normaliseEmail(data.email) } });
+            await tx.profiles.upsert({
+                where:  { id: user.id },
+                update: { preferences: initialPreferences() },
+                create: { id: user.id, email: user.email, preferences: initialPreferences() },
+            });
+            return user;
+        });
     }
 
     /**
@@ -43,6 +66,14 @@ export class AuthRepository {
      * and the app reach one account rather than two. Names are only written on create: a
      * traveller who has since edited their profile should not have Google overwrite it on
      * every sign-in. The avatar is refreshed only when we hold none.
+     *
+     * The onboarding start marker is written only when this call is the one that creates the
+     * account. Looking first is what makes that knowable: a Google sign-in cannot otherwise
+     * tell a first time from a returning one, and marking a returning traveller would send
+     * somebody who finished onboarding months ago back through it. See mobile #62.
+     *
+     * Preferences are left untouched on the returning path, so the currency and language set
+     * in the browser survive every sign-in from the phone.
      */
     upsertFromGoogle(data: {
         email: string;
@@ -50,19 +81,35 @@ export class AuthRepository {
         last_name: string | null;
         avatar_url: string | null;
     }) {
-        return prisma.users.upsert({
-            where: { email: data.email },
-            create: {
-                email: data.email,
-                role: 'user',
-                first_name: data.first_name,
-                last_name: data.last_name,
-                avatar_url: data.avatar_url,
-            },
-            update: {
-                ...(data.avatar_url ? { avatar_url: data.avatar_url } : {}),
-                updated_at: new Date(),
-            },
+        return prisma.$transaction(async tx => {
+            const existing = await tx.users.findUnique({
+                where:  { email: data.email },
+                select: { id: true },
+            });
+
+            const user = await tx.users.upsert({
+                where: { email: data.email },
+                create: {
+                    email: data.email,
+                    role: 'user',
+                    first_name: data.first_name,
+                    last_name: data.last_name,
+                    avatar_url: data.avatar_url,
+                },
+                update: {
+                    ...(data.avatar_url ? { avatar_url: data.avatar_url } : {}),
+                    updated_at: new Date(),
+                },
+            });
+
+            if (!existing) {
+                await tx.profiles.upsert({
+                    where:  { id: user.id },
+                    update: { preferences: initialPreferences() },
+                    create: { id: user.id, email: user.email, preferences: initialPreferences() },
+                });
+            }
+            return user;
         });
     }
 }

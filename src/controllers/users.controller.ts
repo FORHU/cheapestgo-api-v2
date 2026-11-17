@@ -40,6 +40,31 @@ export class UsersController {
         } catch (err) { next(err); }
     };
 
+    getDetails = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const details = await this.service.getDetails(req.user!.sub);
+            res.json({ details });
+        } catch (err) { next(err); }
+    };
+
+    updateDetails = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            // Both spellings accepted on the way in, as the auth routes do: the mobile client
+            // sends camelCase and the rest of this API answers in snake_case, and rejecting a
+            // traveller's details over which one they picked helps nobody.
+            const body = (req.body ?? {}) as Record<string, unknown>;
+            const pick = (camel: string, snake: string) =>
+                (body[camel] ?? body[snake]) as string | undefined;
+
+            const details = await this.service.updateDetails(req.user!.sub, {
+                birthDate:   pick('birthDate', 'birth_date'),
+                phone:       pick('phone', 'phone'),
+                nationality: pick('nationality', 'nationality'),
+            });
+            res.json({ success: true, details });
+        } catch (err) { next(err); }
+    };
+
     updateProfile = async (req: Request, res: Response, next: NextFunction) => {
         try {
             const { firstName, lastName } = req.body as { firstName?: string; lastName?: string };

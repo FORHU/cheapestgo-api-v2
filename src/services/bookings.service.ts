@@ -174,7 +174,41 @@ export class BookingsService {
         return this.repo.getSavedTrips(userId);
     }
 
-    async saveTrip(userId: string, data: { hotelId: string; hotelName?: string; details?: any }) {
+    /**
+     * Shortlists a hotel or a flight. See mobile ADR-0004.
+     *
+     * **What is saved is the thing, not the price.** A hotel is named by its `hotelId`, never
+     * by the rate that happened to be on screen: an Offer is a price for given dates and
+     * lapses, while a shortlist is for coming back to weeks later. A flight keeps the
+     * `provider` + `offerId` pair V2 already matches on.
+     *
+     * Hearting something twice is the same heart, not a second row — a client that lost its
+     * answer and retried must not end up with the hotel listed twice.
+     */
+    async saveTrip(userId: string, data: {
+        type:      'hotel' | 'flight';
+        title:     string;
+        subtitle?: string | null;
+        price?:    number | null;
+        currency?: string;
+        imageUrl?: string | null;
+        deepLink:  string;
+        snapshot:  Record<string, unknown>;
+    }) {
+        const hotelId = typeof data.snapshot.hotelId === 'string' ? data.snapshot.hotelId : undefined;
+        const offerId = typeof data.snapshot.offerId === 'string' ? data.snapshot.offerId : undefined;
+        const provider = typeof data.snapshot.provider === 'string' ? data.snapshot.provider : undefined;
+
+        if (data.type === 'hotel' && !hotelId) {
+            throw new AppError(400, 'A saved stay needs snapshot.hotelId', 'VALIDATION_ERROR');
+        }
+        if (data.type === 'flight' && !offerId) {
+            throw new AppError(400, 'A saved flight needs snapshot.offerId', 'VALIDATION_ERROR');
+        }
+
+        const existing = await this.repo.findSavedTrip(userId, { hotelId, provider, offerId });
+        if (existing) return existing;
+
         return this.repo.saveTrip({ userId, ...data });
     }
 

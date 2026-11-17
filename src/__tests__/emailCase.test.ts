@@ -17,6 +17,9 @@ const db = vi.hoisted(() => ({
         create:     vi.fn(async ({ data }: { data: { email: string } }) => ({ id: 'new', ...data })),
     },
     password_reset_tokens: { upsert: vi.fn(async () => ({})) },
+    profiles: { upsert: vi.fn(async () => ({})) },
+    // createUser writes the user and their profile in one transaction; run it against this mock.
+    $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(db)),
 }));
 vi.mock('@/lib/prisma', () => ({ prisma: db }));
 vi.mock('@/lib/redis', () => ({ redis: {} }));
