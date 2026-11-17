@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { clampName } from '@/lib/users/names';
 import { fromNoReply } from '@/lib/brand';
+import { mailConfigured, sendMail } from '@/lib/email/mailer';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { AuthController } from '@/controllers/auth.controller';
@@ -11,6 +12,10 @@ import { prisma } from '@/lib/prisma';
 import { redis } from '@/lib/redis';
 import { config } from '@/config';
 import { BASE_COOKIE_OPTIONS, SESSION_COOKIE, SESSION_MAX_AGE_MS } from '@/lib/auth/cookie';
+import { AuthRepository } from '@/repositories/auth.repository';
+import { clearSessionCookies } from '@/lib/auth/cookie';
+import { revokeSessions } from '@/lib/auth/sessionRevocation';
+import { assertPasswordAcceptable } from '@/lib/auth/password';
 import { originOfRequest, resolveCallbackOrigin, resolveReturnOrigin } from '@/lib/auth/returnOrigin';
 
 const router: Router = Router();
@@ -34,6 +39,7 @@ function googleRedirectUri(req: Request): string {
     return `${resolveCallbackOrigin(originOfRequest(req.headers))}/api/v2/auth/google/callback`;
 }
 const controller = new AuthController();
+const authRepository = new AuthRepository();
 
 router.post('/register', authRateLimit, controller.register);
 router.post('/login',    authRateLimit, controller.login);
@@ -62,10 +68,9 @@ router.post('/request-reset', authRateLimit, async (req: Request, res: Response,
             throw new AppError(400, 'Email required.', 'VALIDATION_ERROR');
         }
 
-        const user = await prisma.users.findUnique({
-            where: { email: email.toLowerCase().trim() },
-            select: { id: true, email: true },
-        });
+        // The shared lookup, not a lower-cased exact match: an account made with capitals
+        // before sign-up normalised would otherwise never get its reset email.
+        const user = await authRepository.findByEmail(email);
 
         // Always return success to prevent email enumeration
         if (!user) {
@@ -82,29 +87,27 @@ router.post('/request-reset', authRateLimit, async (req: Request, res: Response,
             create: { user_id: user.id, token, expires_at: expiresAt },
         });
 
-        const siteUrl = config.NODE_ENV === 'production'
-            ? 'https://cheapestgo.com'
-            : 'http://localhost:3000';
+        // The link goes back to the site the reset was asked from. It used to be a literal
+        // `https://cheapestgo.com` in production — v1's address — so a reset begun on v2
+        // opened v1's reset page, and every link on that page led further into v1. The
+        // browser's `Origin` names the site that made the call; `resolveReturnOrigin` only
+        // honours it when it is one of ours, and otherwise answers `SITE_URL`, so a forged
+        // header cannot put someone else's address in an email we send.
+        const siteUrl = resolveReturnOrigin(req.get('origin'));
         const resetUrl = `${siteUrl}/auth/reset-password?token=${token}`;
 
-        if (config.RESEND_API_KEY) {
-            await fetch('https://api.resend.com/emails', {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${config.RESEND_API_KEY}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    // Named for the brand the recipient actually used, not a literal (v1,
-                    // C4). A password reset arriving from a company they have never heard of
-                    // is the one email most likely to be read as phishing and ignored, and
-                    // the sending domain must match the brand or SPF/DKIM alignment fails.
-                    from: fromNoReply(),
-                    to:   [user.email],
-                    subject: 'Reset your password',
-                    html: `<p>Click <a href="${resetUrl}">here</a> to reset your password. This link expires in 1 hour.</p>`,
-                }),
-            }).catch(e => console.error('[auth/request-reset] Email send failed:', e));
+        if (mailConfigured()) {
+            const sent = await sendMail({
+                // Named for the brand the recipient actually used, not a literal (v1,
+                // C4). A password reset arriving from a company they have never heard of
+                // is the one email most likely to be read as phishing and ignored, and
+                // the sending domain must match the brand or SPF/DKIM alignment fails.
+                from: fromNoReply(),
+                to:   user.email,
+                subject: 'Reset your password',
+                html: `<p>Click <a href="${resetUrl}">here</a> to reset your password. This link expires in 1 hour.</p>`,
+            });
+            if (!sent.ok) console.error('[auth/request-reset] Email send failed:', sent.error);
         }
 
         return res.json({ success: true });
@@ -126,9 +129,7 @@ router.put('/reset-password', async (req: Request, res: Response, next: NextFunc
         if (!token || !password) {
             throw new AppError(400, 'Token and password required.', 'VALIDATION_ERROR');
         }
-        if (typeof password !== 'string' || password.length < 8) {
-            throw new AppError(400, 'Password must be 8+ characters.', 'VALIDATION_ERROR');
-        }
+        assertPasswordAcceptable(password);
 
         const resetToken = await prisma.password_reset_tokens.findFirst({
             where: {
@@ -151,6 +152,12 @@ router.put('/reset-password', async (req: Request, res: Response, next: NextFunc
         await prisma.password_reset_tokens.delete({
             where: { user_id: resetToken.user_id },
         });
+
+        // Whoever held this account's sessions — the person, a second device, someone who
+        // had got in, which is often why a password is reset — is signed out, and this
+        // browser's cookies go with them. The next sign-in needs the new password.
+        await revokeSessions(resetToken.user_id);
+        clearSessionCookies(res);
 
         return res.json({ success: true });
     } catch (err) {
@@ -354,6 +361,10 @@ router.get('/google/callback', async (req: Request, res: Response) => {
                 updated_at: new Date(),
             },
         });
+
+        // Password sign-in refuses a suspended account; this door must too, or "Sign in with
+        // Google" is a way back in for anyone who has been suspended.
+        if (user.banned_at) return failRedirect('account_banned');
 
         // Issue JWT (same pattern as AuthService.generateTokens)
         const payload = { sub: user.id, email: user.email, role: user.role };

@@ -852,6 +852,21 @@ model stripe_processed_events {
   @@index([booking_reference], map: "stripe_processed_events_ref_idx")
 }
 
+// Exported evidence PDFs, insert-only. See db/migrations/20261113000001_payment_evidence_exports.sql.
+model payment_evidence_exports {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  payment_intent_id String
+  generated_at      DateTime @db.Timestamptz(6)
+  content_type      String   @default("application/pdf")
+  size_bytes        Int
+  pdf               Bytes
+  exported_by       String?  @db.Uuid
+  exported_by_email String?
+  created_at        DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([payment_intent_id, generated_at(sort: Desc)], map: "payment_evidence_exports_pi_idx")
+}
+
 model tgx_destination_cache {
   city_key         String    @id
   destination_code String

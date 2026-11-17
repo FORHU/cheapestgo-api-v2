@@ -1,0 +1,75 @@
+{
+ "steps": {
+  "booked": {
+   "status": 200,
+   "pnr": "CU7RZY",
+   "bookingStatus": "ticketed"
+  },
+  "duffelQuote": {
+   "id": "ore_0000BCKeRNVL138Jb56v3Z",
+   "refund": "218.96",
+   "currency": "USD",
+   "to": "balance"
+  },
+  "duffelConfirm": {
+   "confirmed_at": "2026-11-11T07:45:38.878714Z"
+  },
+  "refresh": {
+   "status": 200,
+   "body": {
+    "status": "refunded",
+    "changed": true
+   }
+  }
+ },
+ "expect": "refresh-status sees the Duffel cancellation; refund = airline share; booking cancelled",
+ "st": {
+  "stripe": {
+   "status": "succeeded",
+   "amount": 23913,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 23913,
+   "refunded": 23913
+  },
+  "session": {
+   "lifecycle": "CONFIRMED",
+   "status": "completed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [browser] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [browser] claimed for the airline order",
+   "SUPPLIER_BOOKING→CONFIRMED [browser] airline ordered and payment captured"
+  ],
+  "sale": {
+   "id": "4dffae31-5040-4e76-a662-1319d36b42b8",
+   "status": "refunded",
+   "pnr": "CU7RZY",
+   "provider_order_id": "ord_0000BCKeR48aYjcDTYrMq4",
+   "total_price": "239.13",
+   "charged_price": "239.13",
+   "currency": "USD",
+   "supplier_cost": "218.96"
+  },
+  "supplierAttempts": [],
+  "duffelOrder": {
+   "id": "ord_0000BCKeR48aYjcDTYrMq4",
+   "booking_reference": "CU7RZY",
+   "cancelled_at": "2026-11-11T07:45:38.878714Z",
+   "documents": 1,
+   "total": "218.96",
+   "currency": "USD"
+  }
+ },
+ "v": {
+  "pass": true,
+  "taken": 0,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": []
+ },
+ "orders": [],
+ "case": "supplierCancels"
+}

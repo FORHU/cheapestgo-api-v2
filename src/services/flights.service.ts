@@ -874,23 +874,27 @@ export class FlightsService {
 
         const refundRatio = duffelSupplierPrice > 0 ? Math.min(1, duffelRefundUsd / duffelSupplierPrice) : 1;
 
-        let refundAmount: number;
         let refundCurrency: string = (booking.payment_currency ?? 'USD') as string;
+        // What the traveller paid, in the card's currency: the refund and the penalty are both
+        // shares of it, so the two always add up to it on the screen.
+        let paid = Number(booking.charged_price ?? booking.total_price ?? 0);
         try {
             if (booking.payment_intent_id) {
                 const pi = await stripe.paymentIntents.retrieve(booking.payment_intent_id);
                 // The quote a customer sees before they cancel. Read at the currency's own
                 // scale — `/ 100` quoted a ₩12,000 refund on a ₩1,200,000 booking in v1.
-                refundAmount = Math.round(fromStripeAmount(pi.amount, pi.currency) * refundRatio * 100) / 100;
+                paid = fromStripeAmount(pi.amount, pi.currency);
                 refundCurrency = pi.currency.toUpperCase();
-            } else {
-                refundAmount = Math.round(Number(booking.charged_price ?? booking.total_price ?? 0) * refundRatio * 100) / 100;
             }
         } catch {
-            refundAmount = Math.round(Number(booking.charged_price ?? booking.total_price ?? 0) * refundRatio * 100) / 100;
+            // The booking's own figure stands in when Stripe cannot be read.
         }
+        const refundAmount = Math.round(paid * refundRatio * 100) / 100;
+        // Never a hard-coded 0: the app reads "penalty 0 and a refund" as a full refund, and
+        // showed one beside half the money (sandbox run 2026-11-11, BUG-3).
+        const penaltyAmount = Math.max(0, Math.round((paid - refundAmount) * 100) / 100);
 
-        return { success: true, refundAmount, refundCurrency, penaltyAmount: 0, cancellationId };
+        return { success: true, refundAmount, refundCurrency, penaltyAmount, cancellationId };
     }
 
     // ── Cancel booking ────────────────────────────────────────────────────────

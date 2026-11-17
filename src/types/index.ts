@@ -1,4 +1,5 @@
-export type UserRole = 'user' | 'admin';
+/** What `users.role` can hold (see lib/auth/roles). A token's copy is only ever as old as its sign-in. */
+export type UserRole = 'user' | 'admin' | 'support_agent';
 
 export interface JwtPayload {
     sub: string;

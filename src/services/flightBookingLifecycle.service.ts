@@ -32,6 +32,7 @@
 import { config } from '@/config';
 import { stripe } from '@/lib/stripe';
 import { getDuffelOffer, placeDuffelOrder, ORDER_CREATE_TIMEOUT_MS, type PlaceDuffelOrderResult } from '@/lib/flights/duffel';
+import { isOfferGoneError } from '@/lib/flights/duffelErrors';
 import { findOrderFromTimedOutAttempt, toReconciledOrder } from '@/lib/flights/duffelOrderReconcile';
 import { buildOrderPassengers, orderPhoneNumber } from '@/lib/flights/orderPassengers';
 import { orderTotal } from '@/lib/flights/orderTotal';
@@ -164,7 +165,11 @@ function orderRef(order: any): DuffelOrderRef {
 function refusal(result: { status: number; data: any }): { code: string; message: string } {
     const rawMsg: string = result.data?.errors?.[0]?.message ?? '';
     const isPhoneErr   = /phone_number/i.test(rawMsg);
-    const isExpiredErr = result.status === 422 || /expired|no longer available|select another offer/i.test(rawMsg);
+    // Not every 422: a passenger or document the airline refuses is a 422 too, and calling it an
+    // expired offer sent the traveller back to search for a fare still on sale (BUG-2). A
+    // price_changed the refresh could not settle means the fare is gone at that price.
+    const isExpiredErr = isOfferGoneError(result.data)
+        || (result.status === 422 && result.data?.errors?.[0]?.code === 'price_changed');
     const isSeatErr    = /seat|service.*unavailable|no longer.*available.*service/i.test(rawMsg) && !isExpiredErr;
 
     if (isExpiredErr && !isPhoneErr) return { code: 'OFFER_EXPIRED', message: OFFER_GONE };

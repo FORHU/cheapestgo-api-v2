@@ -3,8 +3,8 @@ import { AppError } from '@/middleware/error.middleware';
 import { checkName } from '@/lib/users/names';
 import { canonicalBrandName, fromNoReply } from '@/lib/brand';
 import { escapeHtml } from '@/lib/html';
-import { config } from '@/config';
 import { sendTransactionalEmail } from '@/lib/email/send';
+import { mailConfigured, sendMail } from '@/lib/email/mailer';
 import { buildHotelConfirmationHtml } from '@/lib/email/templates';
 import { policyEmailText } from '@/lib/email/policyText';
 
@@ -96,7 +96,7 @@ export class BookingsService {
         next:     { firstName: string; lastName: string; email: string; remarks: string | null };
         previous: { firstName: string; lastName: string; email: string; remarks: string | null };
     }) {
-        if (!config.RESEND_API_KEY) return;
+        if (!mailConfigured()) return;
 
         const rows: [string, string, string][] = [];
         const was = `${p.previous.firstName} ${p.previous.lastName}`.trim();
@@ -113,19 +113,16 @@ export class BookingsService {
                 + `<td style="padding:6px 8px;color:#1e293b;font-size:13px;font-weight:600">${escapeHtml(to)}</td></tr>`).join('')}</table>`
             : '';
 
-        await fetch('https://api.resend.com/emails', {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${config.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                from:    fromNoReply(),
-                to:      [p.to],
-                subject: `Booking Updated — #${p.bookingId}`,
-                html: `<p>Hi ${escapeHtml(p.guestName)},</p>`
-                    + `<p>Your booking <strong>${escapeHtml(p.bookingId)}</strong> at <strong>${escapeHtml(p.hotelName)}</strong> has been updated.</p>`
-                    + diff
-                    + `<p style="color:#94a3b8;font-size:12px">&copy; ${new Date().getFullYear()} ${escapeHtml(brand)}</p>`,
-            }),
+        const sent = await sendMail({
+            from:    fromNoReply(),
+            to:      p.to,
+            subject: `Booking Updated — #${p.bookingId}`,
+            html: `<p>Hi ${escapeHtml(p.guestName)},</p>`
+                + `<p>Your booking <strong>${escapeHtml(p.bookingId)}</strong> at <strong>${escapeHtml(p.hotelName)}</strong> has been updated.</p>`
+                + diff
+                + `<p style="color:#94a3b8;font-size:12px">&copy; ${new Date().getFullYear()} ${escapeHtml(brand)}</p>`,
         });
+        if (!sent.ok) console.error(`[bookings] Amendment email for ${p.bookingId} not sent:`, sent.error);
     }
 
     async list(userId: string, tripType?: 'flight' | 'hotel') {

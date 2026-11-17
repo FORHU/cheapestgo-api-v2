@@ -24,6 +24,8 @@ vi.mock('@/lib/flights/duffel', () => ({ getDuffelOrder }));
 vi.mock('@/lib/flights/mystifly', () => ({ mystiflyRequest: vi.fn() }));
 vi.mock('@/lib/flights/search', () => ({ searchFlights: vi.fn(), saveSearch: vi.fn() }));
 vi.mock('@/lib/email/flightConfirmation', () => ({ sendFlightConfirmationEmail }));
+// The route file also holds the email retry job; its mailer reads the real config at import.
+vi.mock('@/lib/email/mailer', () => ({ sendMail: vi.fn(), mailConfigured: vi.fn(), mailTransport: vi.fn() }));
 vi.mock('@/lib/payments/fxLock', () => ({ lockFx }));
 
 import internalRouter from '@/routes/internal.route';

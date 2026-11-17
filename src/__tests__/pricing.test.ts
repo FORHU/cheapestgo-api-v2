@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     applyMarkup, bundleSavingPercent, calculateStripeFee, enrichBookingFinances,
-    estimateNetProfit, fromStripeAmount, hotelServiceFee, toStripeAmount,
+    estimateNetProfit, formatStripeAmount, fromStripeAmount, hotelServiceFee, toStripeAmount,
     FLIGHT_MARKUP_SPEC, HOTEL_MARKUP_SPEC, STRIPE_RATE, HOTEL_FX_DISPLAY_TOLERANCE,
 } from '@/lib/pricing';
 import { capAtDisplayedTotal } from '@/lib/payments/chargeBase';
@@ -161,6 +161,31 @@ describe('Stripe amounts', () => {
         for (const [amount, currency] of [[317.70, 'USD'], [1_200_000, 'KRW'], [58.05, 'EUR']] as const) {
             expect(fromStripeAmount(toStripeAmount(amount, currency), currency)).toBe(amount);
         }
+    });
+
+    /**
+     * Stripe's BHD, JOD, KWD, OMR and TND have three decimals: 1.230 KWD is 1230, not 123. This
+     * module only knows two scales, so `price * 100` would charge a tenth of the price. None of
+     * them is in the currency picker, but the charge path takes any three letters when the
+     * supplier quotes in the same currency, so it refuses rather than undercharge.
+     */
+    it.each(['KWD', 'bhd', 'JOD', 'omr', 'TND'])('refuses to build a charge in three-decimal %s', (currency) => {
+        expect(() => toStripeAmount(12.34, currency)).toThrow(/three-decimal/i);
+    });
+
+    it('still builds charges in every currency it does know', () => {
+        expect(toStripeAmount(12.34, 'USD')).toBe(1234);
+        expect(toStripeAmount(72576, 'JPY')).toBe(72576);
+        expect(toStripeAmount(1_200_000, 'krw')).toBe(1_200_000);
+    });
+
+    /** For documents: the figure as written, with exactly the decimals the currency has. */
+    it('formats a Stripe amount with the decimals its currency actually has', () => {
+        expect(formatStripeAmount(855736, 'php')).toBe('8557.36');
+        expect(formatStripeAmount(500, 'USD')).toBe('5.00');
+        expect(formatStripeAmount(72576, 'jpy')).toBe('72576');
+        expect(formatStripeAmount(1_200_000, 'KRW')).toBe('1200000');
+        expect(formatStripeAmount(0, 'USD')).toBe('0.00');
     });
 });
 

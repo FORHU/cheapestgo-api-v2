@@ -11,6 +11,9 @@ import { FlightResult, FlightSearchParams } from '@/types/flights';
 import { PROVIDER_ATTEMPT_TIMEOUT_MS, PROVIDER_RETRY_BACKOFF_MS } from '@/lib/flights/searchBudget';
 import { sameItineraryOffers } from '@/lib/flights/offerItineraryMatch';
 
+import { isOfferGoneError } from '@/lib/flights/duffelErrors';
+export { isOfferGoneError };
+
 const DUFFEL_BASE = 'https://api.duffel.com';
 const DUFFEL_VERSION = 'v2';
 // The ladder is sized in searchBudget so the orchestrator ceiling and the browser abort are
@@ -393,7 +396,7 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
         }
         clearTimeout(tmo);
 
-        if (res.status === 422 && data?.errors?.[0]?.code === 'offer_no_longer_available') {
+        if (res.status === 422 && isOfferGoneError(data)) {
             return { isPriceChangedError: false, isOfferUnavailable: true };
         }
 
@@ -485,7 +488,13 @@ export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<
     if (!attempt1.isOfferUnavailable && attempt1.res?.ok) {
         return { kind: 'success', order: attempt1.data.data, finalTotal: attempt1.finalTotal!, finalCurrency: attempt1.finalCurrency!, usedOffer: rawOffer };
     }
-    if (!attempt1.isOfferUnavailable && attempt1.res && attempt1.res.status !== 422) {
+    // Searching the flight again is for an offer that is gone, or a price change the Price Action
+    // could not settle — both are answered by a current offer for the same flight. Any other 422
+    // is the airline refusing this order, and searching again would only re-ask it (BUG-2).
+    const refreshable = attempt1.isOfferUnavailable
+        || (attempt1.res?.status === 422
+            && (isOfferGoneError(attempt1.data) || attempt1.data?.errors?.[0]?.code === 'price_changed'));
+    if (!refreshable && attempt1.res) {
         // `timedOut` travels with the failure because aborting the request does not cancel
         // the order: the caller has to go looking for it before telling anyone it failed.
         return { kind: 'error', status: attempt1.res.status, data: attempt1.data, timedOut: attempt1.timedOut };

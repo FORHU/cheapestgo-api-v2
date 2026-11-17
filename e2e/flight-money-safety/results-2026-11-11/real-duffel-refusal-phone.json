@@ -1,0 +1,54 @@
+{
+ "steps": {
+  "authorise": {
+   "status": "requires_capture"
+  },
+  "confirm": {
+   "status": 400,
+   "error": "DUFFEL_ORDER_FAILED",
+   "message": "Invalid phone number format. Please check your phone number and country code. Your card has not been charged."
+  }
+ },
+ "expect": "confirm 200; captured in full; sale ticketed; order live",
+ "held": {
+  "amount": 247.09,
+  "currency": "USD",
+  "fare": 226.39,
+  "fee": 20.7
+ },
+ "st": {
+  "stripe": {
+   "status": "canceled",
+   "amount": 24709,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 0,
+   "refunded": 24709
+  },
+  "session": {
+   "lifecycle": "FAILED",
+   "status": "failed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [browser] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [browser] claimed for the airline order",
+   "SUPPLIER_BOOKING→FAILED [browser] not ordered: DUFFEL_ORDER_FAILED (DUFFEL_ORDER_FAILED)"
+  ],
+  "sale": null,
+  "supplierAttempts": [],
+  "duffelOrder": null
+ },
+ "v": {
+  "pass": false,
+  "taken": -24709,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": []
+ },
+ "orders": [],
+ "forLater": {},
+ "case": "happy",
+ "seconds": 12
+}

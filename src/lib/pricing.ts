@@ -365,6 +365,12 @@ export function bundleSavingPercent(): number {
  * zero-decimal currencies (JPY, KRW, …) passed as-is.
  */
 export function toStripeAmount(price: number, currency: string): number {
+    // Fail closed. Stripe's three-decimal currencies want 1230 for 1.230, and this module only
+    // knows two scales, so `price * 100` below would charge a tenth of the price. Supporting them
+    // is a product decision; silently undercharging is not an option to default into.
+    if (THREE_DECIMAL_CURRENCIES.has(currency.toLowerCase())) {
+        throw new Error(`Cannot build a charge in ${currency.toUpperCase()}: a three-decimal currency, which this system does not support.`);
+    }
     return ZERO_DECIMAL_CURRENCIES.has(currency.toLowerCase())
         ? Math.round(price)
         : Math.round(price * 100);
@@ -395,6 +401,16 @@ export function fromStripeAmount(amount: number, currency: string): number {
     return ZERO_DECIMAL_CURRENCIES.has(currency.toLowerCase())
         ? amount
         : round2(amount / 100);
+}
+
+/**
+ * A Stripe amount as it is written in a document: exactly the decimals the currency has, and no
+ * currency code. `formatStripeAmount(72576, 'jpy')` is `'72576'`, not `'725.76'` — the figure a
+ * card network reads has to be the figure the customer was charged.
+ */
+export function formatStripeAmount(amount: number, currency: string): string {
+    return fromStripeAmount(amount, currency)
+        .toFixed(ZERO_DECIMAL_CURRENCIES.has(currency.toLowerCase()) ? 0 : 2);
 }
 
 // ── Reporting ────────────────────────────────────────────────────────────────
@@ -477,8 +493,18 @@ export function enrichBookingFinances<T extends {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Currencies where Stripe expects whole units rather than minor ones. */
-const ZERO_DECIMAL_CURRENCIES = new Set([
+/**
+ * Stripe's three-decimal currencies: the amount is in thousandths (1230 for 1.230) and must end
+ * in 0. Not supported — see {@link toStripeAmount}, which refuses them.
+ */
+const THREE_DECIMAL_CURRENCIES = new Set(['bhd', 'jod', 'kwd', 'omr', 'tnd']);
+
+/**
+ * Currencies where Stripe expects whole units rather than minor ones. Lower case, as Stripe
+ * writes them. Exported so a query that must convert minor units in SQL reads this list rather
+ * than keeping a second one that can drift.
+ */
+export const ZERO_DECIMAL_CURRENCIES = new Set([
     'bif', 'clp', 'djf', 'gnf', 'jpy', 'kmf', 'krw', 'mga',
     'pyg', 'rwf', 'ugx', 'vnd', 'vuv', 'xaf', 'xof', 'xpf',
 ]);

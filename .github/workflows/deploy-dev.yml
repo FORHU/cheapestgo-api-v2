@@ -233,6 +233,17 @@ jobs:
           MOBILE_API_KEY: ${{ secrets.MOBILE_API_KEY || vars.MOBILE_API_KEY }}
           MYSTIFLY_PASSWORD: ${{ secrets.MYSTIFLY_PASSWORD || vars.MYSTIFLY_PASSWORD }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY || vars.RESEND_API_KEY }}
+          # Mail (src/lib/email/mailer.ts). EMAIL_TRANSPORT=smtp moves every send to the SMTP
+          # server below; unset or `resend` keeps Resend, which is the rollback. All per
+          # environment, so dev can run on SMTP while production stays on Resend.
+          EMAIL_TRANSPORT: ${{ secrets.EMAIL_TRANSPORT || vars.EMAIL_TRANSPORT }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST || vars.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT || vars.SMTP_PORT }}
+          SMTP_SECURE: ${{ secrets.SMTP_SECURE || vars.SMTP_SECURE }}
+          SMTP_USER: ${{ secrets.SMTP_USER || vars.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_MAX_CONNECTIONS: ${{ secrets.SMTP_MAX_CONNECTIONS || vars.SMTP_MAX_CONNECTIONS }}
+          SMTP_RATE_PER_SECOND: ${{ secrets.SMTP_RATE_PER_SECOND || vars.SMTP_RATE_PER_SECOND }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY || vars.STRIPE_SECRET_KEY }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET || vars.STRIPE_WEBHOOK_SECRET }}
           API_URL: ${{ secrets.API_URL || vars.API_URL }}
@@ -371,6 +382,14 @@ jobs:
           add NEXT_PUBLIC_BRAND_NAME           "${NEXT_PUBLIC_BRAND_NAME:-}"
           add OAUTH_RETURN_ORIGINS             "${OAUTH_RETURN_ORIGINS:-}"
           add RESEND_API_KEY                   "${RESEND_API_KEY:-}"
+          add EMAIL_TRANSPORT                  "${EMAIL_TRANSPORT:-}"
+          add SMTP_HOST                        "${SMTP_HOST:-}"
+          add SMTP_PORT                        "${SMTP_PORT:-}"
+          add SMTP_SECURE                      "${SMTP_SECURE:-}"
+          add SMTP_USER                        "${SMTP_USER:-}"
+          add SMTP_PASS                        "${SMTP_PASS:-}"
+          add SMTP_MAX_CONNECTIONS             "${SMTP_MAX_CONNECTIONS:-}"
+          add SMTP_RATE_PER_SECOND             "${SMTP_RATE_PER_SECOND:-}"
           add SITE_URL                         "${SITE_URL:-}"
           add STRIPE_EXPECTED_ACCOUNT          "${STRIPE_EXPECTED_ACCOUNT:-}"
           add STRIPE_SECRET_KEY                "${STRIPE_SECRET_KEY:-}"
