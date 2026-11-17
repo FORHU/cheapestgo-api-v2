@@ -25,6 +25,7 @@ import { createNotification } from '@/lib/admin/notify';
 import { adminPaymentsService } from '@/services/adminPayments.service';
 import { z } from 'zod';
 import { paymentEvidenceService } from '@/services/paymentEvidence.service';
+import { mailConfigured, sendBulk } from '@/lib/email/mailer';
 import React from 'react';
 import { renderToBuffer } from '@react-pdf/renderer';
 import { EvidencePdfDocument } from '@/components/EvidencePdfDocument';
@@ -488,8 +489,7 @@ router.post('/communication/send', async (req: Request, res: Response, next: Nex
         if (!subject?.trim()) throw new AppError(400, 'subject is required', 'VALIDATION_ERROR');
         if (!htmlBody?.trim()) throw new AppError(400, 'body is required', 'VALIDATION_ERROR');
 
-        const resendApiKey = process.env.RESEND_API_KEY;
-        if (!resendApiKey) throw new AppError(503, 'Email service not configured', 'SERVICE_UNAVAILABLE');
+        if (!mailConfigured()) throw new AppError(503, 'Email service not configured', 'SERVICE_UNAVAILABLE');
 
         let recipients: string[] = [];
         if (userId) {
@@ -506,38 +506,18 @@ router.post('/communication/send', async (req: Request, res: Response, next: Nex
 
         if (!recipients.length) return res.json({ ok: true, sent: 0, message: 'No recipients' });
 
-        // Send in batches of 50 (Resend batch limit)
-        const BATCH = 50;
-        let sent = 0;
-        const errors: string[] = [];
+        // One email per recipient. SMTP has no batch call, so `sendBulk` sends a few at a time
+        // through the pool, under SMTP_MAX_CONNECTIONS and SMTP_RATE_PER_SECOND — set those to the
+        // provider's limits, or a blast to 2,000 people finds them. On Resend it still batches.
+        const { sent, failed } = await sendBulk(recipients, {
+            from:    'CheapestGo <no-reply@mail.cheapestgo.com>',
+            subject,
+            html:    htmlBody,
+        });
+        // The first few reasons, not 2,000 copies of the same one.
+        const errors = failed.slice(0, 20).map(f => `${f.to}: ${f.error.slice(0, 200)}`);
 
-        for (let i = 0; i < recipients.length; i += BATCH) {
-            const batch = recipients.slice(i, i + BATCH);
-            const emailRes = await fetch('https://api.resend.com/emails/batch', {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${resendApiKey}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(
-                    batch.map(to => ({
-                        from:    'CheapestGo <no-reply@mail.cheapestgo.com>',
-                        to:      [to],
-                        subject,
-                        html:    htmlBody,
-                    }))
-                ),
-            });
-
-            if (emailRes.ok) {
-                sent += batch.length;
-            } else {
-                const errText = await emailRes.text().catch(() => '');
-                errors.push(`Batch ${Math.floor(i / BATCH) + 1}: ${errText.slice(0, 200)}`);
-            }
-        }
-
-        return res.json({ ok: true, sent, total: recipients.length, errors: errors.length ? errors : undefined });
+        return res.json({ ok: true, sent, total: recipients.length, failed: failed.length || undefined, errors: errors.length ? errors : undefined });
     } catch (err) {
         next(err);
     }

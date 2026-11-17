@@ -21,6 +21,7 @@ import { stripe } from '../lib/stripe';
 import { lockFx } from '../lib/payments/fxLock';
 import { searchFlights, saveSearch } from '@/lib/flights/search';
 import { sendFlightConfirmationEmail } from '@/lib/email/flightConfirmation';
+import { mailConfigured, mailTransport, sendMail } from '@/lib/email/mailer';
 import { FlightsRepository } from '@/repositories/flights.repository';
 import { completeDuffelBooking } from '@/services/flightBookingCompletion';
 import type { FlightOffer } from '@/types/flights';
@@ -568,7 +569,7 @@ internalRouter.post('/auto-recover', requireCronOrInternal, async (_req: Request
 // POST /api/internal/retry-emails
 // Schedule: every 15 minutes  (*/15 * * * *)
 // Re-sends failed/queued emails by reading the stored htmlBody from
-// email_logs.metadata and re-submitting via Resend.
+// email_logs.metadata and re-submitting through the mailer (EMAIL_TRANSPORT).
 // Auth: Bearer <CRON_SECRET> or <FUNCTIONS_SECRET>
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -577,9 +578,8 @@ const RETRY_EMAILS_MAX_AGE = 48 * 60 * 60 * 1000; // ignore logs older than 48h
 
 internalRouter.post('/retry-emails', requireCronOrInternal, async (_req: Request, res: Response) => {
     try {
-        const resendApiKey = process.env.RESEND_API_KEY;
-        if (!resendApiKey) {
-            return res.status(503).json({ error: 'RESEND_API_KEY not configured' });
+        if (!mailConfigured()) {
+            return res.status(503).json({ error: `Email (${mailTransport()}) is not configured` });
         }
 
         const cutoff = new Date(Date.now() - RETRY_EMAILS_MAX_AGE).toISOString();
@@ -605,18 +605,14 @@ internalRouter.post('/retry-emails', requireCronOrInternal, async (_req: Request
             if (!htmlBody) { skipped++; continue; }
 
             try {
-                const resendRes = await fetch('https://api.resend.com/emails', {
-                    method:  'POST',
-                    headers: { Authorization: `Bearer ${resendApiKey}`, 'Content-Type': 'application/json' },
-                    body:    JSON.stringify({
-                        from:    'CheapestGo <no-reply@mail.cheapestgo.com>',
-                        to:      [log.recipient],
-                        subject: log.subject,
-                        html:    htmlBody,
-                    }),
+                const sent = await sendMail({
+                    from:    'CheapestGo <no-reply@mail.cheapestgo.com>',
+                    to:      log.recipient,
+                    subject: log.subject,
+                    html:    htmlBody,
                 });
 
-                if (resendRes.ok) {
+                if (sent.ok) {
                     const cleanMeta = { ...(log.metadata as any) };
                     delete cleanMeta.htmlBody;
                     await prisma.email_logs.update({
@@ -626,13 +622,12 @@ internalRouter.post('/retry-emails', requireCronOrInternal, async (_req: Request
                     succeeded++;
                     console.log(`[retry-emails] Sent: ${log.id}`);
                 } else {
-                    const errText = await resendRes.text().catch(() => '');
                     await prisma.email_logs.update({
                         where: { id: log.id },
-                        data:  { error_message: `Retry failed (${resendRes.status}): ${errText.slice(0, 200)}` },
+                        data:  { error_message: `Retry failed: ${sent.error.slice(0, 200)}` },
                     });
                     failed++;
-                    console.error(`[retry-emails] Failed: ${log.id} — ${resendRes.status}`);
+                    console.error(`[retry-emails] Failed: ${log.id} — ${sent.error}`);
                 }
             } catch (e: any) {
                 failed++;

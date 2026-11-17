@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { clampName } from '@/lib/users/names';
 import { fromNoReply } from '@/lib/brand';
+import { mailConfigured, sendMail } from '@/lib/email/mailer';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { AuthController } from '@/controllers/auth.controller';
@@ -95,24 +96,18 @@ router.post('/request-reset', authRateLimit, async (req: Request, res: Response,
         const siteUrl = resolveReturnOrigin(req.get('origin'));
         const resetUrl = `${siteUrl}/auth/reset-password?token=${token}`;
 
-        if (config.RESEND_API_KEY) {
-            await fetch('https://api.resend.com/emails', {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${config.RESEND_API_KEY}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    // Named for the brand the recipient actually used, not a literal (v1,
-                    // C4). A password reset arriving from a company they have never heard of
-                    // is the one email most likely to be read as phishing and ignored, and
-                    // the sending domain must match the brand or SPF/DKIM alignment fails.
-                    from: fromNoReply(),
-                    to:   [user.email],
-                    subject: 'Reset your password',
-                    html: `<p>Click <a href="${resetUrl}">here</a> to reset your password. This link expires in 1 hour.</p>`,
-                }),
-            }).catch(e => console.error('[auth/request-reset] Email send failed:', e));
+        if (mailConfigured()) {
+            const sent = await sendMail({
+                // Named for the brand the recipient actually used, not a literal (v1,
+                // C4). A password reset arriving from a company they have never heard of
+                // is the one email most likely to be read as phishing and ignored, and
+                // the sending domain must match the brand or SPF/DKIM alignment fails.
+                from: fromNoReply(),
+                to:   user.email,
+                subject: 'Reset your password',
+                html: `<p>Click <a href="${resetUrl}">here</a> to reset your password. This link expires in 1 hour.</p>`,
+            });
+            if (!sent.ok) console.error('[auth/request-reset] Email send failed:', sent.error);
         }
 
         return res.json({ success: true });

@@ -14,7 +14,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '@/middleware/auth.middleware';
 import { AppError } from '@/middleware/error.middleware';
-import { config } from '@/config';
+import { mailConfigured, sendMail } from '@/lib/email/mailer';
 import { logger } from '@/lib/logger';
 import { loadBookingEmailView, type BookingEmailView } from '@/lib/email/booking-view';
 import { renderBookingConfirmationHtml } from '@/lib/email/booking-confirmation.template';
@@ -122,7 +122,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
         // Always send to the authenticated user's email
         const toEmail = userEmail;
 
-        if (!config.RESEND_API_KEY) {
+        if (!mailConfigured()) {
             throw new AppError(500, 'Email service is not configured', 'EMAIL_NOT_CONFIGURED');
         }
 
@@ -135,31 +135,16 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
         const { subject, html, attachments } = await composeBookingConfirmation(view);
 
-        const emailRes = await fetch('https://api.resend.com/emails', {
-            method: 'POST',
-            headers: {
-                Authorization:  `Bearer ${config.RESEND_API_KEY}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                from:    FROM_ADDRESS,
-                to:      [toEmail],
-                subject,
-                html,
-                ...(attachments.length > 0 ? { attachments } : {}),
-            }),
-        });
+        const sent = await sendMail({ from: FROM_ADDRESS, to: toEmail, subject, html, attachments });
 
-        if (!emailRes.ok) {
-            const errBody = await emailRes.text();
-            logger.error('[/api/email] Resend error', { status: emailRes.status, body: errBody });
+        if (!sent.ok) {
+            logger.error('[/api/email] Send failed', { error: sent.error });
             throw new AppError(502, 'Failed to send email', 'EMAIL_SEND_FAILED');
         }
 
-        const result = await emailRes.json();
         return res.json({
             success:      true,
-            id:           (result as any).id,
+            id:           sent.id,
             hasAttachment: attachments.length > 0,
         });
     } catch (err) {

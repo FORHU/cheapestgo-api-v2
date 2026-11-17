@@ -57,9 +57,25 @@ const schema = z.object({
     ALLOW_LIVE_HOTEL_PROVIDER: z.string().optional(),
     MOCK_HOTEL_SCENARIO: z.enum(MOCK_SCENARIOS).optional(),
     MOCK_HOTEL_CURRENCY: z.string().length(3).optional(),
-    // `log` writes the email to the console instead of sending it. Defaults to `log` when the
-    // hotel provider is the mock, and to `resend` otherwise.
-    EMAIL_TRANSPORT: z.enum(['resend', 'log']).optional(),
+    // How mail leaves (src/lib/email/mailer.ts). `smtp` is the Nodemailer transport below,
+    // `resend` the Resend HTTP API it is replacing — kept until production has run on SMTP, so
+    // a bad rollout is undone by flipping this back. `log` writes the email to the console
+    // instead of sending it. Unset, booking mail defaults to `log` when the hotel provider is the
+    // mock (send.ts), and everything else to `resend`.
+    EMAIL_TRANSPORT: z.enum(['smtp', 'resend', 'log']).optional(),
+    // The SMTP server, for EMAIL_TRANSPORT=smtp. Without SMTP_HOST mail is not configured, and
+    // booking mail is queued in email_logs for the retry job rather than lost.
+    SMTP_HOST: z.string().optional(),
+    SMTP_PORT: z.coerce.number().int().positive().default(587),
+    // TLS from the first byte (port 465). Unset, it follows the port; on 587 the connection is
+    // upgraded with STARTTLS, which Nodemailer insists on whenever the server offers it.
+    SMTP_SECURE: z.enum(['true', 'false']).optional(),
+    SMTP_USER: z.string().optional(),
+    SMTP_PASS: z.string().optional(),
+    // The pool: connections held open, and how many messages per second it may send in all.
+    // Providers cap both — set the rate to the provider's limit before an admin blast finds it.
+    SMTP_MAX_CONNECTIONS: z.coerce.number().int().positive().default(5),
+    SMTP_RATE_PER_SECOND: z.coerce.number().int().positive().optional(),
 });
 
 const parsed = schema.safeParse(process.env);
