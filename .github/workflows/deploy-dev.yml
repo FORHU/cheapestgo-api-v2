@@ -232,6 +232,7 @@ jobs:
           BRAND_EMAIL: ${{ secrets.BRAND_EMAIL || vars.BRAND_EMAIL }}
           BRAND_NAME: ${{ secrets.BRAND_NAME || vars.BRAND_NAME }}
           CHAT_WONDER_API_URL: ${{ secrets.CHAT_WONDER_API_URL || vars.CHAT_WONDER_API_URL }}
+          FORHU_CHAT_URL: ${{ secrets.FORHU_CHAT_URL || vars.FORHU_CHAT_URL || 'https://chat-dev.forhu.ai' }}
           CHAT_WONDER_MODEL: ${{ secrets.CHAT_WONDER_MODEL || vars.CHAT_WONDER_MODEL }}
           CORS_ORIGIN: ${{ secrets.CORS_ORIGIN || vars.CORS_ORIGIN }}
           DUFFEL_BALANCE_ALERT_THRESHOLD: ${{ secrets.DUFFEL_BALANCE_ALERT_THRESHOLD || vars.DUFFEL_BALANCE_ALERT_THRESHOLD }}
@@ -327,6 +328,7 @@ jobs:
           add CHAT_WONDER_API_KEY              "${CHAT_WONDER_API_KEY:-}"
           add CHAT_WONDER_API_URL              "${CHAT_WONDER_API_URL:-}"
           add CHAT_WONDER_MODEL                "${CHAT_WONDER_MODEL:-}"
+          add FORHU_CHAT_URL                   "${FORHU_CHAT_URL:-}"
           add COOKIE_SECRET                    "${COOKIE_SECRET:-}"
           add CORS_ORIGIN                      "${CORS_ORIGIN:-}"
           add CRON_SECRET                      "${CRON_SECRET:-}"

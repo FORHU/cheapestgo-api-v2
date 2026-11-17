@@ -10,7 +10,7 @@ async function getForhuSession(conversationId: string): Promise<string> {
     const existing = sessionMap.get(conversationId);
     if (existing) return existing;
 
-    const res = await fetch(`${config.CHAT_WONDER_API_URL}/session-id`);
+    const res = await fetch(`${config.FORHU_CHAT_URL}/session-id`);
     if (!res.ok) throw new Error(`forhu /session-id failed (${res.status})`);
     const json = await res.json() as { session_id?: string };
     if (!json.session_id) throw new Error('forhu /session-id returned no session_id');
@@ -108,7 +108,7 @@ chatRouter.post('/', async (req: Request, res: Response) => {
         return res.status(400).json({ error: 'message is required' });
     }
 
-    const callForhu = async (sid: string) => fetch(`${config.CHAT_WONDER_API_URL}/chat`, {
+    const callForhu = async (sid: string) => fetch(`${config.FORHU_CHAT_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
