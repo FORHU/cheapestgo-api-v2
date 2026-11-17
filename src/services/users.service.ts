@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { AppError } from '@/middleware/error.middleware';
 import { usersRepository, UsersRepository } from '@/repositories/users.repository';
 import { checkName } from '@/lib/users/names';
+import { checkBirthDate, checkNationality, checkPhone, FieldCheck } from '@/lib/users/travellerDetails';
 
 /**
  * What an account holder may change about their own account: their name, their password, their
@@ -73,6 +74,48 @@ export class UsersService {
 
         const updated = await this.repo.saveName(userId, checked);
         return { firstName: updated.first_name, lastName: updated.last_name };
+    }
+
+    /** Everything the account holds about the person, for a profile screen to fill itself from. */
+    async getDetails(userId: string) {
+        const details = await this.repo.findDetails(userId);
+        if (!details) throw new AppError(404, 'User not found', 'NOT_FOUND');
+        return details;
+    }
+
+    /**
+     * Birth date, phone and nationality, any subset of them. See mobile #62.
+     *
+     * Partial by design: onboarding offers all three on one step and lets a traveller skip it,
+     * so one field arriving alone is the normal case and not a half-filled form. An absent field
+     * is left alone, which is also what makes this safe to call from a profile screen that only
+     * knows about one of them.
+     *
+     * Every field is checked before any is written, so a bad nationality cannot leave a birth
+     * date stored and an error on screen.
+     */
+    async updateDetails(
+        userId: string,
+        input: { birthDate?: string; phone?: string; nationality?: string },
+    ) {
+        const { birthDate, phone, nationality } = input;
+        if (birthDate === undefined && phone === undefined && nationality === undefined) {
+            throw new AppError(400, 'Nothing to update', 'VALIDATION_ERROR');
+        }
+
+        const checked: { birthDate?: string; phone?: string; nationality?: string } = {};
+        for (const [key, value, check] of [
+            ['birthDate',   birthDate,   checkBirthDate],
+            ['phone',       phone,       checkPhone],
+            ['nationality', nationality, checkNationality],
+        ] as const satisfies readonly (readonly [string, string | undefined, (v: string) => FieldCheck])[]) {
+            if (value === undefined) continue;
+            const result = check(value);
+            if (!result.ok) throw new AppError(400, result.error!, 'VALIDATION_ERROR');
+            checked[key as keyof typeof checked] = result.value;
+        }
+
+        return this.repo.saveDetails(userId, checked);
     }
 }
 
