@@ -5,15 +5,22 @@ import {
     BASE_COOKIE_OPTIONS, SESSION_COOKIE, LEGACY_SESSION_COOKIE, SESSION_MAX_AGE_MS,
 } from '@/lib/auth/cookie';
 
+// Normalised here, at the boundary, and again where it is stored and looked up
+// (`normaliseEmail`): the address is the account's identity, and `Ana@Example.com` and
+// `ana@example.com` must be the same person. Trim first, so a pasted trailing space is not
+// what makes an address invalid.
+const email = z.string().trim().toLowerCase().email();
+
 const registerSchema = z.object({
-    email:      z.string().email(),
-    password:   z.string().min(8),
+    email,
+    // The rule itself is `assertPasswordAcceptable`, run by the service: one place for it.
+    password:   z.string(),
     first_name: z.string().optional(),
     last_name:  z.string().optional(),
 });
 
 const loginSchema = z.object({
-    email:    z.string().email(),
+    email,
     password: z.string().min(1),
 });
 

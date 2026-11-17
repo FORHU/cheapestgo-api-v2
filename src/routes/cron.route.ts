@@ -8,6 +8,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import zlib from 'zlib';
 import { config } from '@/config';
+import { sendMail } from '@/lib/email/mailer';
 import { SupportService } from '@/services/support.service';
 import { prisma } from '@/lib/prisma';
 import { stripe } from '@/lib/stripe';
@@ -48,16 +49,8 @@ router.use(requireCronSecret);
 
 
 async function sendEmail(to: string, subject: string, html: string) {
-    if (!config.RESEND_API_KEY) return { ok: false, error: 'RESEND_API_KEY not set' };
-    const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${config.RESEND_API_KEY}`,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ from: 'CheapestGo <no-reply@mail.cheapestgo.com>', to: [to], subject, html }),
-    });
-    return res.ok ? { ok: true } : { ok: false, error: await res.text().catch(() => 'unknown') };
+    const sent = await sendMail({ from: 'CheapestGo <no-reply@mail.cheapestgo.com>', to, subject, html });
+    return sent.ok ? { ok: true } : { ok: false, error: sent.error };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

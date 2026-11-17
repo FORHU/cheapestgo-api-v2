@@ -132,3 +132,21 @@ they are now visible because they are no longer surrounded by false ones.
 
 Unchanged: the view is still derived, there is still no `payments` table, and nothing here asserts
 that a service was delivered.
+
+## Amendment, 2026-11-13 — evidence packs are stored in the database
+
+Decision 3 and the Context assumed exported packs would go to the support-attachments bucket and
+come back as an expiring signed link. They are stored in Postgres instead
+(`payment_evidence_exports`, migration 20261113000001): no bucket to provision or secure, and the
+pack sits in the same backups as the payment records it describes.
+
+- **Insert-only.** Each export is a new row, so an earlier pack is never overwritten — the same
+  property the timestamped bucket key gave.
+- **Access changes from an expiring link to the admin session.** The export returns an API path;
+  `GET …/evidence/exports/:exportId` serves the PDF to an admin session only, looked up by export id
+  *and* payment, `Cache-Control: private, no-store`. A copied URL is useless without a session, but
+  it no longer expires by itself. Every download is audited (`payment_evidence_downloaded`), as
+  every view and export already were.
+- **Size.** A pack is a few KB to a few hundred KB; bytea is comfortable at that. Revisit only if
+  exports become bulk.
+- The bucket helper remains in use by support attachments; nothing here depends on it.
