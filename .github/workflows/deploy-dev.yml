@@ -219,6 +219,13 @@ jobs:
           EXCHANGE_RATES_API_KEY: ${{ secrets.EXCHANGE_RATES_API_KEY || vars.EXCHANGE_RATES_API_KEY }}
           FUNCTIONS_SECRET: ${{ secrets.FUNCTIONS_SECRET || vars.FUNCTIONS_SECRET }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET || vars.GOOGLE_CLIENT_SECRET }}
+          # The client IDs a phone may present when it signs in with Google. Without this the
+          # app sends a perfectly good token and api-v2 answers OAUTH_NOT_CONFIGURED, because
+          # it has nothing to check the token's `aud` against — which is what dev did until a
+          # release APK was pointed at it. It is the **web** client id, not the Android one:
+          # Google mints the token with the web client as its audience when the app passes a
+          # serverClientId. Comma-separated if there is ever more than one.
+          GOOGLE_NATIVE_CLIENT_IDS: ${{ secrets.GOOGLE_NATIVE_CLIENT_IDS || vars.GOOGLE_NATIVE_CLIENT_IDS }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY || vars.GOOGLE_PLACES_API_KEY }}
           JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET || vars.JWT_REFRESH_SECRET }}
           JWT_SECRET: ${{ secrets.JWT_SECRET || vars.JWT_SECRET }}
@@ -342,6 +349,7 @@ jobs:
           add FUNCTIONS_SECRET                 "${FUNCTIONS_SECRET:-}"
           add GOOGLE_CLIENT_ID                 "${GOOGLE_CLIENT_ID:-}"
           add GOOGLE_CLIENT_SECRET             "${GOOGLE_CLIENT_SECRET:-}"
+          add GOOGLE_NATIVE_CLIENT_IDS         "${GOOGLE_NATIVE_CLIENT_IDS:-}"
           add GOOGLE_PLACES_API_KEY            "${GOOGLE_PLACES_API_KEY:-}"
           add ALLOW_MOCK_HOTEL_PROVIDER        "${ALLOW_MOCK_HOTEL_PROVIDER:-}"
           add HOTEL_BOOKING_ENABLED            "${HOTEL_BOOKING_ENABLED:-}"
