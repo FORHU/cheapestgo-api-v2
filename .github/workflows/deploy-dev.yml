@@ -56,6 +56,18 @@ env:
   ACCOUNT_ID: "617163942417"
   ECR_REPOSITORY: cheapestgo-v2-api
   APP_PORT: "4000"
+  # The cache. Created by this workflow rather than by hand: the production container was
+  # made with a bare `docker run` on 2026-11-03 and exists in no file and no repo, so a
+  # rebuilt box would come back with no Redis and nothing anywhere would say so.
+  #
+  # Not a per-environment variable, because this name is the host in REDIS_URL — which comes
+  # from the box's own shared env file, and reads cheapestgo-redis on both. Changing one
+  # without the other leaves the API unable to resolve its cache.
+  REDIS_CONTAINER: cheapestgo-redis
+  # 256 MB, written in bytes because that is the unit `config get maxmemory` answers in: the
+  # same literal then serves both the check and the setting, and the two cannot drift apart.
+  # Room for roughly 1,200 cached hotel searches at the 211 KB a gzipped one measures.
+  REDIS_MAXMEMORY: "268435456"
 
 jobs:
   deploy:
@@ -425,6 +437,26 @@ jobs:
             # so a deploy that changes no migrations is a no-op. --no-dump-schema: the schema
             # file is a development artefact and this container is thrown away.
             "docker run --rm --platform ${{ steps.cfg.outputs.platform }} --network ${{ steps.cfg.outputs.network }} --env-file ${{ steps.cfg.outputs.merged_env }} ${IMAGE} sh -c 'DB=\$(printf %s \"\$DATABASE_URL\" | cut -d\"?\" -f1); dbmate --no-dump-schema -u \"\$DB?sslmode=${{ steps.cfg.outputs.dbmate_sslmode }}\" up'"
+            # The cache, put right before the code that uses it.
+            #
+            # Idempotent: it touches Redis only when the container is missing or its cap is
+            # wrong, so an ordinary deploy leaves the keyspace alone — including anyone
+            # mid-Google-login, whose oauth:state lives there for ten minutes.
+            #
+            # The cap is the whole point. Redis defaults to no limit and `noeviction`, and
+            # every writer here swallows its own errors, so an out-of-memory Redis would stop
+            # storing sign-in state and report nothing: a traveller gets a failed Google login
+            # and no log line explains it. volatile-lru rather than allkeys-lru because all
+            # four writers set a TTL — identical behaviour today, but a key stored later
+            # without one is something allkeys-lru would evict and this leaves alone.
+            #
+            # Non-fatal on purpose. The API is built to run without Redis, retrying every ten
+            # seconds and logging the transition, so an unreachable Docker Hub must not be able
+            # to abort the deploy of the API itself. Caching degrades; the deploy continues.
+            #
+            # No volume: everything stored here expires within a day, so persisting it across a
+            # recreate buys one warm search in exchange for another resource to keep track of.
+            "docker exec ${{ env.REDIS_CONTAINER }} redis-cli config get maxmemory 2>/dev/null | grep -qx ${{ env.REDIS_MAXMEMORY }} || { docker rm -f ${{ env.REDIS_CONTAINER }} 2>/dev/null || true; docker run -d --name ${{ env.REDIS_CONTAINER }} --restart unless-stopped --platform ${{ steps.cfg.outputs.platform }} --network ${{ steps.cfg.outputs.network }} redis:7-alpine redis-server --maxmemory ${{ env.REDIS_MAXMEMORY }} --maxmemory-policy volatile-lru; } || echo '[redis] ensure failed - the API will run with caching disabled'"
             "docker rm -f ${{ steps.cfg.outputs.container }} 2>/dev/null || true"
             "docker run -d --name ${{ steps.cfg.outputs.container }} --restart unless-stopped --platform ${{ steps.cfg.outputs.platform }} --network ${{ steps.cfg.outputs.network }} --env-file ${{ steps.cfg.outputs.merged_env }} -p 127.0.0.1:${{ steps.cfg.outputs.host_port }}:${{ env.APP_PORT }} ${IMAGE}"
           )

@@ -3,6 +3,7 @@
  * Handles caching, OTV portfolio queries, ETG fallback, and result normalization.
  */
 
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import {
@@ -18,6 +19,7 @@ import { isConfirmedOutOfCountry } from '@/lib/geo/countryBoxes';
 import { hotelLocationNames } from '@/lib/geo/hotelLocation';
 import { hotelCountry, isTerritory } from '@/lib/geo/territories';
 import type { HotelSearchParams, HotelSearchResult } from '@/types/hotels';
+import { redis } from '@/lib/redis';
 import { staysUnderMaintenance } from '@/lib/maintenance';
 import { anchorRung, distanceToShow, haversineKm } from '@/lib/hotels/searchDistance';
 
@@ -315,6 +317,17 @@ function buildSearchKey(p: HotelSearchParams): string {
         p.checkout,
         String(p.adults ?? 2),
         String(p.children ?? 0),
+        // Ages change the occupancy sent to the supplier, and a 2-year-old and a 15-year-old
+        // are not priced alike. Sorted, because the same party typed in a different order is
+        // the same party.
+        (p.childrenAges ?? []).slice().sort((a, b) => a - b).join(','),
+        // Rooms changes the occupancy too: two rooms for four adults is not one room for four.
+        String(p.rooms ?? 1),
+        // Currency is sent to OTV as the target, so it changes the prices that come back. It
+        // was missing here while this key only deduplicated searches already in flight, and a
+        // PHP search could be handed a USD answer whenever the two collided. Caching the
+        // answer would have made that collision last five minutes instead of a moment.
+        (p.currency ?? '').toUpperCase(),
         p.guest_nationality ?? 'KR',
     ].join('|');
 }
@@ -1440,6 +1453,15 @@ export async function runTgxSearch(params: HotelSearchParams): Promise<HotelSear
         return boundToSubArea(await existing, params);
     }
 
+    // Asked before the supplier is. OTV requires us to allow 12s for a search and uses it, so
+    // the same question asked twice in a few minutes costs a traveller twenty seconds for an
+    // answer we already had. See ADR-0005.
+    const cached = await readCachedSearch(key);
+    if (cached) {
+        console.log(`[tgx-search] HIT ${key}`);
+        return boundToSubArea(cached, params);
+    }
+
     // One line per supplier search, so volume is visible now that every search is one.
     console.log(`[tgx-search] LIVE ${key}`);
 
@@ -1449,7 +1471,100 @@ export async function runTgxSearch(params: HotelSearchParams): Promise<HotelSear
     });
 
     _inflight.set(key, promise);
-    return boundToSubArea(await promise, params);
+    const result = await promise;
+
+    // Written after it resolved, so a search that threw or was abandoned part-way is never
+    // stored. A partial answer kept as a complete one would be served to everybody until it
+    // expired, and nothing would look wrong.
+    void writeCachedSearch(key, result);
+
+    return boundToSubArea(result, params);
+}
+
+/**
+ * How long an answer from OTV may be reused — the **Freshness Window** in CONTEXT.md.
+ *
+ * Five minutes covers a traveller opening two or three properties and coming back, and the
+ * several people searching one city within a few minutes of each other. It is a statement
+ * about prices rather than about speed: longer saves more supplier calls and sends more
+ * travellers to a price that has moved.
+ *
+ * Nobody is charged a stale figure. Prebook re-quotes against the supplier and answers
+ * `PRICE_CHANGED` when it has moved, and a booking is charged from the saved prebook quote,
+ * never from what a search displayed.
+ */
+const SEARCH_CACHE_TTL_SECONDS = Number(process.env.TGX_SEARCH_CACHE_TTL_SECONDS ?? 300);
+
+/** Namespaced so a flush of search results cannot take the POI or OAuth entries with it. */
+const searchCacheKey = (key: string) => `tgx:search:v1:${key}`;
+
+/**
+ * The cached answer, or null for anything that is not plainly one.
+ *
+ * Every failure here — Redis down, a half-written value, a shape from an older deploy — means
+ * "ask the supplier", because a slow answer is always better than a wrong one. `redis.ts`
+ * keeps reconnecting on its own, so a cache that is down now is not down for the process.
+ */
+/**
+ * What may be stored, compressed — or null for anything that must not be.
+ *
+ * Separated from the Redis call so the rules can be tested without a Redis: the refusals below
+ * are the part that can quietly do damage, and a machine that cannot reach the supplier
+ * (ADR-0002) cannot test them any other way.
+ */
+export function packSearchForCache(result: HotelSearchResult): Buffer | null {
+    if (!result || !Array.isArray(result.data) || result.data.length === 0) return null;
+    // A city with nothing in it and a supplier that failed quietly look identical here, and
+    // five minutes of "no hotels" from one bad call is the more expensive mistake.
+    if ((result as any).truncated) return null; // an incomplete answer is not an answer
+    return gzipSync(Buffer.from(JSON.stringify(result), 'utf8'));
+}
+
+/** The answer back, or null for anything that is not plainly one. */
+export function unpackSearchFromCache(packed: Buffer | null): HotelSearchResult | null {
+    try {
+        if (!packed || packed.length === 0) return null;
+        const parsed = JSON.parse(gunzipSync(packed).toString('utf8'));
+        if (!parsed || !Array.isArray(parsed.data)) return null;
+        return parsed as HotelSearchResult;
+    } catch {
+        // A half-written value, or a shape from an older deploy. Ask the supplier.
+        return null;
+    }
+}
+
+async function readCachedSearch(key: string): Promise<HotelSearchResult | null> {
+    try {
+        // Buffer, not string: the value is gzip, and reading it as UTF-8 would mangle it.
+        return unpackSearchFromCache(await redis.getBuffer(searchCacheKey(key)));
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Stores a complete answer. Never awaited by the caller: a traveller waits for hotels, not for
+ * us to write them down, and a Redis that is refusing writes must not add latency to a search
+ * that already has its answer.
+ *
+ * An empty answer is not cached. A city with nothing in it and a supplier that failed quietly
+ * look identical here, and five minutes of "no hotels" from one bad call is the more expensive
+ * mistake — so emptiness is always re-asked.
+ */
+async function writeCachedSearch(key: string, result: HotelSearchResult): Promise<void> {
+    try {
+        // Compressed, because this Redis also holds the OAuth state a sign-in depends on. A
+        // Seoul search is 1.26 MB of JSON, which gzip takes to 107 KB — measured, not
+        // assumed. Without it a busy evening could reach a memory limit and start evicting,
+        // and the symptom would be travellers unable to sign in with Google, which nobody
+        // would trace back to a hotel search.
+        const packed = packSearchForCache(result);
+        if (!packed) return;
+        await redis.setex(searchCacheKey(key), SEARCH_CACHE_TTL_SECONDS, packed);
+    } catch {
+        // Not being able to remember costs a supplier call later; saying so costs a traveller
+        // nothing, so it is left to the redis client's own connection logging.
+    }
 }
 
 async function _runTgxSearch(params: HotelSearchParams): Promise<HotelSearchResult> {
@@ -1801,3 +1916,12 @@ async function buildCityResults(
     const allMappable = deduped.filter(h => h.lat && h.lng);
     return { data: deduped, allMappable, totalCount: deduped.length, truncated };
 }
+
+/**
+ * The search key, for tests only.
+ *
+ * Exported because what counts as "the same search" now decides what a cached answer is reused
+ * for, and that is worth asserting directly rather than through a supplier call nobody can make
+ * from a test machine (ADR-0002).
+ */
+export const buildSearchKeyForTests = buildSearchKey;

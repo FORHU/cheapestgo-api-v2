@@ -46,6 +46,23 @@ export function getTgxConfig() {
  *                         hotels directly and needs no translation.
  * @param targetCurrency   Currency to convert supplier prices into.
  */
+/// The budgets OTV states for each operation, and the HTTP aborts that have to outlast them.
+///
+/// Three numbers, not one. Search is quick because it is a shop window; a prebook holds a rate
+/// with a supplier and a book creates a reservation with a hotel, and both are allowed to take
+/// far longer. Until now only Search passed a budget: quote and book took this function's
+/// default of 18s, inside `tgxGraphQL`'s default 30s abort. A book that OTV is entitled to
+/// spend three minutes on was being abandoned at thirty seconds — and abandoning a book does
+/// not stop it. The supplier goes on to make the reservation, and nothing on our side is
+/// listening, which is how a guest ends up charged for a stay no screen here knows about.
+///
+/// Each abort has headroom over its budget, because the abort also covers the response coming
+/// back down the wire; cutting at the same moment turns a supplier answer into a network error.
+export const TGX_QUOTE_TIMEOUT_MS = Number(process.env.TGX_QUOTE_TIMEOUT_MS ?? 55_000);
+export const TGX_BOOK_TIMEOUT_MS  = Number(process.env.TGX_BOOK_TIMEOUT_MS ?? 180_000);
+export const TGX_QUOTE_ABORT_MS   = TGX_QUOTE_TIMEOUT_MS + 10_000;
+export const TGX_BOOK_ABORT_MS    = TGX_BOOK_TIMEOUT_MS + 20_000;
+
 export function getTgxSettings(
     cfg = getTgxConfig(),
     timeout = 18000,
@@ -314,11 +331,13 @@ export async function quoteTgx(token: string): Promise<{
     rooms: any[];
     cancelPolicy?: TgxCancelPolicy;
 }> {
-    const settings = getTgxSettings();
+    // OTV allows 55s to hold a rate. Asking for 18s — this function's default, which is what
+    // was sent before — gave up on quotes the supplier was still willing to answer.
+    const settings = getTgxSettings(getTgxConfig(), TGX_QUOTE_TIMEOUT_MS);
     const result   = await tgxGraphQL(QUOTE_QUERY, {
         criteria: { optionRefId: token },
         settings,
-    });
+    }, TGX_QUOTE_ABORT_MS);
 
     const quote  = result?.data?.hotelX?.quote?.optionQuote;
     const errors = result?.data?.hotelX?.quote?.errors || [];
@@ -378,7 +397,9 @@ export async function bookTgx(params: {
         paxes: Array<{ name: string; surname: string; age: number }>;
     }>;
 }) {
-    const settings = getTgxSettings();
+    // OTV allows 180s to create a reservation. The old 18s budget inside a 30s HTTP abort gave
+    // up while the supplier was still booking — and giving up does not cancel it.
+    const settings = getTgxSettings(getTgxConfig(), TGX_BOOK_TIMEOUT_MS);
 
     const input = {
         optionRefId:     params.quoteToken,
@@ -416,7 +437,7 @@ export async function bookTgx(params: {
     });
 
     try {
-        const result  = await tgxGraphQL(BOOK_MUTATION, { input, settings });
+        const result  = await tgxGraphQL(BOOK_MUTATION, { input, settings }, TGX_BOOK_ABORT_MS);
         const booking = result?.data?.hotelX?.book?.booking;
         const errors  = result?.data?.hotelX?.book?.errors || [];
 
