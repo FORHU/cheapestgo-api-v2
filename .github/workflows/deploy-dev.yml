@@ -415,8 +415,20 @@ jobs:
             "aws ssm get-parameter --name ${{ steps.cfg.outputs.env_param }} --with-decryption --region ${{ env.AWS_REGION }} --query Parameter.Value --output text >> ${{ steps.cfg.outputs.merged_env }}"
             "chmod 600 ${{ steps.cfg.outputs.merged_env }}"
             "aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${REGISTRY}"
-            "docker container prune -f || true"
-            "docker image prune -af || true"
+            # Dangling layers only, and nothing host-wide.
+            #
+            # This was `docker container prune -f` and `docker image prune -af`, both of which
+            # act on the whole host. On a box shared by seven projects that is somebody else's
+            # property: the image prune deleted a neighbour's image on 2026-11-18
+            # (fox-passport-republic-api, 834 MB reclaimed), leaving it unable to start without a
+            # re-pull, and the container prune would destroy any container another project had
+            # deliberately stopped — along with the only record of how it was created, which for a
+            # hand-made container is the whole record.
+            #
+            # Neither was ever needed here. This workflow removes its own containers by name a few
+            # lines down, and the migration container runs with --rm. Our own superseded images are
+            # cleaned at the end of this script, by reference, once the new ones are in use.
+            "docker image prune -f || true"
             "docker pull --platform ${{ steps.cfg.outputs.platform }} ${IMAGE}"
             # Migrations, from the image just pulled, before the running container is touched.
             #
@@ -486,6 +498,18 @@ jobs:
             # deploy keeps running under --restart unless-stopped, so it is removed.
             COMMANDS+=( "docker rm -f ${{ steps.cfg.outputs.cron_container }} 2>/dev/null || true" )
           fi
+
+          # Our own superseded images, by reference so it cannot reach another project.
+          #
+          # Last, not first: an image a running container holds cannot be removed, so doing this
+          # after the new containers are up is what makes it safe to force. Excluding this deploy's
+          # own two tags keeps the image the API is running and the one the cron container needs.
+          #
+          # Without this, replacing `prune -af` would trade a neighbour's images for a disk leak of
+          # one API image per deploy on a host that has seven projects' worth of them already.
+          COMMANDS+=(
+            "docker images --filter reference=${REGISTRY}/${{ env.ECR_REPOSITORY }} --format '{{.Tag}} {{.ID}}' | grep -v -e '^${TAG} ' -e '^cron-${TAG} ' | awk '{print $2}' | sort -u | xargs -r docker rmi -f > /dev/null 2>&1 || true"
+          )
 
           # jq builds the JSON, so a quote inside any command cannot break it.
           PARAMS=$(printf '%s\n' "${COMMANDS[@]}" | jq -R . | jq -sc '{commands: .}')
