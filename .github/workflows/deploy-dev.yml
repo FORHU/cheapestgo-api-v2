@@ -508,7 +508,7 @@ jobs:
           # Without this, replacing `prune -af` would trade a neighbour's images for a disk leak of
           # one API image per deploy on a host that has seven projects' worth of them already.
           COMMANDS+=(
-            "docker images --filter reference=${REGISTRY}/${{ env.ECR_REPOSITORY }} --format '{{.Tag}} {{.ID}}' | grep -v -e '^${TAG} ' -e '^cron-${TAG} ' | awk '{print $2}' | sort -u | xargs -r docker rmi -f > /dev/null 2>&1 || true"
+            "docker images --filter reference=${REGISTRY}/${{ env.ECR_REPOSITORY }} --format '{{.Tag}} {{.ID}}' | grep -v -e '^${TAG} ' -e '^cron-${TAG} ' | cut -d' ' -f2 | sort -u | xargs -r docker rmi -f > /dev/null 2>&1 || true"
           )
 
           # jq builds the JSON, so a quote inside any command cannot break it.
