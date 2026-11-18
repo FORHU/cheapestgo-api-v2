@@ -1,26 +1,29 @@
 -- Baseline schema for an EMPTY database. Not a dbmate migration — deliberately.
 --
--- db/migrations has no beginning. Its earliest entry is 2026-09-07 and every one of them
--- only *adds* to a schema that was already there, inherited from v1. Nothing in this
--- repository creates users, profiles or bookings, and dbmate runs with --no-dump-schema,
--- so there is no structure dump either. A developer with an empty Postgres therefore could
--- not get a working database from this repository at all: the app starts, and the first
--- thing that fails is sign-up, because `users` does not exist.
+-- db/migrations has no beginning. Its earliest entry is 2026-09-07 and every one of them only
+-- *adds* to a schema that was already there, inherited from v1. Nothing in this repository
+-- creates users, profiles or bookings, and dbmate runs with --no-dump-schema, so there is no
+-- structure dump either. A developer with an empty Postgres therefore could not get a working
+-- database from this repository at all: the app starts, and the first thing that fails is
+-- sign-up, because `users` does not exist.
 --
 -- Outside db/migrations on purpose. As a migration, dbmate would try to apply it to dev and
--- production, where every table already exists and three of the fourteen migrations do not
--- use IF NOT EXISTS.
+-- production, where every table already exists and three of the fourteen migrations do not use
+-- IF NOT EXISTS.
 --
--- HOW IT IS BUILT. Tables come from `prisma migrate diff --from-empty`, which reads
--- prisma/schema.prisma — kept current by introspection (`npm run db:pull`). Prisma does not
--- model functions or triggers, so those are dumped from a live database with
--- pg_get_functiondef / pg_get_triggerdef rather than written by hand. Functions come first:
--- `chat_conversations.reference` defaults to mint_chat_reference(), so the table cannot be
--- created until that function exists.
+-- HOW IT IS BUILT, and the order, which is not arbitrary:
+--   1. the schemas a CREATE EXTENSION names, which Prisma references but never creates;
+--   2. functions — chat_conversations.reference defaults to mint_chat_reference(), so the table
+--      cannot exist before the function does;
+--   3. tables, from `prisma migrate diff --from-empty` against prisma/schema.prisma;
+--   4. triggers, which need their tables;
+--   5. dbmate's ledger.
+-- Functions and triggers are dumped from a live database with pg_get_functiondef and
+-- pg_get_triggerdef: Prisma models neither, so introspection cannot see them.
 --
--- Regenerate with db/baseline.README.md.
+-- Regenerate with db/baseline.README.md. 73 tables, 12 functions, 6 triggers.
 
--- ═══ Functions (12) ═══════════════════════════════════════════════════
+-- ═══ Functions ══════════════════════════════════════════════════════════════
 
 CREATE OR REPLACE FUNCTION public.create_booking_with_policy(p_booking jsonb, p_snapshot jsonb, p_tiers jsonb DEFAULT '[]'::jsonb)
  RETURNS jsonb
@@ -1499,6 +1502,63 @@ CREATE TABLE "hotel_bookings" (
     CONSTRAINT "hotel_bookings_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "golf_bookings" (
+    "id" UUID NOT NULL DEFAULT gen_random_uuid(),
+    "reference" TEXT NOT NULL,
+    "user_id" UUID NOT NULL,
+    "course_id" UUID NOT NULL,
+    "tee_time_id" UUID NOT NULL,
+    "players" INTEGER NOT NULL,
+    "lead_name" TEXT NOT NULL,
+    "contact_email" TEXT NOT NULL,
+    "course_currency" CHAR(3) NOT NULL,
+    "price_per_player" DECIMAL(12,2) NOT NULL,
+    "currency" CHAR(3) NOT NULL,
+    "fx_rate" DECIMAL(20,10) NOT NULL,
+    "green_fee" DECIMAL(14,2) NOT NULL,
+    "service_fee" DECIMAL(14,2) NOT NULL,
+    "total" DECIMAL(14,2) NOT NULL,
+    "payment_intent_id" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'held',
+    "hold_expires_at" TIMESTAMPTZ(6) NOT NULL,
+    "requested_at" TIMESTAMPTZ(6),
+    "decide_by" TIMESTAMPTZ(6),
+    "confirmed_at" TIMESTAMPTZ(6),
+    "closed_at" TIMESTAMPTZ(6),
+    "close_reason" TEXT,
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "reminded_at" TIMESTAMPTZ(6),
+    "free_cancel_until" TIMESTAMPTZ(6) NOT NULL,
+    "refund_amount" DECIMAL(14,2) NOT NULL DEFAULT 0,
+    "extras_total" DECIMAL(14,2) NOT NULL DEFAULT 0,
+
+    CONSTRAINT "golf_bookings_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "golf_booking_extras" (
+    "booking_id" UUID NOT NULL,
+    "code" TEXT NOT NULL,
+    "quantity" INTEGER NOT NULL,
+    "unit_price" DECIMAL(12,2) NOT NULL,
+    "total" DECIMAL(14,2) NOT NULL,
+
+    CONSTRAINT "golf_booking_extras_pkey" PRIMARY KEY ("booking_id","code")
+);
+
+-- CreateTable
+CREATE TABLE "golf_course_extras" (
+    "course_id" UUID NOT NULL,
+    "code" TEXT NOT NULL,
+    "price" DECIMAL(12,2) NOT NULL,
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "golf_course_extras_pkey" PRIMARY KEY ("course_id","code")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "api_keys_key_hash_key" ON "api_keys"("key_hash");
 
@@ -1817,6 +1877,21 @@ CREATE UNIQUE INDEX "hotel_bookings_reference_uniq" ON "hotel_bookings"("booking
 -- CreateIndex
 CREATE INDEX "hotel_bookings_status_created_idx" ON "hotel_bookings"("status", "created_at");
 
+-- CreateIndex
+CREATE UNIQUE INDEX "golf_bookings_reference_key" ON "golf_bookings"("reference");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "golf_bookings_payment_intent_key" ON "golf_bookings"("payment_intent_id");
+
+-- CreateIndex
+CREATE INDEX "idx_golf_bookings_status" ON "golf_bookings"("status", "created_at" DESC);
+
+-- CreateIndex
+CREATE INDEX "idx_golf_bookings_tee" ON "golf_bookings"("tee_time_id");
+
+-- CreateIndex
+CREATE INDEX "idx_golf_bookings_user" ON "golf_bookings"("user_id", "created_at" DESC);
+
 -- AddForeignKey
 ALTER TABLE "api_keys" ADD CONSTRAINT "api_keys_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
@@ -1952,7 +2027,22 @@ ALTER TABLE "hotel_booking_guests" ADD CONSTRAINT "hotel_booking_guests_booking_
 -- AddForeignKey
 ALTER TABLE "hotel_booking_payments" ADD CONSTRAINT "hotel_booking_payments_booking_id_fkey" FOREIGN KEY ("booking_id") REFERENCES "hotel_bookings"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
--- ═══ Triggers (6) ══════════════════════════════════════════════════════
+-- AddForeignKey
+ALTER TABLE "golf_bookings" ADD CONSTRAINT "golf_bookings_course_id_fkey" FOREIGN KEY ("course_id") REFERENCES "golf_courses"("id") ON DELETE RESTRICT ON UPDATE NO ACTION;
+
+-- AddForeignKey
+ALTER TABLE "golf_bookings" ADD CONSTRAINT "golf_bookings_tee_time_id_fkey" FOREIGN KEY ("tee_time_id") REFERENCES "golf_tee_times"("id") ON DELETE RESTRICT ON UPDATE NO ACTION;
+
+-- AddForeignKey
+ALTER TABLE "golf_bookings" ADD CONSTRAINT "golf_bookings_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+
+-- AddForeignKey
+ALTER TABLE "golf_booking_extras" ADD CONSTRAINT "golf_booking_extras_booking_id_fkey" FOREIGN KEY ("booking_id") REFERENCES "golf_bookings"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+
+-- AddForeignKey
+ALTER TABLE "golf_course_extras" ADD CONSTRAINT "golf_course_extras_course_id_fkey" FOREIGN KEY ("course_id") REFERENCES "golf_courses"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+
+-- ═══ Triggers ═══════════════════════════════════════════════════════════════
 
 CREATE TRIGGER on_user_created AFTER INSERT ON public.users FOR EACH ROW EXECUTE FUNCTION handle_new_user();
 CREATE TRIGGER trg_admin_settings_updated_at BEFORE UPDATE ON public.admin_settings FOR EACH ROW EXECUTE FUNCTION update_admin_settings_updated_at();
@@ -1963,9 +2053,9 @@ CREATE TRIGGER trg_unified_bookings_updated_at BEFORE UPDATE ON public.unified_b
 
 -- ═══ dbmate's ledger ════════════════════════════════════════════════════════
 
--- The schema above is already current, so every existing migration is marked applied.
--- Without this, `dbmate up` would replay all 14 against a database that has them, and
--- the three without IF NOT EXISTS would fail.
+-- The schema above is already current, so every existing migration is marked applied. Without
+-- this, `dbmate up` would replay all 14 against a database that has them, and the three
+-- without IF NOT EXISTS would fail.
 CREATE TABLE IF NOT EXISTS schema_migrations (version varchar(255) PRIMARY KEY);
 INSERT INTO schema_migrations (version) VALUES
     ('20260907000004'),

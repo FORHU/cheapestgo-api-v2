@@ -60,6 +60,11 @@ Two traps, both of which produced a broken file before this was written:
 - **Do not generate step 1 through PowerShell with `2>&1`.** It merges stderr into the file,
   and the first line of the result is a .NET stack trace rather than SQL. Postgres aborts
   init on it, and the only symptom is a container that exits.
+- **Create the schemas an extension names.** Prisma emits
+  `CREATE EXTENSION "uuid-ossp" WITH SCHEMA "extensions"` — a Supabase-era schema the live
+  database still carries — but never emits `CREATE SCHEMA extensions`. Without it the file
+  fails on its first statements with `schema "extensions" does not exist`, and the only
+  symptom is a container that exits during init.
 - The `-e` filter on `pg_depend` matters. Without it the dump includes the twelve `gtrgm_*`
   functions belonging to the `pg_trgm` extension, which fail because the extension owns them.
 
@@ -79,5 +84,5 @@ docker exec baseline-test psql -U cheapestgo -d cheapestgo -tA -c \
 docker rm -f baseline-test
 ```
 
-As of 2026-11-18 that gives 70 tables, 12 functions, 6 triggers, 14 migrations marked
+As of 2026-11-18 that gives 73 tables, 12 functions, 6 triggers, 14 migrations marked
 applied, and an `INSERT INTO users` creates the matching `profiles` row via `on_user_created`.
