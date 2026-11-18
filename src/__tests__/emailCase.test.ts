@@ -15,6 +15,7 @@ const db = vi.hoisted(() => ({
         findUnique: vi.fn(),
         findFirst:  vi.fn(),
         create:     vi.fn(async ({ data }: { data: { email: string } }) => ({ id: 'new', ...data })),
+        update:     vi.fn(async ({ where }: { where: { id: string } }) => ({ id: where.id })),
     },
     password_reset_tokens: { upsert: vi.fn(async () => ({})) },
     profiles: { upsert: vi.fn(async () => ({})) },
@@ -68,6 +69,27 @@ describe('AuthRepository.findByEmail', () => {
             where:   { email: { equals: 'ana@example.com', mode: 'insensitive' } },
             orderBy: { created_at: 'asc' },
         });
+    });
+});
+
+describe('AuthRepository.upsertFromGoogle', () => {
+    const repo = new AuthRepository();
+    const google = { email: 'Ana@Example.com', first_name: 'Ana', last_name: null, avatar_url: null };
+
+    it('signs into an account stored with capitals rather than making a second one', async () => {
+        db.users.findFirst.mockResolvedValue({ id: 'old', email: 'Ana@Example.com' });
+        const user = await repo.upsertFromGoogle({ ...google, email: 'ana@example.com' });
+        expect(user).toMatchObject({ id: 'old' });
+        expect(db.users.update.mock.calls[0][0].where).toEqual({ id: 'old' });
+        expect(db.users.create).not.toHaveBeenCalled();
+        expect(db.profiles.upsert).not.toHaveBeenCalled();
+    });
+
+    it('creates a first-time account under the lower-case address, with its profile', async () => {
+        await repo.upsertFromGoogle(google);
+        expect(db.users.create.mock.calls[0][0].data.email).toBe('ana@example.com');
+        expect(db.profiles.upsert).toHaveBeenCalled();
+        expect(db.users.update).not.toHaveBeenCalled();
     });
 });
 

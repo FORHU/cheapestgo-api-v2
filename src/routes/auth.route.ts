@@ -344,22 +344,15 @@ router.get('/google/callback', async (req: Request, res: Response) => {
         }
 
         // Upsert user in DB
-        const user = await prisma.users.upsert({
-            where:  { email: googleUser.email.toLowerCase() },
-            create: {
-                email:      googleUser.email.toLowerCase(),
-                role:       'user',
-                // Clamped, not refused: turning someone away from their own account over the
-                // length of the name Google holds for them would be the wrong answer.
-                first_name: clampName(googleUser.given_name),
-                last_name:  clampName(googleUser.family_name),
-                avatar_url: googleUser.picture     ?? null,
-            },
-            update: {
-                // Only set avatar if the user doesn't already have one
-                ...(googleUser.picture ? { avatar_url: googleUser.picture } : {}),
-                updated_at: new Date(),
-            },
+        // The same account the app's Google sign-in reaches, found the way password sign-in
+        // finds it — including one stored with capitals before addresses were normalised.
+        const user = await authRepository.upsertFromGoogle({
+            email:      googleUser.email,
+            // Clamped, not refused: turning someone away from their own account over the
+            // length of the name Google holds for them would be the wrong answer.
+            first_name: clampName(googleUser.given_name),
+            last_name:  clampName(googleUser.family_name),
+            avatar_url: googleUser.picture ?? null,
         });
 
         // Password sign-in refuses a suspended account; this door must too, or "Sign in with

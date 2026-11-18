@@ -65,14 +65,15 @@ const db = vi.hoisted(() => ({
             Object.assign(row, data);
             return row;
         }),
-        upsert: vi.fn(async ({ where }: { where: { email: string } }) =>
-            [...users.values()].find((u) => u.email === where.email)),
     },
 }));
 vi.mock('@/lib/prisma', () => ({ prisma: db }));
 vi.mock('@/repositories/auth.repository', () => ({
     AuthRepository: class {
         findById = async (id: string) => users.get(id) ?? null;
+        // The Google callback signs into the account for the address.
+        upsertFromGoogle = async ({ email }: { email: string }) =>
+            [...users.values()].find((u) => u.email === email.toLowerCase());
     },
 }));
 
