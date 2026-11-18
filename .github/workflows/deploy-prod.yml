@@ -1,0 +1,46 @@
+name: Deploy Production
+
+# Push to `main` -> production (cheapestgo-v2-api on the production box).
+#
+# This file is deliberately thin. Everything a deploy actually does — resolving the
+# instance, ports, container names, SSM path and image architecture from the target
+# environment's own variables, publishing the env, running dbmate, recreating the
+# container — already lives in deploy-dev.yml, which resolves all of it from
+# `inputs.environment`. Calling it keeps one implementation; a second copy would drift,
+# and the copy that drifts is the one that only ever runs against production.
+#
+# `secrets: inherit` is required. A reusable workflow is passed no secrets by default, and
+# the called job selects the `production` environment itself — so production's own secrets
+# are what it reads, not this caller's.
+#
+# NOTE ON SCOPE: deploy-dev.yml still deploys *dev* on a push to main. A merge therefore
+# updates both. That is intentional while v2 production runs beside v1: dev stays current
+# with what is live. Drop `main` from that workflow's push branches if you would rather
+# main only ever reached production.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to deploy (blank = main)"
+        required: false
+
+# No `concurrency:` here on purpose. The called workflow already groups on
+# forhu-cheapestgo-api-production. Repeating that group in the caller puts the caller and
+# the job it is waiting for in the same queue, and with cancel-in-progress false they
+# deadlock until the run times out.
+
+jobs:
+  production:
+    uses: ./.github/workflows/deploy-dev.yml
+    with:
+      environment: production
+      ref: ${{ inputs.ref || '' }}
+    secrets: inherit
+    # Set by the caller: a reusable workflow cannot widen permissions, and the OIDC login
+    # in the called job needs id-token.
+    permissions:
+      id-token: write
+      contents: read

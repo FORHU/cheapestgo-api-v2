@@ -319,6 +319,31 @@ export type PlaceDuffelOrderResult =
     | { kind: 'error'; status: number; data: any; timedOut?: boolean };
 
 export async function placeDuffelOrder(params: PlaceDuffelOrderParams): Promise<PlaceDuffelOrderResult> {
+    // The mirror of HOTEL_BOOKING_ENABLED, which hotels have had since 2026-11-04 and flights
+    // never did. Duffel is live in any environment holding a `duffel_live_` token — there is no
+    // sandbox unless the token itself says so — and NODE_ENV cannot tell environments apart,
+    // because the Dockerfile and the deploy both write NODE_ENV=production. So a non-production
+    // deployment reachable from the internet can buy a real ticket on the agency's balance, and
+    // on 2026-11-18 production was in exactly that state: test Stripe, live Duffel, no switch.
+    //
+    // Here rather than in the lifecycle because this is the only function that creates an order:
+    // a guard above it is one the next caller can be written around.
+    //
+    // 403 rather than a 5xx, deliberately. The lifecycle treats an error as definitive only when
+    // `!timedOut && status < 500`; anything else means "the airline may have taken it", which
+    // keeps the payment hold and parks the session in NEEDS_REVIEW. A refusal we chose is not an
+    // unknown outcome, so it belongs on the definitive path — hold released, and the traveller
+    // told they were not charged.
+    //
+    // Unset books normally, so no environment changes behaviour until somebody sets it.
+    if (process.env.FLIGHT_BOOKING_ENABLED === 'false') {
+        return {
+            kind: 'error',
+            status: 403,
+            timedOut: false,
+            data: { errors: [{ message: 'Flight booking is switched off in this environment.' }] },
+        };
+    }
     const {
         rawOffer, seatServiceIds, bagServiceIds, confirmedPrice,
         priceTolerance, idempotencyKey, refreshPoolSize = 3,

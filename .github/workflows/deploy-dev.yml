@@ -25,6 +25,20 @@ on:
   # which read as "changes not propagating" rather than as a missing trigger.
   push:
     branches: [main, staging]
+  workflow_call:
+    # Makes this workflow reusable so deploy-prod.yml can target production on a push to
+    # `main` without a second copy of these 550 lines. `inputs.environment` is the same name
+    # the dispatch input uses, so every expression below resolves identically whether this
+    # run came from a dispatch or from a caller.
+    inputs:
+      environment:
+        description: "Target environment"
+        type: string
+        default: dev
+      ref:
+        description: "Branch, tag or SHA to deploy (blank = the calling ref)"
+        type: string
+        required: false
   workflow_dispatch:
     inputs:
       environment:
@@ -71,7 +85,7 @@ env:
 
 jobs:
   deploy:
-    name: Build and deploy (cheapestgo dev)
+    name: Build and deploy (cheapestgo ${{ inputs.environment || 'dev' }})
     # Runner arch follows the target: the dev host is Graviton, the production box is
     # x86_64. Build natively on both — do not cross-build under QEMU, where Node and
     # Prisma builds take hours and look hung.
@@ -88,7 +102,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || github.ref_name }}
+          ref: ${{ inputs.ref || github.ref_name }}
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -261,6 +275,7 @@ jobs:
           # the Stripe authorisation all still work, only the supplier call is blocked.
           # Unset books for real against the live supplier.
           HOTEL_BOOKING_ENABLED: ${{ secrets.HOTEL_BOOKING_ENABLED || vars.HOTEL_BOOKING_ENABLED }}
+          FLIGHT_BOOKING_ENABLED: ${{ secrets.FLIGHT_BOOKING_ENABLED || vars.FLIGHT_BOOKING_ENABLED }}
           # Which supplier this host talks to. Absent from this workflow until 2026-11-10, which
           # meant the dev container silently defaulted to `travelgatex` — the live one. Set it to
           # `mock` to make this host a test bed: a supplier that always answers, and that can be
@@ -365,6 +380,7 @@ jobs:
           add GOOGLE_PLACES_API_KEY            "${GOOGLE_PLACES_API_KEY:-}"
           add ALLOW_MOCK_HOTEL_PROVIDER        "${ALLOW_MOCK_HOTEL_PROVIDER:-}"
           add HOTEL_BOOKING_ENABLED            "${HOTEL_BOOKING_ENABLED:-}"
+          add FLIGHT_BOOKING_ENABLED           "${FLIGHT_BOOKING_ENABLED:-}"
           add HOTEL_PROVIDER                   "${HOTEL_PROVIDER:-}"
           add MOCK_HOTEL_CURRENCY              "${MOCK_HOTEL_CURRENCY:-}"
           add MOCK_HOTEL_SCENARIO              "${MOCK_HOTEL_SCENARIO:-}"
