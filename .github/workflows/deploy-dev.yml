@@ -63,10 +63,19 @@ jobs:
     # Runner arch follows the target: the dev host is Graviton, the production box is
     # x86_64. Build natively on both — do not cross-build under QEMU, where Node and
     # Prisma builds take hours and look hung.
-    runs-on: ${{ inputs.environment == 'production' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
+    #
+    # `startsWith(..., 'production')` rather than `== 'production'`: a per-brand production
+    # target such as `production-airanggo` is still production, and an equality test sent it
+    # to the Graviton runner instead — the image then builds arm64, pulls cleanly on the x86
+    # box and dies with "exec format error", which reads as a crash loop rather than as the
+    # wrong target.
+    runs-on: ${{ startsWith(inputs.environment, 'production') && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
     # "dev" is the context, not the environment's name — dev secrets and variables live on
-    # the `staging` environment. Production maps to its own.
-    environment: ${{ inputs.environment == 'production' && 'production' || 'staging' }}
+    # the `staging` environment. Each production target maps to the GitHub environment of the
+    # same name, so adding a brand is adding an environment and changes nothing here. Anything
+    # that is not a production target reads `staging`, which is what a push with no inputs got
+    # before and still gets.
+    environment: ${{ startsWith(inputs.environment, 'production') && inputs.environment || 'staging' }}
 
     permissions:
       id-token: write
@@ -110,15 +119,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "$TARGET" = "production" ]; then
+          # Every `production*` target is a production target. Unlike app-v2, this image is
+          # brand-agnostic — BRAND_NAME is read from the environment at runtime (src/lib/brand.ts),
+          # so the brands could share an image. They get their own tag anyway, so that rolling
+          # one brand back to an older tag cannot move the tag the other brand's container is
+          # pinned to.
+          case "$TARGET" in
+            production)   IS_PROD=1; TAG_PREFIX=prod ;;
+            production-*) IS_PROD=1; TAG_PREFIX="prod-${TARGET#production-}" ;;
+            *)            IS_PROD=0; TAG_PREFIX=dev ;;
+          esac
+
+          if [ "$IS_PROD" = 1 ]; then
             missing=""
             for v in V_INSTANCE_ID V_NETWORK V_CONTAINER V_CRON_CONTAINER \
                      V_HOST_PORT V_ENV_PARAM V_SHARED_ENV V_MERGED_ENV; do
               [ -n "${!v:-}" ] || missing="$missing ${v#V_}"
             done
             if [ -n "$missing" ]; then
-              echo "::error::production environment is missing:$missing"
-              echo "Set them as variables on the 'production' environment, then re-run." >&2
+              echo "::error::$TARGET environment is missing:$missing"
+              echo "Set them as variables on the '$TARGET' environment, then re-run." >&2
               exit 1
             fi
           fi
@@ -126,13 +146,13 @@ jobs:
           out() { printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"; }
 
           # The tag prefix keeps a dev image from ever being mistaken for, or overwriting,
-          # a production one in the same ECR repository.
-          [ "$TARGET" = "production" ] && out tag_prefix prod || out tag_prefix dev
+          # a production one in the same ECR repository, and keeps the brands' tags apart.
+          out tag_prefix "$TAG_PREFIX"
 
           # The dev host is Graviton; the production box is x86_64 (t3 family). One
           # image cannot serve both: the wrong arch pulls cleanly and then dies with
           # "exec format error", which reads as a crash loop rather than a build fault.
-          [ "$TARGET" = "production" ] && out platform linux/amd64 || out platform linux/arm64
+          [ "$IS_PROD" = 1 ] && out platform linux/amd64 || out platform linux/arm64
 
           out instance_id    "${V_INSTANCE_ID:-i-0f95a93145ea25e7a}"
           out network        "${V_NETWORK:-forhu-dev}"
