@@ -243,6 +243,10 @@ jobs:
           # the Stripe authorisation all still work, only the supplier call is blocked.
           # Unset books for real against the live supplier.
           HOTEL_BOOKING_ENABLED: ${{ secrets.HOTEL_BOOKING_ENABLED || vars.HOTEL_BOOKING_ENABLED }}
+          # The flights equivalent. Absent from this workflow until now, which meant the
+          # variable could be set on an environment and have no effect at all: it was in the
+          # `add` list below but had no value to add, so the key was never written to the box.
+          FLIGHT_BOOKING_ENABLED: ${{ secrets.FLIGHT_BOOKING_ENABLED || vars.FLIGHT_BOOKING_ENABLED }}
           # Which supplier this host talks to. Absent from this workflow until 2026-11-10, which
           # meant the dev container silently defaulted to `travelgatex` — the live one. Set it to
           # `mock` to make this host a test bed: a supplier that always answers, and that can be
@@ -347,6 +351,7 @@ jobs:
           add GOOGLE_PLACES_API_KEY            "${GOOGLE_PLACES_API_KEY:-}"
           add ALLOW_MOCK_HOTEL_PROVIDER        "${ALLOW_MOCK_HOTEL_PROVIDER:-}"
           add HOTEL_BOOKING_ENABLED            "${HOTEL_BOOKING_ENABLED:-}"
+          add FLIGHT_BOOKING_ENABLED           "${FLIGHT_BOOKING_ENABLED:-}"
           add HOTEL_PROVIDER                   "${HOTEL_PROVIDER:-}"
           add MOCK_HOTEL_CURRENCY              "${MOCK_HOTEL_CURRENCY:-}"
           add MOCK_HOTEL_SCENARIO              "${MOCK_HOTEL_SCENARIO:-}"
