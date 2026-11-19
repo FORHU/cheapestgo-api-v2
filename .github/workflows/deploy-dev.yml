@@ -34,7 +34,7 @@ on:
         # A push to main has no input and therefore always means dev.
         description: "Target environment"
         type: choice
-        options: [dev, production]
+        options: [dev, production, production-airanggo]
         default: dev
       ref:
         # No default on purpose: a hardcoded branch fetches something that may not
