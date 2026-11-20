@@ -266,6 +266,7 @@ export class BookingsService {
             subject:   `Booking Confirmation — ${booking.property_name || 'your stay'}`,
             emailType: 'confirmation',
             metadata:  { shared: true, byUserId: userId },
+            receipt:   { bookingId: booking.id, type: 'hotel' },
             html: buildHotelConfirmationHtml({
                 bookingRef:      booking.booking_id ?? booking.id,
                 bookingDbId:     booking.id,

@@ -233,7 +233,7 @@ export function renderBookingConfirmationHtml(view: BookingEmailView): string {
   <tr><td style="padding:8px 32px 36px;">
     <div style="height:1px;background:${HAIRLINE};margin-bottom:18px;"></div>
     <div style="font:400 13px/1.7 ${FONT};color:${MUTED};">
-      Your full booking details are attached as a PDF — keep it for check-in.
+      Your combined booking and payment receipt is attached as a PDF.
     </div>
     <div style="font:400 12px/1.7 ${FONT};color:${MUTED};padding-top:10px;">
       Questions? Reply to this email or contact

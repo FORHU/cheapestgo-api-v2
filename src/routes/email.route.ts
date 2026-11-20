@@ -18,7 +18,7 @@ import { mailConfigured, sendMail } from '@/lib/email/mailer';
 import { logger } from '@/lib/logger';
 import { loadBookingEmailView, type BookingEmailView } from '@/lib/email/booking-view';
 import { renderBookingConfirmationHtml } from '@/lib/email/booking-confirmation.template';
-import { renderBookingConfirmationPdf } from '@/lib/email/booking-confirmation.pdf';
+import { createBookingInvoicePdf } from '@/services/invoicePdf.service';
 
 const router: Router = Router();
 
@@ -74,17 +74,18 @@ interface Composed {
 }
 
 /**
- * The PDF is best-effort. A voucher that fails to render is worth logging and
- * losing; a confirmation that never arrives because of it is not.
+ * The combined booking and payment receipt is attached when it can be rendered.
+ * A PDF failure is logged without preventing the confirmation email.
  */
 async function composeBookingConfirmation(view: BookingEmailView): Promise<Composed> {
     const attachments: Composed['attachments'] = [];
 
     try {
-        const pdf = await renderBookingConfirmationPdf(view);
+        const pdf = await createBookingInvoicePdf(view.id, 'hotel');
+        if (!pdf) throw new Error(`Receipt booking ${view.id} was not found`);
         attachments.push({
-            filename: `CheapestGo-booking-${view.reference}.pdf`,
-            content:  pdf.toString('base64'),
+            filename: pdf.filename,
+            content:  pdf.buffer.toString('base64'),
         });
     } catch (err) {
         logger.error('[/api/email] PDF render failed; sending without attachment', {

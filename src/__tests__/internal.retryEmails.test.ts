@@ -14,6 +14,7 @@ const mailer = vi.hoisted(() => ({
     mailConfigured: vi.fn(),
     mailTransport:  vi.fn(),
 }));
+const invoicePdf = vi.hoisted(() => ({ createBookingInvoicePdf: vi.fn() }));
 
 vi.mock('@/lib/prisma', () => ({ prisma: db }));
 vi.mock('@/lib/stripe', () => ({ stripe: {} }));
@@ -23,6 +24,7 @@ vi.mock('@/lib/flights/search', () => ({ searchFlights: vi.fn(), saveSearch: vi.
 vi.mock('@/lib/email/flightConfirmation', () => ({ sendFlightConfirmationEmail: vi.fn() }));
 vi.mock('@/lib/payments/fxLock', () => ({ lockFx: vi.fn() }));
 vi.mock('@/lib/email/mailer', () => mailer);
+vi.mock('@/services/invoicePdf.service', () => invoicePdf);
 
 import internalRouter from '@/routes/internal.route';
 
@@ -56,6 +58,10 @@ beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     mailer.mailConfigured.mockReturnValue(true);
     mailer.mailTransport.mockReturnValue('smtp');
+    invoicePdf.createBookingInvoicePdf.mockResolvedValue({
+        filename: 'CheapestGo-Receipt-INV-bk-1.pdf',
+        buffer: Buffer.from('%PDF'),
+    });
     db.email_logs.findMany.mockResolvedValue([FAILED_ROW]);
     db.email_logs.update.mockResolvedValue({});
 });
@@ -84,6 +90,48 @@ describe('retry-emails', () => {
         expect(res.body).toMatchObject({ retried: 0, failed: 1 });
         expect(db.email_logs.update).toHaveBeenCalledWith({
             where: { id: 'log-1' }, data: { error_message: 'Retry failed: 421 try again later' },
+        });
+    });
+
+    it('regenerates and attaches the unified receipt when retrying a failed receipt email', async () => {
+        db.email_logs.findMany.mockResolvedValue([{
+            ...FAILED_ROW,
+            metadata: {
+                ...FAILED_ROW.metadata,
+                receipt: { bookingId: 'hotel-uuid', type: 'hotel' },
+            },
+        }]);
+        mailer.sendMail.mockResolvedValue({ ok: true, id: '<m1>' });
+
+        await retry();
+
+        expect(invoicePdf.createBookingInvoicePdf).toHaveBeenCalledWith('hotel-uuid', 'hotel');
+        expect(mailer.sendMail).toHaveBeenCalledWith(expect.objectContaining({
+            attachments: [{
+                filename: 'CheapestGo-Receipt-INV-bk-1.pdf',
+                content: Buffer.from('%PDF').toString('base64'),
+            }],
+        }));
+        const data = db.email_logs.update.mock.calls[0][0].data;
+        expect(data.metadata).not.toHaveProperty('receipt');
+    });
+
+    it('records receipt regeneration errors for the next retry attempt', async () => {
+        db.email_logs.findMany.mockResolvedValue([{
+            ...FAILED_ROW,
+            metadata: {
+                ...FAILED_ROW.metadata,
+                receipt: { bookingId: 'missing-hotel', type: 'hotel' },
+            },
+        }]);
+        invoicePdf.createBookingInvoicePdf.mockRejectedValue(new Error('Receipt data unavailable'));
+
+        const res = await retry();
+
+        expect(res.body).toMatchObject({ retried: 0, failed: 1 });
+        expect(db.email_logs.update).toHaveBeenCalledWith({
+            where: { id: 'log-1' },
+            data: { error_message: 'Retry failed: Receipt data unavailable' },
         });
     });
 

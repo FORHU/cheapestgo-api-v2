@@ -21,7 +21,8 @@ import { stripe } from '../lib/stripe';
 import { lockFx } from '../lib/payments/fxLock';
 import { searchFlights, saveSearch } from '@/lib/flights/search';
 import { sendFlightConfirmationEmail } from '@/lib/email/flightConfirmation';
-import { mailConfigured, mailTransport, sendMail } from '@/lib/email/mailer';
+import { mailConfigured, mailTransport, sendMail, type MailAttachment } from '@/lib/email/mailer';
+import { createBookingInvoicePdf } from '@/services/invoicePdf.service';
 import { FlightsRepository } from '@/repositories/flights.repository';
 import { completeDuffelBooking } from '@/services/flightBookingCompletion';
 import type { FlightOffer } from '@/types/flights';
@@ -601,20 +602,35 @@ internalRouter.post('/retry-emails', requireCronOrInternal, async (_req: Request
         let skipped   = 0;
 
         for (const log of logs) {
-            const htmlBody = (log.metadata as any)?.htmlBody;
+            const metadata = (log.metadata as any) ?? {};
+            const htmlBody = metadata.htmlBody;
             if (!htmlBody) { skipped++; continue; }
 
             try {
+                const attachments: MailAttachment[] = [];
+                const receipt = metadata.receipt as { bookingId?: unknown; type?: unknown } | undefined;
+                if (receipt) {
+                    if (typeof receipt.bookingId !== 'string'
+                        || (receipt.type !== 'hotel' && receipt.type !== 'flight')) {
+                        throw new Error('Stored receipt information is invalid');
+                    }
+                    const pdf = await createBookingInvoicePdf(receipt.bookingId, receipt.type);
+                    if (!pdf) throw new Error(`Receipt booking ${receipt.bookingId} was not found`);
+                    attachments.push({ filename: pdf.filename, content: pdf.buffer.toString('base64') });
+                }
+
                 const sent = await sendMail({
                     from:    'CheapestGo <no-reply@mail.cheapestgo.com>',
                     to:      log.recipient,
                     subject: log.subject,
                     html:    htmlBody,
+                    ...(attachments.length ? { attachments } : {}),
                 });
 
                 if (sent.ok) {
-                    const cleanMeta = { ...(log.metadata as any) };
+                    const cleanMeta = { ...metadata };
                     delete cleanMeta.htmlBody;
+                    delete cleanMeta.receipt;
                     await prisma.email_logs.update({
                         where: { id: log.id },
                         data:  { status: 'sent', sent_at: new Date(), error_message: null, metadata: { ...cleanMeta, retriedAt: new Date().toISOString() } },
@@ -629,9 +645,14 @@ internalRouter.post('/retry-emails', requireCronOrInternal, async (_req: Request
                     failed++;
                     console.error(`[retry-emails] Failed: ${log.id} — ${sent.error}`);
                 }
-            } catch (e: any) {
+            } catch (e: unknown) {
                 failed++;
-                console.error(`[retry-emails] Error for ${log.id}:`, e.message);
+                const message = e instanceof Error ? e.message : String(e);
+                await prisma.email_logs.update({
+                    where: { id: log.id },
+                    data: { error_message: `Retry failed: ${message.slice(0, 200)}` },
+                });
+                console.error(`[retry-emails] Error for ${log.id}:`, message);
             }
         }
 

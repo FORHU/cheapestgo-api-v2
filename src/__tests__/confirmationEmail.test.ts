@@ -7,7 +7,9 @@ const { prismaMock } = vi.hoisted(() => ({ prismaMock: {
     flight_bookings: { findUnique: vi.fn() },
     booking_sessions:{ findUnique: vi.fn() },
 } }));
+const invoicePdf = vi.hoisted(() => ({ createBookingInvoicePdf: vi.fn() }));
 vi.mock('@/lib/prisma', () => ({ prisma: prismaMock }));
+vi.mock('@/services/invoicePdf.service', () => invoicePdf);
 
 import { sendTransactionalEmail } from '@/lib/email/send';
 import { buildHotelConfirmationHtml, buildFlightConfirmationHtml } from '@/lib/email/templates';
@@ -49,6 +51,10 @@ const FLIGHT = {
 beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.email_logs.findFirst.mockResolvedValue(null);
+    invoicePdf.createBookingInvoicePdf.mockResolvedValue({
+        filename: 'CheapestGo-Receipt-INV-bk-1.pdf',
+        buffer: Buffer.from('%PDF'),
+    });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ id: 're_1' }) }));
 });
 
@@ -110,6 +116,21 @@ describe('sendTransactionalEmail', () => {
         } finally {
             (config as any).RESEND_API_KEY = 'test-key';
         }
+    });
+
+    it('attaches the same combined receipt PDF to transactional email', async () => {
+        const result = await sendTransactionalEmail({
+            ...base,
+            receipt: { bookingId: 'booking-uuid', type: 'hotel' },
+        });
+
+        expect(result.success).toBe(true);
+        expect(invoicePdf.createBookingInvoicePdf).toHaveBeenCalledWith('booking-uuid', 'hotel');
+        const sent = JSON.parse((fetch as any).mock.calls[0][1].body);
+        expect(sent.attachments).toEqual([{
+            filename: 'CheapestGo-Receipt-INV-bk-1.pdf',
+            content: Buffer.from('%PDF').toString('base64'),
+        }]);
     });
 
     it('never throws at a caller that has already taken the money', async () => {
@@ -241,6 +262,8 @@ describe('sendFlightConfirmationEmail', () => {
         expect(sent.html).toContain('₱41,230.50');
         expect(sent.html).not.toContain('$0.00');
         expect(sent.to).toEqual(['ana@example.test']);
+        expect(sent.attachments[0].filename).toBe('CheapestGo-Receipt-INV-bk-1.pdf');
+        expect(invoicePdf.createBookingInvoicePdf).toHaveBeenCalledWith('bk-1', 'flight');
     });
 
     it('sends nothing when the booking has no contact address', async () => {

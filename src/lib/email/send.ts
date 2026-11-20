@@ -21,7 +21,8 @@
 import { prisma } from '@/lib/prisma';
 import { fromNoReply } from '@/lib/brand';
 import { config } from '@/config';
-import { mailConfigured, mailTransport, sendMail } from '@/lib/email/mailer';
+import { mailConfigured, mailTransport, sendMail, type MailAttachment } from '@/lib/email/mailer';
+import { createBookingInvoicePdf, type InvoiceBookingType } from '@/services/invoicePdf.service';
 
 /** Constrained by the `email_logs_email_type_check` constraint on the table. */
 export type EmailType =
@@ -45,6 +46,7 @@ export interface SendEmailParams {
     html:      string;
     emailType: EmailType;
     metadata?: Record<string, unknown>;
+    receipt?: { bookingId: string; type: InvoiceBookingType };
 }
 
 export interface SendEmailResult {
@@ -81,6 +83,7 @@ async function logEmail(p: {
     metadata?:  Record<string, unknown>;
     /** Kept on anything not yet delivered, so the retry job can re-send without re-rendering. */
     htmlBody?:  string;
+    receipt?:   SendEmailParams['receipt'];
 }): Promise<void> {
     await prisma.email_logs.create({
         data: {
@@ -90,7 +93,11 @@ async function logEmail(p: {
             email_type:    p.emailType,
             status:        p.status,
             error_message: p.errorMessage ?? null,
-            metadata:      { ...(p.metadata ?? {}), ...(p.htmlBody ? { htmlBody: p.htmlBody } : {}) } as any,
+            metadata:      {
+                ...(p.metadata ?? {}),
+                ...(p.htmlBody ? { htmlBody: p.htmlBody } : {}),
+                ...(p.receipt ? { receipt: p.receipt } : {}),
+            } as any,
             sent_at:       p.status === 'sent' ? new Date() : null,
         },
     }).catch((err: any) => {
@@ -130,7 +137,33 @@ export async function sendTransactionalEmail(p: SendEmailParams): Promise<SendEm
         return { success: false, error: 'Email service is not configured' };
     }
 
-    const sent = await sendMail({ from: fromNoReply(), to: p.to, subject: p.subject, html: p.html });
+    const attachments: MailAttachment[] = [];
+    if (p.receipt) {
+        try {
+            const pdf = await createBookingInvoicePdf(p.receipt.bookingId, p.receipt.type);
+            if (!pdf) throw new Error(`Receipt booking ${p.receipt.bookingId} was not found`);
+            attachments.push({ filename: pdf.filename, content: pdf.buffer.toString('base64') });
+        } catch (err) {
+            const error = `Receipt PDF generation failed: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`;
+            await logEmail({
+                ...p,
+                recipient: p.to,
+                status: 'failed',
+                htmlBody: p.html,
+                errorMessage: error,
+            });
+            console.error(`[email] Could not generate receipt for ${p.bookingId ?? 'unlinked email'}:`, error);
+            return { success: false, error };
+        }
+    }
+
+    const sent = await sendMail({
+        from: fromNoReply(),
+        to: p.to,
+        subject: p.subject,
+        html: p.html,
+        ...(attachments.length ? { attachments } : {}),
+    });
     if (sent.ok) {
         await logEmail({ ...p, recipient: p.to, status: 'sent' });
         return { success: true };
