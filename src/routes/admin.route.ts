@@ -28,6 +28,8 @@ import { renderToBuffer } from '@react-pdf/renderer';
 import { EvidencePdfDocument } from '@/components/EvidencePdfDocument';
 import { attachmentsConfigured, putObject, signedUrlFor } from '@/lib/support/attachmentStorage';
 import { HotelsService } from '@/services/hotels.service';
+import { findUnrecordedReservations, findBookingsMissingBrand } from '@/lib/admin/reconciliation';
+import { bookingRebuildService, REBUILD_STATUSES } from '@/services/bookingRebuild.service';
 import { FlightsService } from '@/services/flights.service';
 
 const router: Router = Router();
@@ -1094,5 +1096,72 @@ router.post('/payments/:paymentIntentId/evidence/export', async (req: Request, r
         }).catch(() => undefined);
 
         res.json({ success: true, url, key, generatedAt: pack.generatedAt.toISOString() });
+    } catch (err) { next(err); }
+});
+
+// ─── Reconciliation: what Stripe sold that no table records (ADR-0026) ────────
+//
+// Derived on every read, never stored, so an item leaves the list the moment its booking exists.
+// There is deliberately no dismiss: the only way off the list is the rebuild below, or a booking
+// written some other way.
+
+const reconciliationQuery = z.object({
+    windowDays: z.coerce.number().int().min(1).max(90).optional(),
+});
+
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD.');
+const rebuildBody = z.object({
+    propertyName:      z.string().trim().min(1).max(300),
+    roomName:          z.string().trim().min(1).max(300),
+    checkIn:           isoDate,
+    checkOut:          isoDate,
+    adults:            z.number().int().min(1).max(30),
+    children:          z.number().int().min(0).max(30),
+    holderFirstName:   z.string().trim().min(1).max(120),
+    holderLastName:    z.string().trim().min(1).max(120),
+    holderEmail:       z.string().trim().email().max(254),
+    supplierReference: z.string().trim().max(200).optional().default(''),
+    status:            z.enum(REBUILD_STATUSES),
+    reason:            z.string().trim().min(10, 'Say why, in at least a sentence.').max(1000),
+});
+
+/** GET /api/v2/admin/reconciliation — unrecorded hotel, flight and golf payments, and unbranded bookings. */
+router.get('/reconciliation', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const q = reconciliationQuery.parse(req.query);
+        const [result, missingBrand] = await Promise.all([
+            findUnrecordedReservations(q.windowDays ?? 30),
+            findBookingsMissingBrand(),
+        ]);
+        // A refusal is reported, not hidden behind an empty list: "cannot tell" is not "nothing wrong".
+        res.json({ success: true, ...result, missingBrand });
+    } catch (err) { next(err); }
+});
+
+/** GET /api/v2/admin/reconciliation/:paymentIntentId/rebuild — the pre-filled form. */
+router.get('/reconciliation/:paymentIntentId/rebuild', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const id = String(req.params.paymentIntentId ?? '').trim();
+        if (!id) throw new AppError(400, 'A payment intent id is required.', 'VALIDATION_ERROR');
+        res.json({ success: true, draft: await bookingRebuildService.draft(id) });
+    } catch (err) { next(err); }
+});
+
+/** POST /api/v2/admin/reconciliation/:paymentIntentId/rebuild — write the missing hotel booking. */
+router.post('/reconciliation/:paymentIntentId/rebuild', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const id = String(req.params.paymentIntentId ?? '').trim();
+        if (!id) throw new AppError(400, 'A payment intent id is required.', 'VALIDATION_ERROR');
+        const body  = rebuildBody.parse(req.body);
+        const actor = { id: (req as any).user?.id, email: (req as any).user?.email };
+
+        const result = await bookingRebuildService.rebuild(id, body, actor);
+
+        await adminSettingsService.logAction({
+            action: 'booking_rebuilt', adminId: actor.id, adminEmail: actor.email, targetId: result.bookingId,
+            details: { paymentIntentId: id, status: body.status, reason: body.reason },
+        }).catch(() => undefined);
+
+        res.status(201).json({ success: true, ...result });
     } catch (err) { next(err); }
 });

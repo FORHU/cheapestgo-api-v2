@@ -139,3 +139,57 @@ describe('the boot check', () => {
         expect(log.error).not.toHaveBeenCalled();
     });
 });
+
+/**
+ * On 2026-11-19 the account id was pasted into STRIPE_SECRET_KEY on production. Stripe answered
+ * "Invalid API Key provided", the guard logged `continuing anyway`, and v2 served traffic with
+ * hotel booking enabled and no usable key until someone read the logs.
+ *
+ * The asymmetry above still holds — an outage must not take the fleet down — but a key Stripe
+ * actively rejects is not an outage. It is a configuration error that will serve every request
+ * wrongly until a human changes it, which is exactly what the mismatch branch already refuses for.
+ */
+describe('a key Stripe rejects', () => {
+    const stripeError = (type: string) => Object.assign(new Error('Invalid API Key provided: acct_1TN***'), { type });
+
+    it('refuses to start, rather than warning and serving', async () => {
+        process.env.STRIPE_EXPECTED_ACCOUNT = 'acct_1TN519C6cOjdwOIC';
+        stripeMock.retrieve.mockRejectedValue(stripeError('StripeAuthenticationError'));
+
+        await expect(assertStripeAccountAtBoot(log)).resolves.toBe(false);
+        expect(log.error).toHaveBeenCalledWith(expect.stringContaining('REFUSING TO START'));
+    });
+
+    it('refuses on a permission error too — a restricted key cannot read the account it is pinned to', async () => {
+        process.env.STRIPE_EXPECTED_ACCOUNT = 'acct_1TN519C6cOjdwOIC';
+        stripeMock.retrieve.mockRejectedValue(stripeError('StripePermissionError'));
+
+        await expect(assertStripeAccountAtBoot(log)).resolves.toBe(false);
+    });
+
+    /** The whole point of the distinction: Stripe having a bad minute still lets the process up. */
+    it('does not refuse when Stripe is merely unreachable', async () => {
+        process.env.STRIPE_EXPECTED_ACCOUNT = 'acct_1TN519C6cOjdwOIC';
+        stripeMock.retrieve.mockRejectedValue(stripeError('StripeConnectionError'));
+
+        await expect(assertStripeAccountAtBoot(log)).resolves.toBe(true);
+        expect(log.error).not.toHaveBeenCalled();
+    });
+
+    /** An error with no `type` at all — a plain throw — is treated as an outage, the forgiving side. */
+    it('treats an unclassified failure as an outage', async () => {
+        process.env.STRIPE_EXPECTED_ACCOUNT = 'acct_1TN519C6cOjdwOIC';
+        stripeMock.retrieve.mockRejectedValue(new Error('ECONNRESET'));
+
+        await expect(assertStripeAccountAtBoot(log)).resolves.toBe(true);
+        expect(log.error).not.toHaveBeenCalled();
+    });
+
+    /** Unset stays unenforced: a dev box with no key must not be stopped from starting. */
+    it('still starts with no expectation set, even when the key is rejected', async () => {
+        stripeMock.retrieve.mockRejectedValue(stripeError('StripeAuthenticationError'));
+
+        await expect(assertStripeAccountAtBoot(log)).resolves.toBe(true);
+        expect(log.error).not.toHaveBeenCalled();
+    });
+});

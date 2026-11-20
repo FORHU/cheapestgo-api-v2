@@ -9,8 +9,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * every flight was quoted and held in the airline's own currency whatever was chosen.
  */
 
-const svc = vi.hoisted(() => ({ getOffer: vi.fn(), book: vi.fn() }));
-vi.mock('@/services/flights.service', () => ({ FlightsService: vi.fn(function (this: any) { this.getOffer = svc.getOffer; this.book = svc.book; }) }));
+const svc = vi.hoisted(() => ({ getOffer: vi.fn(), book: vi.fn(), search: vi.fn() }));
+vi.mock('@/services/flights.service', () => ({ FlightsService: vi.fn(function (this: any) { this.getOffer = svc.getOffer; this.book = svc.book; this.search = svc.search; }) }));
 vi.mock('@/lib/flights/revalidate', () => ({ revalidateFlight: vi.fn() }));
 
 import { FlightsController } from '@/controllers/flights.controller';
@@ -45,6 +45,30 @@ describe('GET /flights/offers/:offerId', () => {
         const { next } = await run(ctrl.offer, { params: { offerId: 'off-1' }, query: { currency: 'pesos' } });
         expect(next).toHaveBeenCalledTimes(1);
         expect(svc.getOffer).not.toHaveBeenCalled();
+    });
+});
+
+describe('POST /flights/search', () => {
+    const search = { origin: 'MNL', destination: 'ICN', departureDate: '2026-11-25' };
+
+    it('prices the results in the currency asked for, without passing it on as a search parameter', async () => {
+        svc.search.mockResolvedValue({ offers: [] });
+        await run(ctrl.search, { body: { ...search, currency: 'php' } });
+        const [params, , currency] = svc.search.mock.calls[0];
+        expect(currency).toBe('PHP');
+        expect(params).not.toHaveProperty('currency');
+    });
+
+    it('leaves the results in the airline\'s currency when none is asked for', async () => {
+        svc.search.mockResolvedValue({ offers: [] });
+        await run(ctrl.search, { body: search });
+        expect(svc.search.mock.calls[0][2]).toBeUndefined();
+    });
+
+    it('refuses something that is not a currency code', async () => {
+        const { next } = await run(ctrl.search, { body: { ...search, currency: 'pesos' } });
+        expect(next).toHaveBeenCalledTimes(1);
+        expect(svc.search).not.toHaveBeenCalled();
     });
 });
 
