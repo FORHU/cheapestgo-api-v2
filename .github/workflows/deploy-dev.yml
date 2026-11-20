@@ -25,6 +25,20 @@ on:
   # which read as "changes not propagating" rather than as a missing trigger.
   push:
     branches: [main, staging]
+  workflow_call:
+    # Makes this workflow reusable so deploy-prod.yml can target production on a push to
+    # `main` without a second copy of these 550 lines. `inputs.environment` is the same name
+    # the dispatch input uses, so every expression below resolves identically whether this
+    # run came from a dispatch or from a caller.
+    inputs:
+      environment:
+        description: "Target environment"
+        type: string
+        default: dev
+      ref:
+        description: "Branch, tag or SHA to deploy (blank = the calling ref)"
+        type: string
+        required: false
   workflow_dispatch:
     inputs:
       environment:
@@ -56,25 +70,37 @@ env:
   ACCOUNT_ID: "617163942417"
   ECR_REPOSITORY: cheapestgo-v2-api
   APP_PORT: "4000"
+  # The cache. Created by this workflow rather than by hand: the production container was
+  # made with a bare `docker run` on 2026-11-03 and exists in no file and no repo, so a
+  # rebuilt box would come back with no Redis and nothing anywhere would say so.
+  #
+  # Not a per-environment variable, because this name is the host in REDIS_URL — which comes
+  # from the box's own shared env file, and reads cheapestgo-redis on both. Changing one
+  # without the other leaves the API unable to resolve its cache.
+  REDIS_CONTAINER: cheapestgo-redis
+  # 256 MB, written in bytes because that is the unit `config get maxmemory` answers in: the
+  # same literal then serves both the check and the setting, and the two cannot drift apart.
+  # Room for roughly 1,200 cached hotel searches at the 211 KB a gzipped one measures.
+  REDIS_MAXMEMORY: "268435456"
 
 jobs:
   deploy:
-    name: Build and deploy (cheapestgo dev)
+    name: Build and deploy (cheapestgo ${{ inputs.environment || 'dev' }})
     # Runner arch follows the target: the dev host is Graviton, the production box is
     # x86_64. Build natively on both — do not cross-build under QEMU, where Node and
     # Prisma builds take hours and look hung.
     #
     # `startsWith(..., 'production')` rather than `== 'production'`: a per-brand production
     # target such as `production-airanggo` is still production, and an equality test sent it
-    # to the Graviton runner instead — the image then builds arm64, pulls cleanly on the x86
+    # to the Graviton runner instead - the image then builds arm64, pulls cleanly on the x86
     # box and dies with "exec format error", which reads as a crash loop rather than as the
     # wrong target.
     runs-on: ${{ startsWith(inputs.environment, 'production') && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
     # "dev" is the context, not the environment's name — dev secrets and variables live on
-    # the `staging` environment. Each production target maps to the GitHub environment of the
-    # same name, so adding a brand is adding an environment and changes nothing here. Anything
-    # that is not a production target reads `staging`, which is what a push with no inputs got
-    # before and still gets.
+    # the `staging` environment. Production maps to its own.
+    # Each production target maps to the GitHub environment of the same name, so adding a
+    # brand is adding an environment and changes nothing here. Anything that is not a
+    # production target reads `staging`, which is what a push with no inputs got before.
     environment: ${{ startsWith(inputs.environment, 'production') && inputs.environment || 'staging' }}
 
     permissions:
@@ -85,7 +111,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || github.ref_name }}
+          ref: ${{ inputs.ref || github.ref_name }}
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -119,11 +145,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Every `production*` target is a production target. Unlike app-v2, this image is
-          # brand-agnostic — BRAND_NAME is read from the environment at runtime (src/lib/brand.ts),
-          # so the brands could share an image. They get their own tag anyway, so that rolling
-          # one brand back to an older tag cannot move the tag the other brand's container is
-          # pinned to.
+          # Every `production*` target is a production target. Each gets its own image tag so
+          # that rolling one brand back to an older tag cannot move the tag another brand's
+          # container is pinned to.
           case "$TARGET" in
             production)   IS_PROD=1; TAG_PREFIX=prod ;;
             production-*) IS_PROD=1; TAG_PREFIX="prod-${TARGET#production-}" ;;
@@ -146,7 +170,7 @@ jobs:
           out() { printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"; }
 
           # The tag prefix keeps a dev image from ever being mistaken for, or overwriting,
-          # a production one in the same ECR repository, and keeps the brands' tags apart.
+          # a production one in the same ECR repository.
           out tag_prefix "$TAG_PREFIX"
 
           # The dev host is Graviton; the production box is x86_64 (t3 family). One
@@ -239,6 +263,13 @@ jobs:
           EXCHANGE_RATES_API_KEY: ${{ secrets.EXCHANGE_RATES_API_KEY || vars.EXCHANGE_RATES_API_KEY }}
           FUNCTIONS_SECRET: ${{ secrets.FUNCTIONS_SECRET || vars.FUNCTIONS_SECRET }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET || vars.GOOGLE_CLIENT_SECRET }}
+          # The client IDs a phone may present when it signs in with Google. Without this the
+          # app sends a perfectly good token and api-v2 answers OAUTH_NOT_CONFIGURED, because
+          # it has nothing to check the token's `aud` against — which is what dev did until a
+          # release APK was pointed at it. It is the **web** client id, not the Android one:
+          # Google mints the token with the web client as its audience when the app passes a
+          # serverClientId. Comma-separated if there is ever more than one.
+          GOOGLE_NATIVE_CLIENT_IDS: ${{ secrets.GOOGLE_NATIVE_CLIENT_IDS || vars.GOOGLE_NATIVE_CLIENT_IDS }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY || vars.GOOGLE_PLACES_API_KEY }}
           JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET || vars.JWT_REFRESH_SECRET }}
           JWT_SECRET: ${{ secrets.JWT_SECRET || vars.JWT_SECRET }}
@@ -263,9 +294,6 @@ jobs:
           # the Stripe authorisation all still work, only the supplier call is blocked.
           # Unset books for real against the live supplier.
           HOTEL_BOOKING_ENABLED: ${{ secrets.HOTEL_BOOKING_ENABLED || vars.HOTEL_BOOKING_ENABLED }}
-          # The flights equivalent. Absent from this workflow until now, which meant the
-          # variable could be set on an environment and have no effect at all: it was in the
-          # `add` list below but had no value to add, so the key was never written to the box.
           FLIGHT_BOOKING_ENABLED: ${{ secrets.FLIGHT_BOOKING_ENABLED || vars.FLIGHT_BOOKING_ENABLED }}
           # Which supplier this host talks to. Absent from this workflow until 2026-11-10, which
           # meant the dev container silently defaulted to `travelgatex` — the live one. Set it to
@@ -368,6 +396,7 @@ jobs:
           add FUNCTIONS_SECRET                 "${FUNCTIONS_SECRET:-}"
           add GOOGLE_CLIENT_ID                 "${GOOGLE_CLIENT_ID:-}"
           add GOOGLE_CLIENT_SECRET             "${GOOGLE_CLIENT_SECRET:-}"
+          add GOOGLE_NATIVE_CLIENT_IDS         "${GOOGLE_NATIVE_CLIENT_IDS:-}"
           add GOOGLE_PLACES_API_KEY            "${GOOGLE_PLACES_API_KEY:-}"
           add ALLOW_MOCK_HOTEL_PROVIDER        "${ALLOW_MOCK_HOTEL_PROVIDER:-}"
           add HOTEL_BOOKING_ENABLED            "${HOTEL_BOOKING_ENABLED:-}"
@@ -422,8 +451,20 @@ jobs:
             "aws ssm get-parameter --name ${{ steps.cfg.outputs.env_param }} --with-decryption --region ${{ env.AWS_REGION }} --query Parameter.Value --output text >> ${{ steps.cfg.outputs.merged_env }}"
             "chmod 600 ${{ steps.cfg.outputs.merged_env }}"
             "aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${REGISTRY}"
-            "docker container prune -f || true"
-            "docker image prune -af || true"
+            # Dangling layers only, and nothing host-wide.
+            #
+            # This was `docker container prune -f` and `docker image prune -af`, both of which
+            # act on the whole host. On a box shared by seven projects that is somebody else's
+            # property: the image prune deleted a neighbour's image on 2026-11-18
+            # (fox-passport-republic-api, 834 MB reclaimed), leaving it unable to start without a
+            # re-pull, and the container prune would destroy any container another project had
+            # deliberately stopped — along with the only record of how it was created, which for a
+            # hand-made container is the whole record.
+            #
+            # Neither was ever needed here. This workflow removes its own containers by name a few
+            # lines down, and the migration container runs with --rm. Our own superseded images are
+            # cleaned at the end of this script, by reference, once the new ones are in use.
+            "docker image prune -f || true"
             "docker pull --platform ${{ steps.cfg.outputs.platform }} ${IMAGE}"
             # Migrations, from the image just pulled, before the running container is touched.
             #
@@ -444,6 +485,26 @@ jobs:
             # so a deploy that changes no migrations is a no-op. --no-dump-schema: the schema
             # file is a development artefact and this container is thrown away.
             "docker run --rm --platform ${{ steps.cfg.outputs.platform }} --network ${{ steps.cfg.outputs.network }} --env-file ${{ steps.cfg.outputs.merged_env }} ${IMAGE} sh -c 'DB=\$(printf %s \"\$DATABASE_URL\" | cut -d\"?\" -f1); dbmate --no-dump-schema -u \"\$DB?sslmode=${{ steps.cfg.outputs.dbmate_sslmode }}\" up'"
+            # The cache, put right before the code that uses it.
+            #
+            # Idempotent: it touches Redis only when the container is missing or its cap is
+            # wrong, so an ordinary deploy leaves the keyspace alone — including anyone
+            # mid-Google-login, whose oauth:state lives there for ten minutes.
+            #
+            # The cap is the whole point. Redis defaults to no limit and `noeviction`, and
+            # every writer here swallows its own errors, so an out-of-memory Redis would stop
+            # storing sign-in state and report nothing: a traveller gets a failed Google login
+            # and no log line explains it. volatile-lru rather than allkeys-lru because all
+            # four writers set a TTL — identical behaviour today, but a key stored later
+            # without one is something allkeys-lru would evict and this leaves alone.
+            #
+            # Non-fatal on purpose. The API is built to run without Redis, retrying every ten
+            # seconds and logging the transition, so an unreachable Docker Hub must not be able
+            # to abort the deploy of the API itself. Caching degrades; the deploy continues.
+            #
+            # No volume: everything stored here expires within a day, so persisting it across a
+            # recreate buys one warm search in exchange for another resource to keep track of.
+            "docker exec ${{ env.REDIS_CONTAINER }} redis-cli config get maxmemory 2>/dev/null | grep -qx ${{ env.REDIS_MAXMEMORY }} || { docker rm -f ${{ env.REDIS_CONTAINER }} 2>/dev/null || true; docker run -d --name ${{ env.REDIS_CONTAINER }} --restart unless-stopped --platform ${{ steps.cfg.outputs.platform }} --network ${{ steps.cfg.outputs.network }} redis:7-alpine redis-server --maxmemory ${{ env.REDIS_MAXMEMORY }} --maxmemory-policy volatile-lru; } || echo '[redis] ensure failed - the API will run with caching disabled'"
             "docker rm -f ${{ steps.cfg.outputs.container }} 2>/dev/null || true"
             "docker run -d --name ${{ steps.cfg.outputs.container }} --restart unless-stopped --platform ${{ steps.cfg.outputs.platform }} --network ${{ steps.cfg.outputs.network }} --env-file ${{ steps.cfg.outputs.merged_env }} -p 127.0.0.1:${{ steps.cfg.outputs.host_port }}:${{ env.APP_PORT }} ${IMAGE}"
           )
@@ -473,6 +534,18 @@ jobs:
             # deploy keeps running under --restart unless-stopped, so it is removed.
             COMMANDS+=( "docker rm -f ${{ steps.cfg.outputs.cron_container }} 2>/dev/null || true" )
           fi
+
+          # Our own superseded images, by reference so it cannot reach another project.
+          #
+          # Last, not first: an image a running container holds cannot be removed, so doing this
+          # after the new containers are up is what makes it safe to force. Excluding this deploy's
+          # own two tags keeps the image the API is running and the one the cron container needs.
+          #
+          # Without this, replacing `prune -af` would trade a neighbour's images for a disk leak of
+          # one API image per deploy on a host that has seven projects' worth of them already.
+          COMMANDS+=(
+            "docker images --filter reference=${REGISTRY}/${{ env.ECR_REPOSITORY }} --format '{{.Tag}} {{.ID}}' | grep -v -e '^${TAG} ' -e '^cron-${TAG} ' | cut -d' ' -f2 | sort -u | xargs -r docker rmi -f > /dev/null 2>&1 || true"
+          )
 
           # jq builds the JSON, so a quote inside any command cannot break it.
           PARAMS=$(printf '%s\n' "${COMMANDS[@]}" | jq -R . | jq -sc '{commands: .}')
