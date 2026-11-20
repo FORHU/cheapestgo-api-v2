@@ -1,0 +1,114 @@
+{
+ "steps": {
+  "authorise": {
+   "status": "requires_capture"
+  },
+  "confirm": {
+   "status": 200,
+   "pnr": "4KXAYD",
+   "bookingStatus": "ticketed"
+  },
+  "cancel": {
+   "status": 200,
+   "body": {
+    "status": "refunded",
+    "refundAmount": 248.43,
+    "refundCurrency": "USD",
+    "penaltyAmount": 0,
+    "currency": "USD"
+   }
+  },
+  "stripeRefund": {
+   "id": "re_3UaWrlCJsDyAXJ3J0u8NxWsX",
+   "status": "succeeded",
+   "amount": 24843
+  },
+  "webhook": {
+   "status": 200,
+   "eventId": "evt_3UaWrlCJsDyAXJ3J0KWfr5Bq",
+   "body": "{\"received\":true}"
+  },
+  "webhookAgain": {
+   "status": 200,
+   "eventId": "evt_3UaWrlCJsDyAXJ3J0KWfr5Bq",
+   "body": "{\"received\":true}"
+  },
+  "alerts": [
+   {
+    "title": "Flight refund failed — traveller not repaid",
+    "description": "Flight 4KXAYD: the USD 248.43 refund (re_3UaWrlCJsDyAXJ3J0u8NxWsX, PaymentIntent pi_3UaWrlCJsDyAXJ3J0nTjSrxV) was failed by Stripe after it was accepted: expired_or_canceled_card. The flight is cancelled and the traveller has NOT been repaid. The same card cannot take the refund again — contact the traveller and pay them another way, then settle the booking."
+   }
+  ],
+  "refundLog": [
+   {
+    "status": "failed",
+    "reason": "Stripe failed refund re_3UaWrlCJsDyAXJ3J0u8NxWsX after accepting it: expired_or_canceled_card"
+   }
+  ]
+ },
+ "expect": "Stripe cannot repay a closed card, so the money stays taken; the fix is that the system now knows: booking refund_failed, refund log failed, one alert to the team",
+ "held": {
+  "amount": 248.43,
+  "currency": "USD",
+  "fare": 227.64,
+  "fee": 20.79
+ },
+ "st": {
+  "stripe": {
+   "status": "succeeded",
+   "amount": 24843,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 24843,
+   "refunded": 0
+  },
+  "session": {
+   "lifecycle": "CONFIRMED",
+   "status": "completed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [browser] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [browser] claimed for the airline order",
+   "SUPPLIER_BOOKING→CONFIRMED [browser] airline ordered and payment captured"
+  ],
+  "sale": {
+   "id": "d5472f5b-8849-4c34-9390-6be71a51b4ac",
+   "status": "refund_failed",
+   "pnr": "4KXAYD",
+   "provider_order_id": "ord_0000BCKi7WhPLGevSo999M",
+   "total_price": "248.43",
+   "charged_price": "248.43",
+   "currency": "USD",
+   "supplier_cost": "227.64"
+  },
+  "supplierAttempts": [],
+  "duffelOrder": {
+   "id": "ord_0000BCKi7WhPLGevSo999M",
+   "booking_reference": "4KXAYD",
+   "cancelled_at": "2026-11-11T08:26:57.351601Z",
+   "documents": 1,
+   "total": "227.64",
+   "currency": "USD"
+  }
+ },
+ "v": {
+  "pass": false,
+  "taken": 24843,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": [],
+  "recordTrue": true
+ },
+ "orders": [
+  {
+   "id": "ord_0000BCKi7WhPLGevSo999M",
+   "created_at": "2026-11-11T08:26:52.440798Z",
+   "cancelled_at": "2026-11-11T08:26:57.351601Z",
+   "documents": 1
+  }
+ ],
+ "case": "refundFailsLater",
+ "seconds": 150
+}

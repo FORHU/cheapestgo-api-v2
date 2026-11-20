@@ -1,9 +1,34 @@
 import { prisma } from '@/lib/prisma';
 import { initialPreferences } from '@/lib/users/onboarding';
 
+/** An address as it is stored and compared: trimmed, lower case. Every door normalises with this. */
+export const normaliseEmail = (email: string): string => email.trim().toLowerCase();
+
+type UsersClient = Pick<typeof prisma, 'users'>;
+
+/** `findByEmail`'s lookup, usable inside a transaction. */
+async function findAccount(client: UsersClient, email: string) {
+    const wanted = normaliseEmail(email);
+    const exact = await client.users.findUnique({ where: { email: wanted } });
+    if (exact) return exact;
+    return client.users.findFirst({
+        where:   { email: { equals: wanted, mode: 'insensitive' } },
+        orderBy: { created_at: 'asc' },
+    });
+}
+
 export class AuthRepository {
+    /**
+     * The account for an address, whatever case it was typed in.
+     *
+     * New accounts are stored lower case, so the indexed exact match answers nearly every call.
+     * The case-insensitive second look is for accounts made before that — `Ana@Example.com` as
+     * typed at sign-up — which a lower-cased lookup alone would stop finding the moment the
+     * door began normalising, locking those customers out until a migration lowercased them.
+     * The oldest wins if there are case-variant duplicates, as it is the one that has history.
+     */
     findByEmail(email: string) {
-        return prisma.users.findUnique({ where: { email } });
+        return findAccount(prisma, email);
     }
 
     findById(id: string) {
@@ -31,7 +56,7 @@ export class AuthRepository {
         last_name?: string;
     }) {
         return prisma.$transaction(async tx => {
-            const user = await tx.users.create({ data });
+            const user = await tx.users.create({ data: { ...data, email: normaliseEmail(data.email) } });
             await tx.profiles.upsert({
                 where:  { id: user.id },
                 update: { preferences: initialPreferences() },
@@ -64,33 +89,34 @@ export class AuthRepository {
         avatar_url: string | null;
     }) {
         return prisma.$transaction(async tx => {
-            const existing = await tx.users.findUnique({
-                where:  { email: data.email },
-                select: { id: true },
-            });
+            // Found the way password sign-in finds it, so an account stored as `Ana@Example.com`
+            // before addresses were normalised is the one Google signs into — not a second,
+            // lower-case account beside it. Updated by id for the same reason.
+            const existing = await findAccount(tx, data.email);
+            if (existing) {
+                return tx.users.update({
+                    where: { id: existing.id },
+                    data: {
+                        ...(data.avatar_url ? { avatar_url: data.avatar_url } : {}),
+                        updated_at: new Date(),
+                    },
+                });
+            }
 
-            const user = await tx.users.upsert({
-                where: { email: data.email },
-                create: {
-                    email: data.email,
+            const user = await tx.users.create({
+                data: {
+                    email: normaliseEmail(data.email),
                     role: 'user',
                     first_name: data.first_name,
                     last_name: data.last_name,
                     avatar_url: data.avatar_url,
                 },
-                update: {
-                    ...(data.avatar_url ? { avatar_url: data.avatar_url } : {}),
-                    updated_at: new Date(),
-                },
             });
-
-            if (!existing) {
-                await tx.profiles.upsert({
-                    where:  { id: user.id },
-                    update: { preferences: initialPreferences() },
-                    create: { id: user.id, email: user.email, preferences: initialPreferences() },
-                });
-            }
+            await tx.profiles.upsert({
+                where:  { id: user.id },
+                update: { preferences: initialPreferences() },
+                create: { id: user.id, email: user.email, preferences: initialPreferences() },
+            });
             return user;
         });
     }

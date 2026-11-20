@@ -1220,6 +1220,7 @@ export class HotelsService {
             to:        params.holder.email,
             subject:   `Booking Confirmed — ${params.propertyName || 'your stay'}`,
             emailType: 'confirmation',
+            receipt: bookingRow?.id ? { bookingId: bookingRow.id, type: 'hotel' } : undefined,
             html: buildHotelConfirmationHtml({
                 bookingRef:      bookingId,
                 bookingDbId:     bookingRow?.id ?? null,

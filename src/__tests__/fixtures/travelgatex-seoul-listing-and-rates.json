@@ -1,0 +1,171 @@
+{
+  "_note": "Captured live on 2026-11-20 (read-only search) and anonymised for #53: supplier option ids, tokens and session ids replaced; hotel and flight data as received.",
+  "search": {
+    "checkin": "2026-12-15",
+    "checkout": "2026-12-17",
+    "adults": 2,
+    "city": "Seoul"
+  },
+  "listing": {
+    "hotelId": "10110462",
+    "id": "10110462",
+    "name": "Guro Namyangjang",
+    "price": 1853,
+    "currency": "PHP",
+    "offerId": "TGX:tgx-option-1",
+    "refundableTag": "RFN",
+    "starRating": 3,
+    "images": [
+      "https://cdn.worldota.net/t/1024x768/content/f3/ab/f3ab64523858642a85d46a4d93e3bce0d4c58931.JPEG"
+    ],
+    "image": "https://cdn.worldota.net/t/1024x768/content/f3/ab/f3ab64523858642a85d46a4d93e3bce0d4c58931.JPEG",
+    "lat": 37.481,
+    "lng": 126.89,
+    "coordinates": {
+      "lat": 37.481,
+      "lng": 126.89
+    },
+    "address": "28 Digital Ro 19 Gil Guro Gu, Seoul",
+    "location": "28 Digital Ro 19 Gil Guro Gu, Seoul",
+    "city": "Seoul",
+    "country": "KR",
+    "description": "",
+    "amenities": [],
+    "reviewRating": 0,
+    "rating": 0,
+    "reviews": 0,
+    "reviewCount": 0,
+    "checkInTime": null,
+    "checkOutTime": null,
+    "boardCode": "nomeal",
+    "roomTypes": [
+      {
+        "offerId": "TGX:tgx-option-1",
+        "roomName": "Standard room (full double bed) (queen size bed)",
+        "boardCode": "nomeal",
+        "price": 3706,
+        "net": 3706,
+        "gross": 3706,
+        "currency": "PHP",
+        "refundable": true,
+        "refundableTag": "RFN",
+        "cancelPolicy": {
+          "refundable": true
+        },
+        "rates": [
+          {
+            "retailRate": {
+              "total": [
+                {
+                  "amount": 3706,
+                  "currency": "PHP"
+                }
+              ],
+              "currency": "PHP"
+            },
+            "refundableTag": "RFN",
+            "cancellationPolicies": [],
+            "_tgx": {
+              "token": "",
+              "id": "tgx-option-1",
+              "boardCode": "nomeal",
+              "paymentType": "MERCHANT",
+              "cancelPolicy": {
+                "refundable": true
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "_tgxToken": ""
+  },
+  "rates": [
+    {
+      "offerId": "TGX:tgx-option-2",
+      "roomName": "Standard room (full double bed) (queen size bed)",
+      "roomCode": "200300200000",
+      "boardCode": "nomeal",
+      "price": 3706,
+      "net": 3706,
+      "gross": 3706,
+      "currency": "PHP",
+      "refundable": true,
+      "refundableTag": "RFN",
+      "cancelPolicy": {
+        "refundable": true,
+        "cancelPenalties": [
+          {
+            "deadline": "2026-12-11T15:00:00Z",
+            "hoursBefore": 81,
+            "penaltyType": "IMPORT",
+            "currency": "PHP",
+            "value": 701
+          },
+          {
+            "deadline": "2026-12-13T15:00:00Z",
+            "hoursBefore": 33,
+            "penaltyType": "IMPORT",
+            "currency": "PHP",
+            "value": 3706
+          }
+        ]
+      },
+      "rates": [
+        {
+          "retailRate": {
+            "total": [
+              {
+                "amount": 3706,
+                "currency": "PHP"
+              }
+            ],
+            "currency": "PHP"
+          },
+          "refundableTag": "RFN",
+          "cancellationPolicies": [
+            {
+              "deadline": "2026-12-11T15:00:00Z",
+              "hoursBefore": 81,
+              "penaltyType": "IMPORT",
+              "currency": "PHP",
+              "value": 701
+            },
+            {
+              "deadline": "2026-12-13T15:00:00Z",
+              "hoursBefore": 33,
+              "penaltyType": "IMPORT",
+              "currency": "PHP",
+              "value": 3706
+            }
+          ],
+          "_tgx": {
+            "token": "",
+            "id": "tgx-option-2",
+            "boardCode": "nomeal",
+            "paymentType": "MERCHANT",
+            "cancelPolicy": {
+              "refundable": true,
+              "cancelPenalties": [
+                {
+                  "deadline": "2026-12-11T15:00:00Z",
+                  "hoursBefore": 81,
+                  "penaltyType": "IMPORT",
+                  "currency": "PHP",
+                  "value": 701
+                },
+                {
+                  "deadline": "2026-12-13T15:00:00Z",
+                  "hoursBefore": 33,
+                  "penaltyType": "IMPORT",
+                  "currency": "PHP",
+                  "value": 3706
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

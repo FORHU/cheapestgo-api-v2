@@ -7,7 +7,7 @@ import { canonicalBrandName } from '@/lib/brand';
 const BRAND = canonicalBrandName(process.env.BRAND_NAME ?? process.env.NEXT_PUBLIC_BRAND_NAME);
 import { Document, Page, View, Text, StyleSheet } from '@react-pdf/renderer';
 
-interface InvoicePdfProps {
+export interface InvoicePdfProps {
     invoiceNumber: string;
     issuedDate: string;
     billedTo: { name: string; email: string };
@@ -91,7 +91,7 @@ export function InvoicePdfDocument(props: InvoicePdfProps) {
                         <Text style={s.tagline}>Your Travel Partner</Text>
                     </View>
                     <View>
-                        <Text style={s.receiptTitle}>OFFICIAL RECEIPT</Text>
+                        <Text style={s.receiptTitle}>BOOKING &amp; PAYMENT RECEIPT</Text>
                         <Text style={s.receiptMeta}>{invoiceNumber}</Text>
                         <Text style={s.receiptMeta}>Issued: {issuedDate}</Text>
                     </View>
@@ -117,7 +117,6 @@ export function InvoicePdfDocument(props: InvoicePdfProps) {
                                 <Text style={s.hotelSub}>{hotelDetails.dates} · {hotelDetails.nights} night{hotelDetails.nights !== 1 ? 's' : ''}</Text>
                                 <Text style={s.hotelSub}>{hotelDetails.guests}</Text>
                             </View>
-                            {!showFlight && <Text style={[s.tableCellBold, { fontSize: 11 }]}>{formattedTotal}</Text>}
                         </View>
                     </View>
                 )}
@@ -158,11 +157,18 @@ export function InvoicePdfDocument(props: InvoicePdfProps) {
                     <View style={s.refBlock}><Text style={s.refLabel}>Booking Ref</Text><Text style={s.refValue}>{bookingRef}</Text></View>
                     <View style={s.refBlock}><Text style={s.refLabel}>Type</Text><Text style={s.refValue}>{bookingType}</Text></View>
                     <View style={s.refBlock}><Text style={s.refLabel}>Provider</Text><Text style={s.refValue}>{provider}</Text></View>
-                    <View style={s.refBlock}><Text style={s.refLabel}>Payment</Text><Text style={s.refValue}>Stripe (Card)</Text></View>
+                </View>
+
+                <View style={s.section}>
+                    <Text style={s.sectionLabel}>Payment details</Text>
+                    <View style={s.tableRow}>
+                        <Text style={[s.tableCell, { width: '35%' }]}>Payment provider</Text>
+                        <Text style={[s.tableCellBold, { width: '65%' }]}>Stripe</Text>
+                    </View>
                 </View>
 
                 <View style={s.totalRow}>
-                    <Text style={s.totalLabel}>Total Paid</Text>
+                    <Text style={s.totalLabel}>Total paid</Text>
                     <Text style={s.totalValue}>{formattedTotal}</Text>
                 </View>
 

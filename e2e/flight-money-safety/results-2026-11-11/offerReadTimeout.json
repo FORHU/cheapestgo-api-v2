@@ -1,0 +1,53 @@
+{
+ "steps": {
+  "authorise": {
+   "status": "requires_capture"
+  },
+  "confirm": {
+   "status": 503,
+   "error": "UPSTREAM_UNAVAILABLE",
+   "message": "We could not reach the airline to confirm your fare. Your card has not been charged. Please try again."
+  }
+ },
+ "expect": "confirm 503 UPSTREAM_UNAVAILABLE; hold voided; nothing ordered",
+ "held": {
+  "amount": 241.7,
+  "currency": "USD",
+  "fare": 221.36,
+  "fee": 20.34
+ },
+ "st": {
+  "stripe": {
+   "status": "canceled",
+   "amount": 24170,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 0,
+   "refunded": 24170
+  },
+  "session": {
+   "lifecycle": "FAILED",
+   "status": "failed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [browser] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [browser] claimed for the airline order",
+   "SUPPLIER_BOOKING→FAILED [browser] not ordered: UPSTREAM_UNAVAILABLE (UPSTREAM_UNAVAILABLE)"
+  ],
+  "sale": null,
+  "supplierAttempts": [],
+  "duffelOrder": null
+ },
+ "v": {
+  "pass": true,
+  "taken": 0,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": []
+ },
+ "orders": [],
+ "case": "offerReadTimeout",
+ "seconds": 8
+}
