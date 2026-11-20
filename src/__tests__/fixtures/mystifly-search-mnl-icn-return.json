@@ -1,0 +1,446 @@
+{
+  "_note": "Captured live on 2026-11-20 (read-only search) and anonymised for #53: supplier option ids, tokens and session ids replaced; hotel and flight data as received. Trimmed to three itineraries and the lists they reference.",
+  "Data": {
+    "ConversationId": "mystifly-conversation-1",
+    "FlightSegmentList": [
+      {
+        "DepartureAirportLocationCode": "MNL",
+        "ArrivalAirportLocationCode": "ICN",
+        "DepartureDateTime": "2026-12-15T23:20:00",
+        "ArrivalDateTime": "2026-12-16T04:10:00",
+        "stops": 0,
+        "JourneyDuration": 230,
+        "Equipment": "7M8",
+        "OperatingCarrierCode": "7C",
+        "OperatingFlightNumber": "2104",
+        "MarketingCarriercode": "7C",
+        "MarketingFlightNumber": "2104",
+        "StopQuantityInfos": [],
+        "SegmentRef": 0
+      },
+      {
+        "DepartureAirportLocationCode": "ICN",
+        "ArrivalAirportLocationCode": "MNL",
+        "DepartureDateTime": "2026-12-22T18:35:00",
+        "ArrivalDateTime": "2026-12-22T22:20:00",
+        "stops": 0,
+        "JourneyDuration": 285,
+        "Equipment": "7M8",
+        "OperatingCarrierCode": "7C",
+        "OperatingFlightNumber": "2103",
+        "MarketingCarriercode": "7C",
+        "MarketingFlightNumber": "2103",
+        "StopQuantityInfos": [],
+        "SegmentRef": 1
+      },
+      {
+        "DepartureAirportLocationCode": "MNL",
+        "ArrivalAirportLocationCode": "ICN",
+        "DepartureDateTime": "2026-12-15T23:20:00",
+        "ArrivalDateTime": "2026-12-16T04:10:00",
+        "stops": 0,
+        "JourneyDuration": 230,
+        "Equipment": "737",
+        "OperatingCarrierCode": "H1",
+        "OperatingFlightNumber": "9754",
+        "MarketingCarriercode": "H1",
+        "MarketingFlightNumber": "9754",
+        "StopQuantityInfos": [],
+        "SegmentRef": 2
+      },
+      {
+        "DepartureAirportLocationCode": "ICN",
+        "ArrivalAirportLocationCode": "MNL",
+        "DepartureDateTime": "2026-12-22T18:35:00",
+        "ArrivalDateTime": "2026-12-22T22:20:00",
+        "stops": 0,
+        "JourneyDuration": 285,
+        "Equipment": "737",
+        "OperatingCarrierCode": "H1",
+        "OperatingFlightNumber": "9753",
+        "MarketingCarriercode": "H1",
+        "MarketingFlightNumber": "9753",
+        "StopQuantityInfos": [],
+        "SegmentRef": 3
+      },
+      {
+        "DepartureAirportLocationCode": "MNL",
+        "ArrivalAirportLocationCode": "HKG",
+        "DepartureDateTime": "2026-12-15T12:35:00",
+        "ArrivalDateTime": "2026-12-15T15:05:00",
+        "stops": 0,
+        "JourneyDuration": 150,
+        "Equipment": "773",
+        "OperatingCarrierCode": "CX",
+        "OperatingFlightNumber": "930",
+        "MarketingCarriercode": "CX",
+        "MarketingFlightNumber": "930",
+        "StopQuantityInfos": [],
+        "SegmentRef": 4
+      },
+      {
+        "DepartureAirportLocationCode": "HKG",
+        "ArrivalAirportLocationCode": "ICN",
+        "DepartureDateTime": "2026-12-15T16:50:00",
+        "ArrivalDateTime": "2026-12-15T21:25:00",
+        "stops": 0,
+        "JourneyDuration": 215,
+        "Equipment": "333",
+        "OperatingCarrierCode": "CX",
+        "OperatingFlightNumber": "416",
+        "MarketingCarriercode": "CX",
+        "MarketingFlightNumber": "416",
+        "StopQuantityInfos": [],
+        "SegmentRef": 5
+      },
+      {
+        "DepartureAirportLocationCode": "ICN",
+        "ArrivalAirportLocationCode": "HKG",
+        "DepartureDateTime": "2026-12-22T02:25:00",
+        "ArrivalDateTime": "2026-12-22T05:30:00",
+        "stops": 0,
+        "JourneyDuration": 245,
+        "Equipment": "32Q",
+        "OperatingCarrierCode": "UO",
+        "OperatingFlightNumber": "615",
+        "MarketingCarriercode": "CX",
+        "MarketingFlightNumber": "5615",
+        "StopQuantityInfos": [],
+        "SegmentRef": 6
+      },
+      {
+        "DepartureAirportLocationCode": "HKG",
+        "ArrivalAirportLocationCode": "MNL",
+        "DepartureDateTime": "2026-12-22T07:30:00",
+        "ArrivalDateTime": "2026-12-22T09:40:00",
+        "stops": 0,
+        "JourneyDuration": 130,
+        "Equipment": "32Q",
+        "OperatingCarrierCode": "CX",
+        "OperatingFlightNumber": "907",
+        "MarketingCarriercode": "CX",
+        "MarketingFlightNumber": "907",
+        "StopQuantityInfos": [],
+        "SegmentRef": 7
+      }
+    ],
+    "ItineraryReferenceList": [
+      {
+        "CabinClassCode": "Y",
+        "RBD": "H",
+        "FareFamily": "",
+        "SeatsRemaining": 9,
+        "CheckinBaggage": [
+          {
+            "Type": "ADT",
+            "Value": "15KG"
+          }
+        ],
+        "CabinBaggage": [
+          {
+            "Type": "ADT",
+            "Value": "7KG"
+          }
+        ],
+        "FareBasisCodes": "HV3OPH",
+        "ItineraryRef": 0
+      },
+      {
+        "CabinClassCode": "Y",
+        "RBD": "N",
+        "FareFamily": "",
+        "SeatsRemaining": 9,
+        "CheckinBaggage": [
+          {
+            "Type": "ADT",
+            "Value": "15KG"
+          }
+        ],
+        "CabinBaggage": [
+          {
+            "Type": "ADT",
+            "Value": "7KG"
+          }
+        ],
+        "FareBasisCodes": "NOW7C",
+        "ItineraryRef": 1
+      },
+      {
+        "CabinClassCode": "Y",
+        "RBD": "Q",
+        "FareFamily": "ECONOMY LIGHT",
+        "SeatsRemaining": 9,
+        "CheckinBaggage": [
+          {
+            "Type": "ADT",
+            "Value": "1PC"
+          }
+        ],
+        "CabinBaggage": [
+          {
+            "Type": "ADT",
+            "Value": "SB"
+          }
+        ],
+        "FareBasisCodes": "QR21PHAR",
+        "ItineraryRef": 2
+      },
+      {
+        "CabinClassCode": "Y",
+        "RBD": "Q",
+        "FareFamily": "ECONOMY LIGHT",
+        "SeatsRemaining": 9,
+        "CheckinBaggage": [
+          {
+            "Type": "ADT",
+            "Value": "1PC"
+          }
+        ],
+        "CabinBaggage": [
+          {
+            "Type": "ADT",
+            "Value": "SB"
+          }
+        ],
+        "FareBasisCodes": "QR21PHAA",
+        "ItineraryRef": 3
+      }
+    ],
+    "FulfillmentDetailsList": [],
+    "PenaltiesInfoList": [
+      {
+        "Penaltydetails": [
+          {
+            "PaxType": "ADT",
+            "RefundPenaltyAmount": "9345",
+            "RefundAllowed": true,
+            "Currency": "INR",
+            "ChangePenaltyAmount": "7480",
+            "ChangeAllowed": true
+          }
+        ],
+        "PenaltiesInfoRef": 0
+      },
+      {
+        "Penaltydetails": [
+          {
+            "PaxType": "ADT",
+            "RefundPenaltyAmount": "21495",
+            "RefundAllowed": true,
+            "Currency": "INR",
+            "ChangePenaltyAmount": "14020",
+            "ChangeAllowed": true
+          }
+        ],
+        "PenaltiesInfoRef": 1
+      },
+      {
+        "Penaltydetails": [
+          {
+            "PaxType": "ADT",
+            "RefundPenaltyAmount": "14020",
+            "RefundAllowed": true,
+            "Currency": "INR",
+            "ChangePenaltyAmount": "11215",
+            "ChangeAllowed": true
+          }
+        ],
+        "PenaltiesInfoRef": 2
+      }
+    ],
+    "FlightFaresList": [
+      {
+        "FareType": "Public",
+        "Currency": "USD",
+        "PassengerFare": [
+          {
+            "PaxType": "ADT",
+            "Quantity": 1,
+            "BaseFare": "127.77",
+            "TaxBreakUp": [
+              {
+                "Amount": "18.04",
+                "TaxCode": "BP"
+              },
+              {
+                "Amount": "14.94",
+                "TaxCode": "LI"
+              },
+              {
+                "Amount": "42.01",
+                "TaxCode": "YQF"
+              },
+              {
+                "Amount": "42.01",
+                "TaxCode": "YQF"
+              }
+            ],
+            "TotalFare": "244.77"
+          }
+        ],
+        "FareRef": 0
+      },
+      {
+        "FareType": "Public",
+        "Currency": "USD",
+        "PassengerFare": [
+          {
+            "PaxType": "ADT",
+            "Quantity": 1,
+            "BaseFare": "188.08",
+            "TaxBreakUp": [
+              {
+                "Amount": "18.04",
+                "TaxCode": "BP"
+              },
+              {
+                "Amount": "14.94",
+                "TaxCode": "LI"
+              },
+              {
+                "Amount": "28.01",
+                "TaxCode": "YQF"
+              },
+              {
+                "Amount": "28.01",
+                "TaxCode": "YQF"
+              }
+            ],
+            "TotalFare": "277.08"
+          }
+        ],
+        "FareRef": 1
+      },
+      {
+        "FareType": "Public",
+        "Currency": "USD",
+        "PassengerFare": [
+          {
+            "PaxType": "ADT",
+            "Quantity": 1,
+            "BaseFare": "174.15",
+            "TaxBreakUp": [
+              {
+                "Amount": "18.04",
+                "TaxCode": "BP"
+              },
+              {
+                "Amount": "14.94",
+                "TaxCode": "LI"
+              },
+              {
+                "Amount": "8.93",
+                "TaxCode": "G3"
+              },
+              {
+                "Amount": "8.93",
+                "TaxCode": "G3"
+              },
+              {
+                "Amount": "8.30",
+                "TaxCode": "I5"
+              },
+              {
+                "Amount": "8.30",
+                "TaxCode": "I5"
+              },
+              {
+                "Amount": "27.26",
+                "TaxCode": "YRF"
+              },
+              {
+                "Amount": "43.51",
+                "TaxCode": "YRF"
+              },
+              {
+                "Amount": "43.51",
+                "TaxCode": "YRF"
+              },
+              {
+                "Amount": "27.26",
+                "TaxCode": "YRF"
+              }
+            ],
+            "TotalFare": "383.13"
+          }
+        ],
+        "FareRef": 2
+      }
+    ],
+    "PricedItineraries": [
+      {
+        "FareSourceCode": "mystifly-fare-1",
+        "ValidatingCarrier": "7C",
+        "OriginDestinations": [
+          {
+            "SegmentRef": 0,
+            "ItineraryRef": 0,
+            "LegIndicator": "0"
+          },
+          {
+            "SegmentRef": 1,
+            "ItineraryRef": 0,
+            "LegIndicator": "1"
+          }
+        ],
+        "FareRef": 0,
+        "PenaltiesInfoRef": 0,
+        "FulfillmentDetailsRef": 0,
+        "Provider": "MYSTIFLY"
+      },
+      {
+        "FareSourceCode": "mystifly-fare-2",
+        "ValidatingCarrier": "H1",
+        "OriginDestinations": [
+          {
+            "SegmentRef": 2,
+            "ItineraryRef": 1,
+            "LegIndicator": "0"
+          },
+          {
+            "SegmentRef": 3,
+            "ItineraryRef": 1,
+            "LegIndicator": "1"
+          }
+        ],
+        "FareRef": 1,
+        "PenaltiesInfoRef": 1,
+        "FulfillmentDetailsRef": 0,
+        "Provider": "MYSTIFLY"
+      },
+      {
+        "FareSourceCode": "mystifly-fare-3",
+        "ValidatingCarrier": "CX",
+        "OriginDestinations": [
+          {
+            "SegmentRef": 4,
+            "ItineraryRef": 2,
+            "LegIndicator": "0"
+          },
+          {
+            "SegmentRef": 5,
+            "ItineraryRef": 2,
+            "LegIndicator": "0"
+          },
+          {
+            "SegmentRef": 6,
+            "ItineraryRef": 3,
+            "LegIndicator": "1"
+          },
+          {
+            "SegmentRef": 7,
+            "ItineraryRef": 3,
+            "LegIndicator": "1"
+          }
+        ],
+        "FareRef": 2,
+        "PenaltiesInfoRef": 2,
+        "FulfillmentDetailsRef": 0,
+        "Provider": "MYSTIFLY"
+      }
+    ],
+    "GroupedItems": []
+  },
+  "Success": true,
+  "Message": "Success"
+}
