@@ -15,12 +15,14 @@
  *    by a company the recipient has never heard of reads as phishing.
  *
  * The send is never allowed to break a booking: callers treat it as fire-and-forget, and this
- * function resolves rather than throws.
+ * function resolves rather than throws. Which service carries it is `mailer.ts`'s business.
  */
 
 import { prisma } from '@/lib/prisma';
 import { fromNoReply } from '@/lib/brand';
 import { config } from '@/config';
+import { mailConfigured, mailTransport, sendMail, type MailAttachment } from '@/lib/email/mailer';
+import { createBookingInvoicePdf, type InvoiceBookingType } from '@/services/invoicePdf.service';
 
 /** Constrained by the `email_logs_email_type_check` constraint on the table. */
 export type EmailType =
@@ -44,6 +46,7 @@ export interface SendEmailParams {
     html:      string;
     emailType: EmailType;
     metadata?: Record<string, unknown>;
+    receipt?: { bookingId: string; type: InvoiceBookingType };
 }
 
 export interface SendEmailResult {
@@ -80,6 +83,7 @@ async function logEmail(p: {
     metadata?:  Record<string, unknown>;
     /** Kept on anything not yet delivered, so the retry job can re-send without re-rendering. */
     htmlBody?:  string;
+    receipt?:   SendEmailParams['receipt'];
 }): Promise<void> {
     await prisma.email_logs.create({
         data: {
@@ -89,7 +93,11 @@ async function logEmail(p: {
             email_type:    p.emailType,
             status:        p.status,
             error_message: p.errorMessage ?? null,
-            metadata:      { ...(p.metadata ?? {}), ...(p.htmlBody ? { htmlBody: p.htmlBody } : {}) } as any,
+            metadata:      {
+                ...(p.metadata ?? {}),
+                ...(p.htmlBody ? { htmlBody: p.htmlBody } : {}),
+                ...(p.receipt ? { receipt: p.receipt } : {}),
+            } as any,
             sent_at:       p.status === 'sent' ? new Date() : null,
         },
     }).catch((err: any) => {
@@ -114,39 +122,54 @@ export async function sendTransactionalEmail(p: SendEmailParams): Promise<SendEm
     }
 
     // A mock supplier makes reservations that do not exist, so the mail about them must not
-    // reach a real inbox. Logged, not queued: nothing is owed to anyone.
-    const transport = config.EMAIL_TRANSPORT ?? (config.HOTEL_PROVIDER === 'mock' ? 'log' : 'resend');
+    // reach a real inbox. Logged, not queued: nothing is owed to anyone. Only booking mail takes
+    // this default — a password reset on a mock host is still a real person's password.
+    const transport = config.EMAIL_TRANSPORT ?? (config.HOTEL_PROVIDER === 'mock' ? 'log' : mailTransport());
     if (transport === 'log') {
         console.info(`[email] transport=log — not sending ${p.emailType} to ${p.to}: ${p.subject}`);
         return { success: true };
     }
 
-    // Queued rather than dropped: an unconfigured key is a deployment problem, and the mail is
+    // Queued rather than dropped: unconfigured mail is a deployment problem, and the mail is
     // still owed to the customer once it is fixed.
-    if (!config.RESEND_API_KEY) {
-        await logEmail({ ...p, recipient: p.to, status: 'queued', htmlBody: p.html, errorMessage: 'RESEND_API_KEY not configured' });
+    if (!mailConfigured(transport)) {
+        await logEmail({ ...p, recipient: p.to, status: 'queued', htmlBody: p.html, errorMessage: `${transport} is not configured` });
         return { success: false, error: 'Email service is not configured' };
     }
 
-    try {
-        const res = await fetch('https://api.resend.com/emails', {
-            method:  'POST',
-            headers: { Authorization: `Bearer ${config.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ from: fromNoReply(), to: [p.to], subject: p.subject, html: p.html }),
-        });
-
-        if (res.ok) {
-            await logEmail({ ...p, recipient: p.to, status: 'sent' });
-            return { success: true };
+    const attachments: MailAttachment[] = [];
+    if (p.receipt) {
+        try {
+            const pdf = await createBookingInvoicePdf(p.receipt.bookingId, p.receipt.type);
+            if (!pdf) throw new Error(`Receipt booking ${p.receipt.bookingId} was not found`);
+            attachments.push({ filename: pdf.filename, content: pdf.buffer.toString('base64') });
+        } catch (err) {
+            const error = `Receipt PDF generation failed: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`;
+            await logEmail({
+                ...p,
+                recipient: p.to,
+                status: 'failed',
+                htmlBody: p.html,
+                errorMessage: error,
+            });
+            console.error(`[email] Could not generate receipt for ${p.bookingId ?? 'unlinked email'}:`, error);
+            return { success: false, error };
         }
-
-        const errText = await res.text().catch(() => '');
-        console.error(`[email] Resend rejected ${p.emailType} (${res.status}):`, errText.slice(0, 300));
-        await logEmail({ ...p, recipient: p.to, status: 'failed', errorMessage: `${res.status}: ${errText.slice(0, 200)}`, htmlBody: p.html });
-        return { success: false, error: `Resend returned ${res.status}` };
-    } catch (err: any) {
-        console.error(`[email] Send threw for ${p.emailType}:`, err?.message);
-        await logEmail({ ...p, recipient: p.to, status: 'failed', errorMessage: String(err?.message ?? err).slice(0, 200), htmlBody: p.html });
-        return { success: false, error: String(err?.message ?? err) };
     }
+
+    const sent = await sendMail({
+        from: fromNoReply(),
+        to: p.to,
+        subject: p.subject,
+        html: p.html,
+        ...(attachments.length ? { attachments } : {}),
+    });
+    if (sent.ok) {
+        await logEmail({ ...p, recipient: p.to, status: 'sent' });
+        return { success: true };
+    }
+
+    console.error(`[email] ${transport} could not send ${p.emailType}:`, sent.error);
+    await logEmail({ ...p, recipient: p.to, status: 'failed', errorMessage: sent.error.slice(0, 200), htmlBody: p.html });
+    return { success: false, error: sent.error };
 }

@@ -1,0 +1,54 @@
+{
+ "steps": {
+  "authorise": {
+   "status": "requires_capture"
+  },
+  "sweep": {
+   "status": 200
+  },
+  "lateConfirm": {
+   "status": 410,
+   "error": "BOOKING_EXPIRED",
+   "message": "This booking could not be completed. Your card has not been charged."
+  }
+ },
+ "expect": "sweeper expires then voids; a late confirm is refused (410); nothing ordered",
+ "held": {
+  "amount": 242.27,
+  "currency": "USD",
+  "fare": 221.89,
+  "fee": 20.38
+ },
+ "st": {
+  "stripe": {
+   "status": "canceled",
+   "amount": 24227,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 0,
+   "refunded": 24227
+  },
+  "session": {
+   "lifecycle": "EXPIRED",
+   "status": "expired",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_AUTHORIZED→EXPIRED [sweeper] authorised and never completed (ABANDONED)"
+  ],
+  "sale": null,
+  "supplierAttempts": [],
+  "duffelOrder": null
+ },
+ "v": {
+  "pass": true,
+  "taken": 0,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": []
+ },
+ "orders": [],
+ "case": "abandonedAuthorised",
+ "seconds": 8
+}

@@ -1107,6 +1107,31 @@ describe('the traveller\'s refund, from a booking as the sale writes it', () => 
         expect(quote).toMatchObject({ success: true, refundAmount: 3567, refundCurrency: 'PHP' });
     });
 
+    it('quotes the penalty the airline keeps, in the card\'s currency, so a partial refund is never shown as full', async () => {
+        // The quote used to answer penaltyAmount 0 whatever the airline kept, and the app reads
+        // "penalty 0 and a refund" as a full refund: a traveller was shown a green "Full refund"
+        // beside half their money (sandbox run 2026-11-11, BUG-3).
+        (service as any).repo.getFlightBookingById.mockResolvedValue(pesoBooking);
+        vi.mocked(getDuffelOrder).mockResolvedValue({ id: ORDER_ID, cancelled_at: null, available_actions: ['cancel'] } as any);
+        vi.mocked(createDuffelCancellationQuote).mockResolvedValue({ id: 'ore_q', refund_amount: '60.00', refund_currency: 'USD' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue(pesoPayment as any);
+
+        const quote = await service.cancelQuote(BOOKING_ID, USER_ID);
+
+        expect(quote).toMatchObject({ refundAmount: 3567, penaltyAmount: 2378, refundCurrency: 'PHP' });
+    });
+
+    it('quotes no penalty when the airline refunds everything', async () => {
+        (service as any).repo.getFlightBookingById.mockResolvedValue(pesoBooking);
+        vi.mocked(getDuffelOrder).mockResolvedValue({ id: ORDER_ID, cancelled_at: null, available_actions: ['cancel'] } as any);
+        vi.mocked(createDuffelCancellationQuote).mockResolvedValue({ id: 'ore_q', refund_amount: '100.00', refund_currency: 'USD' } as any);
+        vi.mocked(stripe.paymentIntents.retrieve).mockResolvedValue(pesoPayment as any);
+
+        const quote = await service.cancelQuote(BOOKING_ID, USER_ID);
+
+        expect(quote).toMatchObject({ refundAmount: 5945, penaltyAmount: 0 });
+    });
+
     it('refunds a peso traveller who cancels from the page the share the airline refunded', async () => {
         (service as any).repo.getFlightBookingById.mockResolvedValue(pesoBooking);
         vi.mocked(getDuffelOrder).mockResolvedValue({ id: ORDER_ID, cancelled_at: null, available_actions: ['cancel'] } as any);

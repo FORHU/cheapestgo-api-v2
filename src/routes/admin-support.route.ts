@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '@/middleware/auth.middleware';
+import { requireAuth, withCurrentRole } from '@/middleware/auth.middleware';
 import { SupportService, type SupportActor } from '@/services/support.service';
 import { AppError } from '@/middleware/error.middleware';
 import { openEventStream } from '@/lib/support/stream';
@@ -25,7 +25,9 @@ import { getSupportHours, saveSupportHours } from '@/lib/support/availability';
 const router: Router = Router();
 const svc = new SupportService();
 
-router.use(requireAuth);
+// The role is read from the database for every request here: the service decides what an actor
+// may do by `actor.role`, and a token's copy of it outlives a demotion by up to a day.
+router.use(requireAuth, withCurrentRole);
 
 const actorOf = (req: Request): SupportActor => ({ id: req.user!.sub, role: req.user!.role });
 

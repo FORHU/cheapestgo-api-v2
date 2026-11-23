@@ -1,0 +1,85 @@
+{
+ "steps": {
+  "authorise": {
+   "status": "requires_capture"
+  },
+  "confirmA": {
+   "status": 200,
+   "pnr": "TINQ75",
+   "bookingStatus": "ticketed"
+  },
+  "confirmB": {
+   "status": 200,
+   "pnr": "TINQ75",
+   "bookingStatus": "ticketed"
+  },
+  "webhook": {
+   "status": 200,
+   "body": "{\"received\":true}"
+  }
+ },
+ "expect": "exactly one Duffel order; captured once; sale written once",
+ "held": {
+  "amount": 251.21,
+  "currency": "USD",
+  "fare": 230.23,
+  "fee": 20.98
+ },
+ "st": {
+  "stripe": {
+   "status": "succeeded",
+   "amount": 25121,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 25121,
+   "refunded": 0
+  },
+  "session": {
+   "lifecycle": "CONFIRMED",
+   "status": "completed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [browser] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [browser] claimed for the airline order",
+   "SUPPLIER_BOOKING→CONFIRMED [browser] airline ordered and payment captured"
+  ],
+  "sale": {
+   "id": "6ff57cc1-8ad0-422b-bb64-f68b23bf69cb",
+   "status": "ticketed",
+   "pnr": "TINQ75",
+   "provider_order_id": "ord_0000BCKeK10OGjQln37lVq",
+   "total_price": "251.21",
+   "charged_price": "251.21",
+   "currency": "USD",
+   "supplier_cost": "230.23"
+  },
+  "supplierAttempts": [],
+  "duffelOrder": {
+   "id": "ord_0000BCKeK10OGjQln37lVq",
+   "booking_reference": "TINQ75",
+   "cancelled_at": null,
+   "documents": 1,
+   "total": "230.23",
+   "currency": "USD"
+  }
+ },
+ "v": {
+  "pass": true,
+  "taken": 25121,
+  "saleLive": true,
+  "orderLive": true,
+  "notes": []
+ },
+ "orders": [
+  {
+   "id": "ord_0000BCKeK10OGjQln37lVq",
+   "created_at": "2026-11-11T07:44:18.660013Z",
+   "cancelled_at": null,
+   "documents": 1
+  }
+ ],
+ "case": "race",
+ "seconds": 10
+}

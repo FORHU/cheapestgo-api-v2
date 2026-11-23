@@ -1,0 +1,53 @@
+{
+ "steps": {
+  "authorise": {
+   "status": "requires_capture"
+  },
+  "confirm": {
+   "status": 410,
+   "error": "OFFER_EXPIRED",
+   "message": "This fare is no longer available. Your card has not been charged. Please search again for current prices."
+  }
+ },
+ "expect": "confirm 410 OFFER_EXPIRED; hold voided (canceled); nothing ordered",
+ "held": {
+  "amount": 239.99,
+  "currency": "USD",
+  "fare": 219.77,
+  "fee": 20.22
+ },
+ "st": {
+  "stripe": {
+   "status": "canceled",
+   "amount": 23999,
+   "currency": "usd",
+   "capturable": 0,
+   "received": 0,
+   "refunded": 23999
+  },
+  "session": {
+   "lifecycle": "FAILED",
+   "status": "failed",
+   "capture": "manual"
+  },
+  "events": [
+   "∅→PAYMENT_PENDING [browser] payment created",
+   "PAYMENT_PENDING→PAYMENT_AUTHORIZED [browser] authorisation verified with Stripe",
+   "PAYMENT_AUTHORIZED→SUPPLIER_BOOKING [browser] claimed for the airline order",
+   "SUPPLIER_BOOKING→FAILED [browser] not ordered: OFFER_EXPIRED (OFFER_EXPIRED)"
+  ],
+  "sale": null,
+  "supplierAttempts": [],
+  "duffelOrder": null
+ },
+ "v": {
+  "pass": true,
+  "taken": 0,
+  "saleLive": false,
+  "orderLive": false,
+  "notes": []
+ },
+ "orders": [],
+ "case": "offerGoneAfterPayment",
+ "seconds": 8
+}

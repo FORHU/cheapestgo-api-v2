@@ -13,10 +13,6 @@ vi.mock('@/config', () => ({
     config: { GOOGLE_NATIVE_CLIENT_IDS: 'ours.apps.googleusercontent.com,ios.apps.googleusercontent.com' },
 }));
 
-// Imported at the top of the file: `vi.mock` is hoisted above imports, so the mock is in
-// place before the module resolves. This was a top-level `await import`, which the project's
-// tsconfig does not permit — so the file never compiled under `tsc`.
-
 /** A token info body as Google's `tokeninfo` returns it. */
 function info(over: Record<string, unknown> = {}) {
     return {

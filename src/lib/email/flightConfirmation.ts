@@ -60,6 +60,7 @@ export async function sendFlightConfirmationEmail(bookingId: string): Promise<Se
         to:        email,
         subject:   awaitingTicket ? `Flight booked — ${booking.pnr}` : `Flight ticketed — ${booking.pnr}`,
         emailType: awaitingTicket ? 'awaiting_ticket' : 'ticketed',
+        receipt: { bookingId, type: 'flight' },
         html: buildFlightConfirmationHtml({
             bookingId,
             pnr:           booking.pnr,
