@@ -115,6 +115,18 @@ export interface FlightQuote {
     total: number;
 }
 
+/**
+ * A search result's fare converted into the currency the client asked for, for display only.
+ * `price` stays in the airline's currency: booking and revalidation compare against that.
+ */
+export interface FlightDisplayPrice {
+    currency: string;
+    total: number;
+    pricePerAdult: number;
+    /** Where the rate came from, so a client can tell a fresh rate from a cached one. */
+    rateSource: string;
+}
+
 export interface FlightOffer {
     offerId: string;
     provider: string;
@@ -150,6 +162,8 @@ export interface FlightOffer {
     alternatives?: FlightOffer[];
     /** Only on the single-offer read; search results carry the airline's raw fare. */
     quote?: FlightQuote;
+    /** Only on a search that asked for a `currency`, and only when a fresh rate was available. */
+    displayPrice?: FlightDisplayPrice;
 }
 
 // ─── Request shapes ───────────────────────────────────────────────────────────

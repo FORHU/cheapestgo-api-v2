@@ -24,6 +24,8 @@ const searchSchema = z.object({
     tripType:      z.enum(['one-way', 'round-trip', 'multi-city']).optional().default('one-way'),
     segments:      z.array(z.any()).optional(),
     filters:       z.record(z.any()).optional(),
+    /** Prices each result in this currency as well, in `displayPrice`. */
+    currency:      displayCurrency,
 });
 
 export class FlightsController {
@@ -31,8 +33,8 @@ export class FlightsController {
     search = async (req: Request, res: Response, next: NextFunction) => {
         try {
             const body = searchSchema.parse(req.body);
-            const { filters, ...params } = body;
-            const result = await svc.search(params as any, filters as any);
+            const { filters, currency, ...params } = body;
+            const result = await svc.search(params as any, filters as any, currency);
             res.json(result);
         } catch (err) { next(err); }
     };

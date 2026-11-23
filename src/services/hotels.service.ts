@@ -1024,7 +1024,14 @@ export class HotelsService {
             // releases the payment hold and records the attempt failed, rather than leaving it
             // pending as an outcome nobody is sure of. Unset books normally, so production is
             // untouched unless somebody sets this.
-            if (process.env.HOTEL_BOOKING_ENABLED === 'false') {
+            // Not when the supplier is the mock. This lever exists to stop a *real* reservation,
+            // and the mock cannot make one — it never reaches a supplier by any route, which is
+            // the stronger of the two levers deploy-dev describes. The dev host carried both:
+            // `HOTEL_BOOKING_ENABLED=false` from 2026-11-04 and `HOTEL_PROVIDER=mock` from
+            // 2026-11-10, the older one never removed once the better one arrived. The result
+            // was an environment that could search but never book, so the one flow worth
+            // rehearsing end to end — pay, confirm, cancel — could not be rehearsed at all.
+            if (process.env.HOTEL_BOOKING_ENABLED === 'false' && this.provider.id !== 'mock') {
                 throw new HotelProviderError(
                     'REJECTED',
                     'Hotel booking is switched off in this environment.',

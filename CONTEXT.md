@@ -107,3 +107,23 @@ told, never of what happened.
 _Avoid_: labelling a hotel fact *re-verified*. TravelgateX exposes no booking-read — search,
 quote, book and cancel only — so a hotel booking cannot be re-read at export. Flights can, through
 Duffel's order endpoint, and the asymmetry belongs on the document.
+
+## Cached Search
+A hotel search answered from a stored copy of an earlier identical search rather than from the
+supplier. Identical means the whole question: where, when, who, in what currency, and how the
+answer is to be cut — two travellers asking about different boroughs of one city are not asking
+the same thing, and must not be served each other's answer.
+A Cached Search is still a real answer, not a lesser one: it is what the supplier said, within
+the freshness window. What it is not is a **Prebook** — no price here is committed, and the one
+that is committed is always fetched live.
+_Avoid_: calling an **Offer** inside a Cached Search stale. It is as true as it was when the
+supplier said it; whether it is still buyable is a question only Prebook answers.
+
+## Freshness Window
+How old a **Cached Search** may be before the supplier is asked again. One number, held by the
+server, so every client inherits the same answer rather than each deciding for itself.
+It is a statement about prices, not about speed. Lengthening it trades a traveller's chance of
+meeting a changed price at checkout for fewer supplier calls, and that trade belongs in one
+place where it can be seen.
+_Avoid_: a second freshness rule in a client. A client may decide when to *re-ask*; it may not
+decide how old an answer is allowed to be.

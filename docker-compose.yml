@@ -8,9 +8,21 @@ services:
     environment:
       NODE_ENV: production
       PORT: 4000
+      # Required, because NODE_ENV above is `production` while a local stack runs the mock hotel
+      # provider: config.ts refuses that pairing outright, since in a real production it would
+      # charge real cards for reservations that do not exist. Without this the API exits at boot
+      # and Docker restarts it forever — a crash loop that reads, from the outside, as the API
+      # returning 500 on everything. deploy-dev.yml sets the same pair for the same reason.
+      ALLOW_MOCK_HOTEL_PROVIDER: "true"
       # Override .env so the API container reaches postgres/redis via Docker network names
       # rather than localhost (which resolves to the container itself inside Docker).
-      DATABASE_URL: postgresql://cheapestgo:cheapestgo@postgres:5432/cheapestgo
+      # Built from the same variables the postgres service is created with, rather than written
+      # out again. They had drifted apart: this line was right — role and database are both
+      # `cheapestgo`, which is what the volumes actually hold — while POSTGRES_* below claimed
+      # admin/admin123/cheapestgo_v2, a role that does not exist. Nothing caught it because
+      # POSTGRES_* is ignored once a volume exists, and `pg_isready` returns 0 for an unknown
+      # role, so the healthcheck reported healthy either way.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cheapestgo}:${POSTGRES_PASSWORD:-cheapestgo}@postgres:5432/${POSTGRES_DB:-cheapestgo}
       REDIS_URL: redis://redis:6379
     depends_on:
       postgres:
@@ -24,17 +36,22 @@ services:
     # Must stay in sync with DATABASE_URL in .env. These only take effect when the
     # data volume is empty — Postgres ignores them if the data directory already exists.
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-admin}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin123}
-      POSTGRES_DB: ${POSTGRES_DB:-cheapestgo_v2}
+      POSTGRES_USER: ${POSTGRES_USER:-cheapestgo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cheapestgo}
+      POSTGRES_DB: ${POSTGRES_DB:-cheapestgo}
     ports:
       # Use 127.0.0.1 (not "localhost") in DATABASE_URL:
       # Prisma resolves localhost to ::1 first and fails to connect.
       - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # The schema. db/migrations has no beginning — its earliest entry is 2026-09-07 and they
+      # all assume tables inherited from v1 — so an empty Postgres stays empty and the first
+      # thing that fails is sign-up, with `users` missing. Postgres runs this once, when the
+      # data volume is new, which is the same condition the POSTGRES_* values above apply on.
+      - ./db/baseline.sql:/docker-entrypoint-initdb.d/01-baseline.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin} -d ${POSTGRES_DB:-cheapestgo_v2}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cheapestgo} -d ${POSTGRES_DB:-cheapestgo}"]
       interval: 5s
       timeout: 5s
       retries: 5

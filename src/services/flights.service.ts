@@ -31,6 +31,8 @@ import {
 import { fromStripeAmount, FLIGHT_MARKUP_SPEC, getFlightPriceTolerance } from '@/lib/pricing';
 import { orderPhoneNumber } from '@/lib/flights/orderPassengers';
 import { priceFlightCharge } from '@/lib/flights/flightCharge';
+import { needsRates, withDisplayPrices } from '@/lib/flights/displayPrice';
+import { ExchangeRatesService, type RatesResult } from '@/services/exchange-rates.service';
 import { awaitBookingRow } from '@/lib/flights/awaitBookingRow';
 import { FlightBookingLifecycleService, type PaidAttempt } from '@/services/flightBookingLifecycle.service';
 import { completeDuffelBooking } from '@/services/flightBookingCompletion';
@@ -92,17 +94,29 @@ export class FlightsService {
 
     // ── Search ────────────────────────────────────────────────────────────────
 
-    async search(params: FlightSearchParams, filters?: ServerFilters): Promise<{
+    async search(
+        params: FlightSearchParams,
+        filters?: ServerFilters,
+        /** Adds a `displayPrice` in this currency to each offer; `price` is left as the airline's. */
+        displayCurrency?: string,
+        rates: () => Promise<RatesResult | null> = () => new ExchangeRatesService().getLiveRates(),
+    ): Promise<{
         offers: FlightOffer[];
         totalResults: number;
         allCount: number;
         searchTimestamp: string;
         failedProviders: string[];
         providersFailed: boolean;
+        displayCurrency?: string;
     }> {
         const { offers: allOffers, failedProviders } = await searchFlightsWithStatus(params);
-        const offers = applyServerFilters(allOffers, filters);
+        let offers = applyServerFilters(allOffers, filters);
+        if (displayCurrency && offers.length > 0) {
+            const fx = needsRates(offers, displayCurrency) ? await rates() : null;
+            offers = withDisplayPrices(offers, displayCurrency, fx);
+        }
         return {
+            ...(displayCurrency ? { displayCurrency } : {}),
             offers,
             totalResults: offers.length,
             allCount: allOffers.length,

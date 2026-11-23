@@ -639,10 +639,19 @@ describe('a card that was not authorised', () => {
  * `UNAVAILABLE` here would read as "we are unsure", which leaves the traveller's money held.
  */
 describe('the booking kill switch', () => {
-    afterEach(() => { vi.unstubAllEnvs(); });
+    afterEach(() => {
+        vi.unstubAllEnvs();
+        // Put the supplier's name back, whatever a test called it.
+        Object.defineProperty(mock, 'id', { value: 'mock', configurable: true });
+    });
+
+    /** Makes the mock answer to a real supplier's name, so the guard sees one. */
+    const asRealSupplier = () =>
+        Object.defineProperty(mock, 'id', { value: 'travelgatex', configurable: true });
 
     it('refuses before the supplier is asked, and releases the hold', async () => {
         const prebookId = await quote();
+        asRealSupplier();
         vi.stubEnv('HOTEL_BOOKING_ENABLED', 'false');
 
         const out: any = await service.confirmBooking(params(prebookId));
@@ -652,6 +661,26 @@ describe('the booking kill switch', () => {
         expect(stripe.paymentIntents.cancel).toHaveBeenCalledWith(PI);
         expect(stripe.paymentIntents.capture).not.toHaveBeenCalled();
         expect(repo.status(REF)).toBe('FAILED');
+    });
+
+    /**
+     * The switch guards against a *real* reservation. The mock cannot make one — it reaches no
+     * supplier by any route — so refusing there protected nothing and cost the only rehearsal
+     * that matters: pay, confirm, cancel, end to end.
+     *
+     * The dev host carried both levers at once, the switch from 2026-11-04 and
+     * `HOTEL_PROVIDER=mock` from 2026-11-10, the older never removed once the better arrived.
+     * deploy-dev describes them as alternatives; this is what makes them behave as alternatives.
+     */
+    it('books anyway when the supplier is the mock, because there is no real room to protect', async () => {
+        const prebookId = await quote();
+        vi.stubEnv('HOTEL_BOOKING_ENABLED', 'false');
+
+        const out: any = await service.confirmBooking(params(prebookId));
+
+        expect(out.success).toBe(true);
+        expect(bookCalls()).toBe(1);
+        expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
     });
 
     it('books normally when it is unset, so production is untouched', async () => {

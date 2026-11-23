@@ -15,7 +15,7 @@ vi.mock('@/services/exchange-rates.service', () => ({
 }));
 vi.mock('@/middleware/error.middleware', () => ({
     AppError: class AppError extends Error {
-        constructor(public status: number, message: string, public code: string, public details?: Record<string, unknown>) { super(message); }
+        constructor(public statusCode: number, message: string, public code: string, public details?: Record<string, unknown>) { super(message); }
     },
 }));
 
@@ -82,7 +82,7 @@ describe('priceFlightCharge', () => {
         rates.getLiveRates.mockResolvedValue(null);
 
         await expect(priceFlightCharge(offer('100.00', 'USD'), { displayCurrency: 'PHP' }))
-            .rejects.toMatchObject({ status: 503, code: 'FX_UNAVAILABLE' });
+            .rejects.toMatchObject({ statusCode: 503, code: 'FX_UNAVAILABLE' });
     });
 
     it('never lets the fare and the fee disagree with the total, to the cent', async () => {

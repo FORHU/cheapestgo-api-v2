@@ -16,7 +16,7 @@ import { stripe } from '@/lib/stripe';
 
 export type StripeAccountCheck =
     | { ok: true;  account: string }
-    | { ok: false; reason: string; account?: string };
+    | { ok: false; reason: string; account?: string; kind: 'auth' | 'unavailable' };
 
 /**
  * Compares the key's own account against `STRIPE_EXPECTED_ACCOUNT`.
@@ -33,11 +33,20 @@ export async function assertStripeAccount(): Promise<StripeAccountCheck> {
         // retrieving a *connected* account by id, so the no-id form needs the cast.
         account = (await stripe.accounts.retrieve(undefined as unknown as string)).id;
     } catch (err: any) {
-        return { ok: false, reason: `Could not resolve Stripe account: ${err?.message ?? 'unknown error'}` };
+        // Stripe distinguishes "your key is wrong" from "I could not be reached", and so must we:
+        // the first is a configuration error that is never going to fix itself, the second is a bad
+        // minute. `type` is the SDK's own classification; anything else is treated as an outage,
+        // which is the forgiving side to be wrong on.
+        const type = err?.type ?? '';
+        const kind: 'auth' | 'unavailable' =
+            type === 'StripeAuthenticationError' || type === 'StripePermissionError' ? 'auth' : 'unavailable';
+        return { ok: false, kind, reason: `Could not resolve Stripe account: ${err?.message ?? 'unknown error'}` };
     }
     if (expected && account !== expected) {
         return {
             ok: false,
+            // A mismatch is the other half of 'auth': the key is real, it is simply the wrong one.
+            kind: 'auth',
             account,
             reason: `Stripe account mismatch — key belongs to ${account}, expected ${expected}. `
                   + 'Refusing: the Stripe key and the database are different environments.',
@@ -85,6 +94,17 @@ export async function assertStripeAccountAtBoot(log: {
         log.error(`[stripe] REFUSING TO START — ${result.reason}`);
         return false;
     }
+    // A key Stripe actively rejects is the same class of fault as a mismatch — it will serve every
+    // request wrongly until someone changes it, and it cannot resolve on its own. On 2026-11-19 the
+    // account id was pasted into STRIPE_SECRET_KEY, this line logged a warning, and production v2
+    // served traffic with booking enabled and no usable key. Fail closed.
+    if (result.kind === 'auth') {
+        log.error(`[stripe] REFUSING TO START — ${result.reason}`);
+        return false;
+    }
+
+    // Everything else is Stripe being unreachable. Still open: taking the fleet down over a
+    // supplier's bad minute is the worse failure, and it resolves without anyone doing anything.
     log.warn(`[stripe] could not verify the account, continuing anyway — ${result.reason}`);
     return true;
 }

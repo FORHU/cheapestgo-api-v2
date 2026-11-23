@@ -30,6 +30,8 @@ const schema = z.object({
     CRON_SECRET: z.string().optional(),
     FUNCTIONS_SECRET: z.string().optional(),
     ANTHROPIC_API_KEY: z.string().optional(),
+    // Base URL of the forhu.ai chat service the AI chat (/api/v2/chat) calls.
+    FORHU_CHAT_URL: z.string().url().default('https://chat-dev.forhu.ai'),
     CHAT_WONDER_API_URL: z.string().default('https://chat-dev.forhu.ai'),
     CHAT_WONDER_API_KEY: z.string().optional(),
     CHAT_WONDER_MODEL: z.string().default('gpt-4o-mini'),
