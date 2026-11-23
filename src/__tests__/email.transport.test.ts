@@ -8,7 +8,10 @@ const cfg = vi.hoisted(() => ({
     SMTP_HOST: 'smtp.example.com' as string | undefined,
 }));
 vi.mock('@/config', () => ({ config: cfg }));
-vi.mock('@/lib/brand', () => ({ fromNoReply: () => 'CheapestGo <no-reply@cheapestgo.com>' }));
+vi.mock('@/lib/brand', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/lib/brand')>()),
+    fromNoReply: () => 'CheapestGo <no-reply@cheapestgo.com>',
+}));
 vi.mock('@/lib/prisma', () => ({
     prisma: { email_logs: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) } },
 }));
