@@ -128,4 +128,53 @@ describe('orderRoomPhotosByDistinctiveness', () => {
         const one = [{ roomPhotos: ['a', 'b'] }];
         expect(orderRoomPhotosByDistinctiveness(one)).toBe(one);
     });
+
+    /**
+     * The case a guest actually meets. A supplier sells one physical room under several
+     * bed-type names and every one matches a single ETG group, so their galleries are not
+     * merely overlapping — they are the same list. There is nothing unique to promote, and
+     * before this each card opened on the same picture: Lucky Chinatown Binondo showed two
+     * "Standard Twin room" cards both leading with the same lobby shot.
+     */
+    it('rooms that share one whole gallery open on different pictures', () => {
+        const gallery = ['lobby', 'twin', 'bath'];
+        const out = orderRoomPhotosByDistinctiveness([
+            { name: 'Standard Twin room (twin beds)', roomPhotos: [...gallery] },
+            { name: 'Standard Twin room (twin beds) (bed type is subject to availability)', roomPhotos: [...gallery] },
+            { name: 'Standard Twin room (twin beds) (queen size bed)', roomPhotos: [...gallery] },
+        ]);
+
+        expect(out.map(r => r.roomPhotos![0])).toEqual(['lobby', 'twin', 'bath']);
+        // Nothing is hidden: each card still carries the whole gallery.
+        for (const room of out) {
+            expect([...room.roomPhotos!].sort()).toEqual([...gallery].sort());
+        }
+    });
+
+    it('wraps round when there are more rooms than pictures', () => {
+        const out = orderRoomPhotosByDistinctiveness([
+            { roomPhotos: ['a', 'b'] },
+            { roomPhotos: ['a', 'b'] },
+            { roomPhotos: ['a', 'b'] },
+        ]);
+        expect(out.map(r => r.roomPhotos![0])).toEqual(['a', 'b', 'a']);
+    });
+
+    it('leaves a one-picture gallery alone however many rooms share it', () => {
+        const out = orderRoomPhotosByDistinctiveness([
+            { roomPhotos: ['only'] },
+            { roomPhotos: ['only'] },
+        ]);
+        expect(out.map(r => r.roomPhotos)).toEqual([['only'], ['only']]);
+    });
+
+    /** Rotation must not undo the promotion: partly-shared galleries still lead unique. */
+    it('still leads with what is unique when the galleries differ', () => {
+        const out = orderRoomPhotosByDistinctiveness([
+            { roomPhotos: ['s1', 'dlx', 's2'] },
+            { roomPhotos: ['s1', 'prm', 's2'] },
+        ]);
+        expect(out[0].roomPhotos![0]).toBe('dlx');
+        expect(out[1].roomPhotos![0]).toBe('prm');
+    });
 });
