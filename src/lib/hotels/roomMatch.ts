@@ -60,8 +60,19 @@ const imgCount = (g: MatchableGroup) => g.images?.length ?? 0;
  * when every step upstream did its job.
  *
  * The shared photos are genuine pictures of both rooms, so they are kept; they
- * just should not lead. Ordering is stable within each part, so a room whose
- * photos are entirely shared is left exactly as it was.
+ * just should not lead.
+ *
+ * Where two rooms share *every* photo there is nothing unique to promote, and
+ * this used to leave both exactly as they were — which is the case a guest
+ * actually meets. A supplier sells one physical room under several bed-type
+ * names, every one of them matching a single ETG group: Lucky Chinatown Binondo
+ * lists "Standard Twin room (twin beds)" and "Standard Twin room (twin beds)
+ * (bed type is subject to availability)" as separate rooms with one gallery
+ * between them, and both cards led with the same lobby shot. So a gallery
+ * already claimed by an earlier room is rotated: the second room to carry it
+ * starts on its second picture, the third on its third. Nothing is hidden and no
+ * room is given a photo of another room — the same gallery is simply entered at
+ * a different point, so the cards no longer read as duplicates of each other.
  *
  * Only meaningful across a whole page, which is why this takes every room rather
  * than being a property of one.
@@ -76,16 +87,34 @@ export function orderRoomPhotosByDistinctiveness<T extends { roomPhotos?: string
         }
     }
 
+    // How many rooms have already led with a given gallery, so that rooms sharing one
+    // enter it at different points instead of all opening on the same picture.
+    const claimed = new Map<string, number>();
+
     return rooms.map(room => {
         const photos = room.roomPhotos;
         if (!photos?.length) return room;
 
         const unique = photos.filter(url => (usage.get(url) ?? 0) === 1);
-        // Nothing to promote, or nothing but unique photos: leave supplier order alone.
-        if (!unique.length || unique.length === photos.length) return room;
-
         const shared = photos.filter(url => (usage.get(url) ?? 0) > 1);
-        return { ...room, roomPhotos: [...unique, ...shared] };
+
+        // Nothing to promote, or nothing but unique photos: the supplier's order stands.
+        const ordered = !unique.length || unique.length === photos.length
+            ? photos
+            : [...unique, ...shared];
+
+        const key = ordered.join('\u0000');
+        const before = claimed.get(key) ?? 0;
+        claimed.set(key, before + 1);
+
+        // The first room to carry a gallery keeps it as it is; each one after it starts a
+        // picture further along, wrapping round. A single-photo gallery has nowhere to go.
+        if (before === 0 || ordered.length < 2) {
+            return ordered === photos ? room : { ...room, roomPhotos: ordered };
+        }
+
+        const from = before % ordered.length;
+        return { ...room, roomPhotos: [...ordered.slice(from), ...ordered.slice(0, from)] };
     });
 }
 

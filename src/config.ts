@@ -111,11 +111,17 @@ if (
  * Checked here rather than at book time because a process that cannot reach the supplier cannot
  * book by any route — a stray script, a replayed webhook, a confirm replayed by hand.
  *
- * Scope is the developer's machine, which is where it happened and the only place that both runs
- * `NODE_ENV=development` and holds supplier credentials. It is deliberately NOT a general
+ * Scope is the developer's machine, which is where it happened. It is deliberately NOT a general
  * environment check: the deploy workflow writes `NODE_ENV=production` into the dev container too
- * (deploy-dev.yml), so that variable cannot tell the dev host from production. The dev host is
- * covered instead by never being given TRAVELGATEX_* at all — see the same workflow.
+ * (deploy-dev.yml), so that variable cannot tell the dev host from production.
+ *
+ * **The dev host is therefore not covered by this guard at all.** An earlier version of this
+ * comment claimed it was — that the workflow never publishes `TRAVELGATEX_*` there. It does, and
+ * says so under a comment of its own, because hotel search has to work for that environment to be
+ * worth looking at. So the dev host runs the live supplier with this check passing cleanly. What
+ * stops it booking is one of the two levers ADR-0002 names, set on the `staging` GitHub
+ * environment: `HOTEL_PROVIDER=mock`, or `HOTEL_BOOKING_ENABLED=false` at the `provider.book`
+ * call site. Anyone reading this to decide whether dev is safe must go and check which is set.
  *
  * `test` is exempt: vitest sets it, the suite stubs the provider, and a CI box has no
  * credentials for the refusal to protect.
