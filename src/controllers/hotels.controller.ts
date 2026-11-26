@@ -105,7 +105,10 @@ export class HotelsController {
     search = async (req: Request, res: Response, next: NextFunction) => {
         try {
             const body = z.object({
-                destination:  z.string(),
+                // Empty when the search is anchored on something other than a place name — a
+                // country, a property, a map viewport. The anchors are checked below rather
+                // than here, because "one of these four" is not a shape zod states well.
+                destination:  z.string().default(''),
                 checkIn:      z.string(),
                 checkOut:     z.string(),
                 adults:       z.coerce.number().int().min(1).default(1),
@@ -117,7 +120,26 @@ export class HotelsController {
                 currency:     z.string().optional(),
                 occupancies:  z.array(z.any()).optional(),
                 filters:      z.record(z.any()).optional(),
+                /** One named property, from the picker's hotel suggestions. */
+                hotelCode:    z.string().optional(),
+                /** A map viewport, or the boundaries of a picked area. */
+                bbox:         z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(),
+                rung:         z.string().optional(),
+                areaRung:     z.string().optional(),
             }).parse(req.body);
+
+            // A search has to say where. Said here, as a 400 naming the problem, because the
+            // alternative was what shipped: the empty string travelled all the way to the
+            // supplier as a destination and came back as INTERNAL_ERROR, which told whoever
+            // read it that our server was broken rather than that their request was.
+            if (!body.destination && !body.countryCode && !body.hotelCode
+                && !(body.lat && body.lng) && !body.bbox) {
+                throw new AppError(
+                    400,
+                    'Name a place, a country, a property, a map area or a point to search around.',
+                    'VALIDATION_ERROR',
+                );
+            }
             if (HotelsController.isReversedStay(body.checkIn, body.checkOut)) {
                 throw new AppError(400, 'Check-out must be after check-in.', 'VALIDATION_ERROR');
             }
@@ -576,6 +598,10 @@ export class HotelsController {
                 // and a territory is still held to its own side of the border.
                 lat:         body.lat,
                 lng:         body.lng,
+                // One named property, when that is what was picked. Without it a hotel chosen
+                // by name is searched as whatever city it happens to stand in, and the answer
+                // arrives somewhere in a list of four thousand.
+                hotelCode:   body.hotelCode,
             };
             const catalogHotels: any[] = useCatalog
                 ? await Promise.race([

@@ -2,19 +2,33 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { config } from '@/config';
 import { tgxGraphQL, getTgxConfig } from '@/lib/hotels/travelgatex';
 import { searchRateLimit } from '@/middleware/rate-limit.middleware';
+import { prisma } from '@/lib/prisma';
 
 const router: Router = Router();
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+/**
+ * One thing a traveller can pick, and everything the search needs to act on it.
+ *
+ * `type` is what it *is*; `rung` is how wide it is. They were the same field's job while only
+ * cities and countries existed, and they are not the same question: an airport and a temple
+ * are both `poi` by width and nothing alike to a reader scanning a list.
+ *
+ * Each type carries its own anchor, and the search reads exactly one of them:
+ *   country → `countryCode`     city/district → `title` + `countryCode` (+ `bbox` for an area)
+ *   poi     → `lat`/`lng`        hotel         → `hotelCode`
+ */
 interface AutocompleteResult {
-    type: 'city' | 'country';
+    type: 'city' | 'country' | 'poi' | 'hotel';
     rung: 'country' | 'province' | 'city' | 'district' | 'poi';
     title: string;
     subtitle: string;
     countryCode: string;
     id?: string;
     code?: string;
+    /** The catalogue's `hotel_id`, on a `hotel` result. The anchor for a named property. */
+    hotelCode?: string;
     lat?: number;
     lng?: number;
     bbox?: [number, number, number, number];
@@ -86,6 +100,9 @@ function mapboxTypeToRung(placeType: string): AutocompleteResult['rung'] {
         case 'place':                                 return 'city';
         case 'district': case 'locality':
         case 'neighborhood':                          return 'district';
+        // A landmark, a station, an airport — a point rather than an area. Everything used to
+        // fall through to 'city' here, which was true while only places were requested.
+        case 'poi': case 'poi.landmark': case 'address': return 'poi';
         default:                                      return 'city';
     }
 }
@@ -119,7 +136,12 @@ async function fetchCitiesFromMapbox(query: string, locale?: string): Promise<Au
 
     const lang     = mapboxLang(locale);
     const language = lang === 'en' ? 'en' : `${lang},en`;
-    const types    = 'region,place,district,locality,neighborhood';
+    // `poi` is what makes a landmark and an airport pickable: Mapbox returns both with
+    // coordinates, which is the only thing a radius search needs. Adding them here rather than
+    // from a separate airport list, because `lib/airports.ts` holds IATA codes and city names
+    // and no coordinates — and Narita is 60km from the Tokyo its city name would resolve to,
+    // which is the one distance a transit passenger cares about.
+    const types    = 'region,place,district,locality,neighborhood,poi';
     const url      = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?types=${types}&limit=8&language=${language}&proximity=126.9780,37.5665&access_token=${token}`;
 
     try {
@@ -140,7 +162,10 @@ async function fetchCitiesFromMapbox(query: string, locale?: string): Promise<Au
                 Array.isArray(feature.bbox) && feature.bbox.length === 4 ? feature.bbox : undefined;
 
             return {
-                type:        'city' as const,
+                // Read off the rung rather than assumed. Everything from Mapbox was labelled
+                // a city, which was harmless while only places were asked for and wrong the
+                // moment an airport came back.
+                type:        rung === 'poi' ? ('poi' as const) : ('city' as const),
                 rung,
                 title:       cityName,
                 subtitle:    placeName,
@@ -165,6 +190,50 @@ async function fetchCitiesFromMapbox(query: string, locale?: string): Promise<Au
     }
 }
 
+/**
+ * Properties by name, from our own catalogue.
+ *
+ * Not from the supplier: these are the hotels we can actually price, so a name offered here
+ * always leads somewhere. Asking TravelgateX instead would cost a call per keystroke and could
+ * suggest a property the catalogue has never heard of.
+ *
+ * A miss is silent. A traveller typing a city is not told the hotel lookup failed, and a
+ * failure here must not take the cities down with it.
+ */
+async function matchHotels(query: string): Promise<AutocompleteResult[]> {
+    const q = query.trim();
+    if (q.length < 3) return [];   // "ho" matches thousands and means nothing
+
+    try {
+        const rows = await prisma.hotel_content.findMany({
+            where: {
+                name:   { contains: q, mode: 'insensitive' },
+                images: { isEmpty: false },
+            },
+            orderBy: { review_count: { sort: 'desc', nulls: 'last' } },
+            take: 4,
+            select: { hotel_id: true, name: true, city: true, country: true, lat: true, lng: true },
+        });
+
+        return rows
+            .filter(r => r.name)
+            .map(r => ({
+                type:        'hotel' as const,
+                rung:        'poi' as const,
+                title:       r.name!,
+                subtitle:    [r.city, r.country].filter(Boolean).join(', ') || 'Hotel',
+                countryCode: (r.country ?? '').slice(0, 2).toUpperCase(),
+                hotelCode:   r.hotel_id,
+                // Carried so a client can place the pin without a second call. The search
+                // anchors on `hotelCode`, not on these.
+                lat:         r.lat || undefined,
+                lng:         r.lng || undefined,
+            }));
+    } catch {
+        return [];
+    }
+}
+
 // ─── In-memory cache (300s TTL) ───────────────────────────────────────────────
 
 const _cache = new Map<string, { data: AutocompleteResult[]; expires: number }>();
@@ -174,9 +243,23 @@ async function getCachedAutocomplete(query: string, locale?: string): Promise<Au
     const cached = _cache.get(key);
     if (cached && Date.now() < cached.expires) return cached.data;
 
-    const countryResults = matchCountries(query);
-    const cityResults    = await fetchCitiesFromMapbox(query, locale);
-    const data           = [...countryResults, ...cityResults];
+    // Side by side: the catalogue is ours and answers in milliseconds, Mapbox is a round trip,
+    // and waiting for one before starting the other would add the slower to the faster.
+    const [countryResults, placeResults, hotelResults] = await Promise.all([
+        Promise.resolve(matchCountries(query)),
+        fetchCitiesFromMapbox(query, locale),
+        matchHotels(query),
+    ]);
+
+    // Ordered by how precisely each answers what was typed, not by where it came from.
+    //
+    // A named property first: typing a hotel's name is the least ambiguous thing a traveller
+    // can do, and burying it under the city it stands in is what made people pick the city and
+    // hunt. Places next, because most searches are places. A country last — it is the widest
+    // thing on the list and the only one that cannot return a complete answer.
+    const places = placeResults.filter(r => r.type === 'city');
+    const pois   = placeResults.filter(r => r.type === 'poi');
+    const data   = [...hotelResults, ...places, ...pois, ...countryResults];
 
     _cache.set(key, { data, expires: Date.now() + 300_000 });
     return data;

@@ -127,3 +127,15 @@ meeting a changed price at checkout for fewer supplier calls, and that trade bel
 place where it can be seen.
 _Avoid_: a second freshness rule in a client. A client may decide when to *re-ask*; it may not
 decide how old an answer is allowed to be.
+
+## Search Anchor
+What a hotel search is pointed at: a place name, a country, one named property, a point with a
+radius around it, or a map area. One search answers all of them — they differ only in which
+hotels become candidates, never in how those candidates are then priced, filtered or shown.
+Naming the anchor matters because they are not equally specific, and the more specific one
+always wins: a country with a point in it is a search around that point, not a country browse.
+_Avoid_: calling a country anchor a search. There are 4,590 hotels in Tokyo alone against a cap
+of a few hundred priced candidates, so a country can only ever return a selection — whatever
+presents one has to say so, or a traveller reads the head of a list as the whole of it.
+_Avoid_: adding an endpoint per anchor. Dates, guests, currency, filters and pricing are
+identical across all of them, so a second endpoint is the same logic twice.
