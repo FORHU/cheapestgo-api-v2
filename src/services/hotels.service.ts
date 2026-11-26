@@ -318,6 +318,10 @@ export class HotelsService {
         currency?:    string;
         occupancies?: any[];
         filters?:     any;
+        hotelCode?:   string;
+        bbox?:        [number, number, number, number];
+        rung?:        string;
+        areaRung?:    string;
     }) {
         const results = await this.provider.searchHotels({
             cityName:    params.destination,
@@ -328,6 +332,17 @@ export class HotelsService {
             countryCode: params.countryCode,
             currency:    params.currency,
             rooms:       params.rooms,
+            // Everything below was accepted by the route and dropped here, which is why a
+            // search anchored on anything but a city name failed. A country arrived at the
+            // supplier as a city, and coordinates arrived as nothing at all — both came back
+            // as a bare 500 with no clue which of the two it was. The streaming endpoint
+            // forwarded all of these and worked, which is why only one of the two was broken.
+            lat:         params.lat,
+            lng:         params.lng,
+            hotelCode:   params.hotelCode,
+            bbox:        params.bbox,
+            rung:        params.rung as any,
+            areaRung:    params.areaRung as any,
         });
         await this.repo.recordSearchDemand(
             params.destination.toLowerCase().replace(/\s+/g, '-'),

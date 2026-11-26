@@ -554,6 +554,7 @@ model hotel_content {
   @@index([fetched_at])
   @@index([serp_filters], map: "hotel_content_serp_filters_gin", type: Gin)
   @@index([lat, lng], map: "hotel_content_latlng_idx")
+  @@index([name(ops: raw("gin_trgm_ops"))], map: "hotel_content_name_trgm", type: Gin)
 }
 
 model hotel_deals {

@@ -17,7 +17,7 @@ import { fetchEtgHotelContent, parseEtgHotel, type EtgHotelContent } from './etg
 import { HotelsRepository } from '@/repositories/hotels.repository';
 import { isConfirmedOutOfCountry } from '@/lib/geo/countryBoxes';
 import { hotelLocationNames } from '@/lib/geo/hotelLocation';
-import { hotelCountry, isTerritory } from '@/lib/geo/territories';
+import { hotelCountry, isTerritory, storedCountryCodes } from '@/lib/geo/territories';
 import type { HotelSearchParams, HotelSearchResult } from '@/types/hotels';
 import { redis } from '@/lib/redis';
 import { staysUnderMaintenance } from '@/lib/maintenance';
@@ -108,17 +108,37 @@ export function subAreaBbox(p: { areaRung?: string; bbox?: [number, number, numb
         : null;
 }
 
+/**
+ * The most hotels a country-wide browse will price.
+ *
+ * Tokyo alone holds 4,590 and Japan tens of thousands, so a country is never a complete list
+ * and pretending otherwise would quietly decide which 300 of 40,000 a traveller sees. This is
+ * the ordered head of the catalogue — best-reviewed first — and callers should say so.
+ */
+const COUNTRY_BROWSE_LIMIT = 300;
+
 export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<any[]> {
     const cityName: string = body.cityName ?? '';
     const countryCode: string = body.countryCode ?? '';
-    if (!cityName && !(body.lat && body.lng)) return [];
+    const hasCoords = Boolean(body.lat && body.lng);
+
+    // Four ways to name where to look, and a search needs one of them. Until a country and a
+    // single property were accepted here, picking "Country · Browse all hotels" — which the
+    // picker has always offered — reached a supplier with the country's name in the city field
+    // and came back a bare 500.
+    if (!cityName && !hasCoords && !body.hotelCode && !countryCode) return [];
 
     try {
         let where: any;
 
         const areaBbox = subAreaBbox(body);
 
-        if (areaBbox) {
+        if (body.hotelCode) {
+            // One property, named outright. No geography is consulted: a traveller who typed
+            // "Hilton Tokyo" has already said which hotel, and widening that to its city would
+            // bury the answer among four thousand others.
+            where = { hotel_id: body.hotelCode, ...NOT_DELISTED };
+        } else if (areaBbox) {
             // The traveller picked an area with real boundaries, so those are the boundaries —
             // a 50km circle around Camden Town is the whole of Greater London, and the borough
             // they asked for is nowhere in it.
@@ -140,7 +160,7 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
                 images: { isEmpty: false },
                 ...NOT_DELISTED,
             };
-        } else {
+        } else if (cityName) {
             // Fallback: city-string match when no coordinates available.
             const normalized = cityName.split(',')[0].trim().replace(/-(si|do|gu|gun|eup)$/i, '').trim();
             const isoCode    = resolveIsoCode(countryCode);
@@ -153,10 +173,23 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
             if (countryCodes) where.country = { in: countryCodes, mode: 'insensitive' };
         }
 
+        // A country with no city and no coordinates: the browse. Last, so that naming a city
+        // or standing somewhere still wins — "Japan" plus a Kyoto pin is a Kyoto search.
+        if (!where) {
+            const iso = resolveIsoCode(countryCode) || countryCode;
+            where = {
+                country: { in: storedCountryCodes(iso), mode: 'insensitive' },
+                images: { isEmpty: false },
+                ...NOT_DELISTED,
+            };
+        }
+
         let rows = await prisma.hotel_content.findMany({
             where,
             orderBy: { review_count: { sort: 'desc', nulls: 'last' } },
-            take: body.lat && body.lng ? 1000 : 300,
+            // One property is one row; everything else takes the usual cap, and a country
+            // browse is explicitly capped rather than attempting a complete list it cannot have.
+            take: body.hotelCode ? 1 : hasCoords ? 1000 : COUNTRY_BROWSE_LIMIT,
             // `description` and `amenities` are not read from a catalog card. app-v2's
             // consumed shape is `MappableProperty` (features/search/utils/search.utils.ts),
             // and neither field is on it — they were selected, normalised and streamed for
