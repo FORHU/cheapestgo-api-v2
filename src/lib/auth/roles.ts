@@ -31,18 +31,6 @@ export function canAdminister(role: Role | null | undefined): boolean {
     return role === 'admin';
 }
 
-/**
- * Where signing in puts someone, by role.
- *
- * Null for a customer: they were already going somewhere. Staff were not — an agent
- * dropped on the marketing site has no way to find the inbox from there.
- */
-export function landingFor(role: Role | null | undefined): string | null {
-    if (role === 'admin') return '/admin/overview';
-    if (role === 'support_agent') return '/admin/support';
-    return null;
-}
-
 /** How a role is written where a person reads it. */
 export function roleLabel(role: Role | null | undefined): string {
     if (role === 'admin') return 'Administrator';
