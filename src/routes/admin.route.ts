@@ -234,7 +234,14 @@ router.get('/users', async (_req: Request, res: Response, next: NextFunction) =>
 
 router.post('/users/:id/ban', async (req: Request, res: Response, next: NextFunction) => {
     try {
+        const actor = req.user!;
         await orAccountNotFound(suspendUser(req.params.id));
+        void logAdminAction({
+            action:     'suspend_user',
+            adminId:    actor.sub,
+            adminEmail: actor.email,
+            targetId:   req.params.id,
+        });
         return res.json({ ok: true });
     } catch (err) {
         next(err);
@@ -246,10 +253,17 @@ router.post('/users/:id/ban', async (req: Request, res: Response, next: NextFunc
 router.post('/users/:id/unban', async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { id } = req.params;
+        const actor = req.user!;
         await orAccountNotFound(prisma.users.update({
             where: { id },
             data:  { banned_at: null },
         }));
+        void logAdminAction({
+            action:     'reactivate_user',
+            adminId:    actor.sub,
+            adminEmail: actor.email,
+            targetId:   id,
+        });
         return res.json({ ok: true });
     } catch (err) {
         next(err);
@@ -352,13 +366,16 @@ router.post('/customers', async (req: Request, res: Response, next: NextFunction
     try {
         const { action, userId } = req.body as { action: string; userId: string };
         if (!action || !userId) throw new AppError(400, 'action and userId are required', 'VALIDATION_ERROR');
+        const actor = req.user!;
 
         if (action === 'ban') {
             await orAccountNotFound(suspendUser(userId));
+            void logAdminAction({ action: 'suspend_user', adminId: actor.sub, adminEmail: actor.email, targetId: userId });
             return res.json({ success: true });
         }
         if (action === 'unban') {
             await orAccountNotFound(prisma.users.update({ where: { id: userId }, data: { banned_at: null } }));
+            void logAdminAction({ action: 'reactivate_user', adminId: actor.sub, adminEmail: actor.email, targetId: userId });
             return res.json({ success: true });
         }
         if (action === 'hard_delete') {

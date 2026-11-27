@@ -965,8 +965,36 @@ model users {
   support_messages                                                          support_messages[]
   support_notes                                                             support_notes[]
   golfBookings                                                              golf_bookings[]
+  staff_invitations_sent                                                    staff_invitations[]             @relation("staff_invitations_invited_by")
 
   @@index([email], map: "idx_users_email")
+}
+
+/**
+ * An invitation to staff, not yet or no longer open. See issue #105.
+ *
+ * `token_hash` is what is stored; the raw token lives only in the email link, so a leaked
+ * database row cannot be used to accept an invitation nobody received. `role` is the role the
+ * account is given on acceptance — `user` is refused by the service, since inviting someone to
+ * be a customer is not staff invitation's job.
+ *
+ * `accepted_at` and `revoked_at` are two different closed states, not one: a token that was
+ * used must answer differently from one withdrawn before anyone used it (see
+ * `classifyInvitation` in `src/lib/auth/staffInvitationToken.ts`).
+ */
+model staff_invitations {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email       String
+  role        String
+  token_hash  String    @unique
+  invited_by  String    @db.Uuid
+  expires_at  DateTime  @db.Timestamptz(6)
+  accepted_at DateTime? @db.Timestamptz(6)
+  revoked_at  DateTime? @db.Timestamptz(6)
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  inviter     users     @relation("staff_invitations_invited_by", fields: [invited_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([email], map: "idx_staff_invitations_email")
 }
 
 model voucher_usage {
