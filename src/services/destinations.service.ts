@@ -159,6 +159,23 @@ function resolveAliasedCity(cityName: string, placeName: string, countryCode: st
     return prefixKey ? countryMap[prefixKey] : undefined;
 }
 
+/**
+ * One place, then the properties, then the rest of the places.
+ *
+ * Properties led this list at first, on the reasoning that typing a hotel's name is the least
+ * ambiguous thing a traveller can do. True of "Hilton Tokyo"; false of "new york", a city that
+ * thousands of hotels are named after. Three of those hotels took every row the picker draws —
+ * Las Vegas, Johor Bahru, Barcelona — and New York itself was in the response and off the end
+ * of it. Both clients cut this list to a handful, so the order here decides what exists on a
+ * screen, not merely what sits on top of it.
+ *
+ * Leading with a single place answers the city question without burying the property one. A
+ * query matching no place still leads with properties, because there is nothing to lead with.
+ */
+function placeFirst(places: AutocompleteResult[], hotels: AutocompleteResult[]): AutocompleteResult[] {
+    return [...places.slice(0, 1), ...hotels, ...places.slice(1)];
+}
+
 export class DestinationsService {
     private repo = new DestinationsRepository();
 
@@ -313,7 +330,10 @@ export class DestinationsService {
         query: string,
         covered: Map<string, string[]>,
     ): Promise<AutocompleteResult[]> {
-        const matches = matchAliasQuery(query, 3).filter(m => {
+        // A typo-tolerant guess is wanted only when there is nothing else — `covered` is
+        // non-empty exactly when the geocoder returned places, and guessing past a geocoder
+        // that answered is how "new york" acquired a suggestion for a town in Davao.
+        const matches = matchAliasQuery(query, 3, covered.size === 0).filter(m => {
             const canonical = m.canonicalCity.toLowerCase();
             // Suppress when Mapbox covers this under a slightly different name -
             // "Boracay" vs "Boracay Island". Compared on whole leading words only,
@@ -542,7 +562,7 @@ export class DestinationsService {
             ...cityResults,
             ...aliasResults,
         ];
-        if (!allCities.length) return [...hotelResults, ...countryResults];
+        if (!allCities.length) return placeFirst(countryResults, hotelResults);
 
         // Destinations we stock sort to the top; the rest still show, below.
         const withHotels = await this.filterCitiesWithHotels(allCities);
@@ -551,10 +571,7 @@ export class DestinationsService {
             ...allCities.filter(c => !withHotels.has((c.canonicalCity ?? c.title).toLowerCase())),
         ];
 
-        // A named property first. Typing a hotel's name is the least ambiguous thing a
-        // traveller can do, and ranked under the city it stands in the answer sits below the
-        // four-thousand-hotel alternative.
-        return [...hotelResults, ...countryResults, ...sorted];
+        return placeFirst([...countryResults, ...sorted], hotelResults);
     }
 
     /**

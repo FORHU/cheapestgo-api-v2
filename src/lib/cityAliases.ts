@@ -12377,7 +12377,14 @@ function containsAtWordBoundary(hay: string, needle: string): boolean {
  * so "Manhatan" still finds Manhattan. It is a last resort, never a reordering: an exact or
  * prefix hit is always returned instead of a near miss.
  */
-export function matchAliasQuery(query: string, limit = 3): AliasMatch[] {
+/**
+ * @param allowFuzzy whether a typo-tolerant match may stand in when no strict tier matched.
+ *   Off when the caller already has real places for this query: the fallback exists for a
+ *   misspelling nothing else could resolve, and asked anyway it answers "new york" with "New
+ *   Corella Davao" — two words that share a prefix and nothing else — which then sits in the
+ *   picker beside New York City.
+ */
+export function matchAliasQuery(query: string, limit = 3, allowFuzzy = true): AliasMatch[] {
     const q = query.toLowerCase().trim();
     if (q.length < 2) return [];
 
@@ -12392,7 +12399,7 @@ export function matchAliasQuery(query: string, limit = 3): AliasMatch[] {
         else continue;
         scored.push({ entry, tier });
     }
-    if (!scored.length) return fuzzyAliasMatches(q, limit);
+    if (!scored.length) return allowFuzzy ? fuzzyAliasMatches(q, limit) : [];
 
     scored.sort((a, b) =>
         a.tier - b.tier ||

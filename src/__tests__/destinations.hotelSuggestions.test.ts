@@ -54,12 +54,43 @@ describe('hotel suggestions', () => {
         expect(hotel!.id).toBe('h-99');
     });
 
-    it('a named property outranks everything else offered', async () => {
+    /**
+     * With no place to lead with — Mapbox is stubbed out here — a property is the first thing
+     * there is. This is the "Hilton Tokyo" case: a name that is a hotel and nothing else.
+     */
+    it('leads with a property when nothing else matched', async () => {
         db.findMany.mockResolvedValue([HILTON]);
 
         const out = await svc.autocomplete('hilton tokyo');
 
         expect(out[0].type).toBe('hotel');
+    });
+
+    /**
+     * And does not, when something did.
+     *
+     * Properties ranked above every place once. "new york" matched three hotels named after the
+     * city, both clients cut the list to three rows, and New York was not among them — the city
+     * was in the response and off the bottom of a list the user could not scroll past. Rank here
+     * decides what exists on screen, not merely what is on top of it.
+     */
+    it('does not bury the place a property is named after', async () => {
+        db.findMany.mockResolvedValue([
+            { hotel_id: 'h-1', name: 'New York-New York Hotel & Casino', city: 'Paradise', country: 'US', lat: 36.1, lng: -115.2 },
+            { hotel_id: 'h-2', name: 'New York Hotel',  city: 'Johor Bahru', country: 'MY', lat: 1.49, lng: 103.74 },
+            { hotel_id: 'h-3', name: 'Hostal New York', city: 'Barcelona',   country: 'ES', lat: 41.4, lng: 2.17 },
+        ]);
+
+        // Mapbox is stubbed out here, so the place that leads is the country list's own entry —
+        // which is the same exit "new york" takes when the geocoder is down, and it used to put
+        // all three hotels above it too.
+        const out = await svc.autocomplete('united states');
+        const firstHotel = out.findIndex(r => r.type === 'hotel');
+
+        expect(out[0].type).toBe('country');
+        expect(firstHotel).toBe(1);
+        // All three are still offered — the fix is where they sit, not how many there are.
+        expect(out.filter(r => r.type === 'hotel')).toHaveLength(3);
     });
 
     it('two letters are not a hotel search', async () => {
