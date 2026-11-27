@@ -54,6 +54,8 @@ export class AuthRepository {
         password_hash: string;
         first_name?: string;
         last_name?: string;
+        /** Defaults to the column's own default, `'user'` — a staff invitation is the one caller that passes this. */
+        role?: string;
     }) {
         return prisma.$transaction(async tx => {
             const user = await tx.users.create({ data: { ...data, email: normaliseEmail(data.email) } });

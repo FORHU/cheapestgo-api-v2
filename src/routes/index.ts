@@ -24,12 +24,14 @@ import googleRoutes        from './google.route';
 import emailRoutes         from './email.route';
 import golfRoutes          from './golf.route';
 import adminGolfRoutes     from './admin-golf.route';
+import { staffInvitationsAdminRouter, staffInvitationsPublicRouter } from './staff-invitations.route';
 
 const router: Router = Router();
 
 router.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 router.use('/auth',           authRoutes);
+router.use('/auth/staff',     staffInvitationsPublicRouter);
 router.use('/flights',        flightRoutes);
 router.use('/hotels',         hotelRoutes);
 router.use('/bookings',       bookingRoutes);
@@ -41,7 +43,8 @@ router.use('/internal',       internalRoutes);
 router.use('/vouchers',       voucherRoutes);
 router.use('/golf',           golfRoutes);
 // Before '/admin', so that router's guard and routes never get the first look at these.
-router.use('/admin/golf',     adminGolfRoutes);
+router.use('/admin/golf',               adminGolfRoutes);
+router.use('/admin/staff/invitations',  staffInvitationsAdminRouter);
 router.use('/admin',          adminRoutes);
 router.use('/photos',         photosRoutes);
 router.use('/chat',           chatRoutes);
