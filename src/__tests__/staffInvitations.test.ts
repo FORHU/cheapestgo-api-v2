@@ -32,10 +32,12 @@ vi.mock('bcryptjs', () => ({
 }));
 
 const sentEmails = vi.hoisted(() => [] as { to: string; subject: string; html: string }[]);
+const mailState = vi.hoisted(() => ({ failNext: false }));
 vi.mock('@/lib/email/mailer', () => ({
     mailConfigured: () => true,
     sendMail: vi.fn(async (m: { to: string; subject: string; html: string }) => {
         sentEmails.push(m);
+        if (mailState.failNext) { mailState.failNext = false; return { ok: false, error: 'provider down' }; }
         return { ok: true };
     }),
 }));
@@ -90,6 +92,7 @@ type InvitationRow = {
     expires_at: Date; accepted_at: Date | null; revoked_at: Date | null; created_at: Date;
 };
 const invitations = vi.hoisted(() => new Map<string, InvitationRow>());
+const repoState = vi.hoisted(() => ({ listShouldThrow: false }));
 
 vi.mock('@/repositories/staffInvitations.repository', async () => {
     return {
@@ -114,7 +117,10 @@ vi.mock('@/repositories/staffInvitations.repository', async () => {
                 invitations.set(id, row);
                 return row;
             };
-            list = async () => [...invitations.values()].sort((a, b) => b.created_at.getTime() - a.created_at.getTime());
+            list = async () => {
+                if (repoState.listShouldThrow) { repoState.listShouldThrow = false; throw new Error('db unavailable'); }
+                return [...invitations.values()].sort((a, b) => b.created_at.getTime() - a.created_at.getTime());
+            };
             markAccepted = async (id: string) => {
                 const row = invitations.get(id)!;
                 row.accepted_at = new Date();
@@ -159,6 +165,8 @@ beforeEach(() => {
     invitations.clear();
     sentEmails.length = 0;
     auditEvents.length = 0;
+    mailState.failNext = false;
+    repoState.listShouldThrow = false;
     users.set('admin-1', { id: 'admin-1', email: 'admin-1@example.com', password_hash: 'x', role: 'admin', first_name: null, last_name: null, banned_at: null });
     users.set('agent-1', { id: 'agent-1', email: 'agent-1@example.com', password_hash: 'x', role: 'support_agent', first_name: null, last_name: null, banned_at: null });
 });
@@ -226,6 +234,13 @@ describe('POST /admin/staff/invitations', () => {
         const second = await invite({ email: 'dup@example.com', role: 'support_agent' });
         expect(second.status).toBe(409);
     });
+
+    it('still creates the invitation when the email fails to send — a flaky provider must not block the invite', async () => {
+        mailState.failNext = true;
+        const res = await invite({ email: 'mail-down@example.com', role: 'support_agent' });
+        expect(res.status).toBe(201);
+        expect(auditEvents.map(e => e.action)).toContain('staff_invitation_sent');
+    });
 });
 
 describe('POST /auth/staff/accept-invitation', () => {
@@ -283,6 +298,28 @@ describe('POST /auth/staff/accept-invitation', () => {
         expect(res.status).toBe(400);
         expect((await json(res)).error).toBe('INVITATION_EXPIRED');
     });
+
+    it('refuses an empty name rather than storing it', async () => {
+        await invite({ email: 'blank-name@example.com', role: 'support_agent' });
+        const token = tokenFromLastEmail();
+
+        const res = await accept({ token, password: 'Passw0rd!', first_name: '   ' });
+        expect(res.status).toBe(400);
+        expect((await json(res)).error).toBe('VALIDATION_ERROR');
+    });
+
+    it('refuses acceptance if an account for the address was created in the meantime', async () => {
+        const inviteRes = await invite({ email: 'race@example.com', role: 'support_agent' });
+        await json(inviteRes);
+        const token = tokenFromLastEmail();
+        // Simulates a second path creating the account between the invite and this accept —
+        // register(), or a second admin inviting and accepting first for the same address.
+        users.set('race-1', { id: 'race-1', email: 'race@example.com', password_hash: 'x', role: 'user', first_name: null, last_name: null, banned_at: null });
+
+        const res = await accept({ token, password: 'Passw0rd!' });
+        expect(res.status).toBe(409);
+        expect((await json(res)).error).toBe('EMAIL_TAKEN');
+    });
 });
 
 describe('revoke and list', () => {
@@ -294,6 +331,18 @@ describe('revoke and list', () => {
 
         const res = await revoke(invitation.id);
         expect(res.status).toBe(409);
+    });
+
+    it('refuses to revoke an invitation that does not exist', async () => {
+        const res = await revoke('no-such-invitation');
+        expect(res.status).toBe(404);
+        expect((await json(res)).error).toBe('NOT_FOUND');
+    });
+
+    it('answers 500, not a crash, when the invitation store is unavailable', async () => {
+        repoState.listShouldThrow = true;
+        const res = await list();
+        expect(res.status).toBe(500);
     });
 
     it('lists invitations for an admin', async () => {
