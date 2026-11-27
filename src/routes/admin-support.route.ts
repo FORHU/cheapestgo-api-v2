@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireAuth, withCurrentRole } from '@/middleware/auth.middleware';
 import { SupportService, type SupportActor } from '@/services/support.service';
 import { AppError } from '@/middleware/error.middleware';
+import { logAdminAction } from '@/lib/admin/audit';
 import { openEventStream } from '@/lib/support/stream';
 import multer from 'multer';
 import { MAX_ATTACHMENT_BYTES } from '@/lib/support/attachments';
@@ -130,6 +131,10 @@ router.post('/conversations/:id/messages', async (req: Request, res: Response, n
             attachmentIds: z.array(z.string().uuid()).max(5).optional(),
         }).parse(req.body ?? {});
         const message = await svc.agentReply(actorOf(req), id, body, attachmentIds ?? []);
+        void logAdminAction({
+            action: 'support_reply', adminId: req.user!.sub, adminEmail: req.user!.email,
+            actorRole: req.user!.role, targetId: id,
+        });
         return res.status(201).json({ success: true, data: message });
     } catch (err) { next(err); }
 });
@@ -140,6 +145,10 @@ router.post('/conversations/:id/assign', async (req: Request, res: Response, nex
         const { id }        = z.object({ id: z.string().uuid() }).parse(req.params);
         const { toAdminId } = z.object({ toAdminId: z.string().uuid() }).parse(req.body ?? {});
         const result = await svc.assign(actorOf(req), id, toAdminId);
+        void logAdminAction({
+            action: 'support_conversation_assigned', adminId: req.user!.sub, adminEmail: req.user!.email,
+            actorRole: req.user!.role, targetId: id, newValue: { assignedTo: toAdminId },
+        });
         return res.json({ success: true, data: result });
     } catch (err) { next(err); }
 });
@@ -154,6 +163,10 @@ router.post('/conversations/:id/return', async (req: Request, res: Response, nex
     try {
         const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
         await svc.returnToQueue(actorOf(req), id);
+        void logAdminAction({
+            action: 'support_conversation_returned', adminId: req.user!.sub, adminEmail: req.user!.email,
+            actorRole: req.user!.role, targetId: id,
+        });
         return res.json({ success: true });
     } catch (err) { next(err); }
 });
@@ -162,6 +175,10 @@ router.post('/conversations/:id/resolve', async (req: Request, res: Response, ne
     try {
         const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
         await svc.resolve(actorOf(req), id);
+        void logAdminAction({
+            action: 'support_conversation_resolved', adminId: req.user!.sub, adminEmail: req.user!.email,
+            actorRole: req.user!.role, targetId: id,
+        });
         return res.json({ success: true });
     } catch (err) { next(err); }
 });
