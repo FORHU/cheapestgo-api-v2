@@ -99,6 +99,28 @@ describe('hotel suggestions', () => {
     });
 
     /**
+     * A property OTV has stopped selling is not a suggestion.
+     *
+     * Every query in `search.ts` that *chooses* hotels excludes these — the map pins, the codes
+     * sent for pricing — because 30,298 of them sit in the catalogue and a traveller who picks
+     * one lands on a property page for a room nobody can book. This query was written without
+     * that filter, which made autocomplete the one place they could still be offered.
+     */
+    it('does not offer a property that has been delisted', async () => {
+        db.findMany.mockResolvedValue([HILTON]);
+
+        // A query of its own, because the service's response cache lives for 300 seconds in
+        // module scope and outlives `clearAllMocks`. Reusing a string another test already
+        // asked for returns that cached answer and never reaches the database at all — which
+        // is invisible in a test asserting on results, and fatal in one asserting on the query.
+        await svc.autocomplete('hilton osaka');
+
+        expect(db.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({ where: expect.objectContaining({ delisted_at: null }) }),
+        );
+    });
+
+    /**
      * The catalogue and the geocoder fail independently. Someone typing a city must still get
      * places when the hotel lookup is down — which is what the silent catch is for.
      */

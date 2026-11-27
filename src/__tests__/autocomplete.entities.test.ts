@@ -55,7 +55,11 @@ const handler = (() => {
 async function ask(query: string): Promise<{ success: boolean; data: any[] }> {
     let payload: any;
     const res = { json: (b: any) => { payload = b; return res; } };
-    await handler({ body: { query } }, res, (err: unknown) => { throw err; });
+    // `get` as well as `body`: the handler reads request headers to record that this
+    // deprecated route was used at all, and a stand-in request without it is not one Express
+    // would ever hand over.
+    const req = { body: { query }, get: (_name: string) => undefined };
+    await handler(req, res, (err: unknown) => { throw err; });
     return payload;
 }
 

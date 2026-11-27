@@ -6,6 +6,7 @@ import { DestinationsRepository } from '@/repositories/destinations.repository';
 import { matchCityEndonym } from '@/lib/cityEndonyms';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/prisma';
+import { redis } from '@/lib/redis';
 
 /**
  * Destination autocomplete, ported from v1's `src/lib/server/search.ts`.
@@ -53,27 +54,100 @@ export interface AutocompleteResult {
 
 // --- Response cache ----------------------------------------------------------
 
-// v1 wrapped this path in Next's `unstable_cache` with a 300s revalidate. There
-// is no equivalent here and Redis is optional, so the cache is in-process: it
-// exists to stop one user's keystrokes fanning out into repeat Mapbox calls,
-// not to be shared between instances.
-const CACHE_TTL_MS = 300_000;
-const _cache = new Map<string, { at: number; data: AutocompleteResult[] }>();
+/**
+ * Two tiers and a queue, because a suggestion is asked for far more often than it changes.
+ *
+ * It was one tier: a `Map` per process, which is a cache only for the person who warmed it.
+ * Someone else on another container, or the same person after a deploy, paid full price —
+ * and while the coverage query took seventeen seconds, full price was seventeen seconds.
+ *
+ *  - **L1**, in process, answers without a network hop at all.
+ *  - **L2**, Redis, is shared: one traveller's "cebu" warms it for everyone, and it survives
+ *    the container being replaced. Already running, already used by the search cache.
+ *  - **In flight** holds the one request that is doing the work. Keystrokes arrive in bursts
+ *    and a debounce only thins them; without this, five people typing "bor" at once start five
+ *    identical geocodes.
+ *
+ * Nothing here is allowed to fail a request. A Redis that is down costs a lookup later, which
+ * is why every call to it is caught and the write is never awaited.
+ */
+const CACHE_TTL_MS      = 300_000;
+const CACHE_TTL_SECONDS = 300;
 
-function cacheGet(key: string): AutocompleteResult[] | undefined {
+/** Entries held in one process. Past this the least recently used is dropped. */
+const L1_MAX = 500;
+
+const _cache    = new Map<string, { at: number; data: AutocompleteResult[] }>();
+const _inflight = new Map<string, Promise<AutocompleteResult[]>>();
+
+/**
+ * One key per question, not per spelling of it.
+ *
+ * Whitespace is collapsed as well as trimmed, so "new  york" and "new york" are one entry
+ * rather than two. The locale stays in the key because Mapbox is asked in it and the answers
+ * genuinely differ.
+ */
+function cacheKey(query: string, locale?: string): string {
+    return `${locale ?? 'en'}|${query.toLowerCase().trim().replace(/\s+/g, ' ')}`;
+}
+
+function l1Get(key: string): AutocompleteResult[] | undefined {
     const hit = _cache.get(key);
     if (!hit) return undefined;
     if (Date.now() - hit.at > CACHE_TTL_MS) {
         _cache.delete(key);
         return undefined;
     }
+    // Re-inserting moves it to the end. A Map iterates in insertion order, so the first key is
+    // then the least recently used one — which is what makes the eviction below an eviction.
+    _cache.delete(key);
+    _cache.set(key, hit);
     return hit.data;
 }
 
-function cacheSet(key: string, data: AutocompleteResult[]): void {
-    // Bounded so a long-running process cannot grow this without limit.
-    if (_cache.size > 500) _cache.clear();
+function l1Set(key: string, data: AutocompleteResult[]): void {
+    _cache.delete(key);
     _cache.set(key, { at: Date.now(), data });
+    // Was `clear()` at 501 entries, which threw away everything including what was written a
+    // moment ago. Each keystroke leaves its own entry — "b", "ba", "bag" on the way to
+    // "baguio" — so 500 is reached by roughly a hundred people, and a busy evening spent
+    // emptying the cache wholesale.
+    while (_cache.size > L1_MAX) {
+        const oldest = _cache.keys().next().value;
+        if (oldest === undefined) break;
+        _cache.delete(oldest);
+    }
+}
+
+const redisKey = (key: string) => `dest:ac:${key}`;
+
+async function l2Get(key: string): Promise<AutocompleteResult[] | null> {
+    try {
+        const raw = await redis.get(redisKey(key));
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed as AutocompleteResult[] : null;
+    } catch {
+        // A half-written value, a shape from an older deploy, or no Redis. Ask properly.
+        return null;
+    }
+}
+
+/**
+ * Never awaited: a traveller waits for suggestions, not for us to write them down.
+ *
+ * The try/catch is not only for a rejected write. `setex` can be absent rather than failing —
+ * a stubbed client, a half-initialised one — and that throws where a rejected promise would
+ * not, taking the suggestion down with it. Not remembering an answer must never cost the
+ * answer.
+ */
+function l2Set(key: string, data: AutocompleteResult[]): void {
+    try {
+        void Promise.resolve(redis.setex(redisKey(key), CACHE_TTL_SECONDS, JSON.stringify(data)))
+            .catch(() => {});
+    } catch {
+        // Nothing to do and nobody waiting.
+    }
 }
 
 // --- Mapbox helpers ----------------------------------------------------------
@@ -495,7 +569,11 @@ export class DestinationsService {
 
         try {
             const rows = await prisma.hotel_content.findMany({
-                where:   { name: { contains: q, mode: 'insensitive' }, images: { isEmpty: false } },
+                // Delisted properties are excluded for the same reason every other query that
+                // *chooses* hotels excludes them: OTV has stopped selling them. Offered here, a
+                // traveller types a name, picks it, lands on /property/{id} and cannot book it.
+                // 30,298 rows carry this on the current catalogue.
+                where:   { name: { contains: q, mode: 'insensitive' }, images: { isEmpty: false }, delisted_at: null },
                 orderBy: { review_count: { sort: 'desc', nulls: 'last' } },
                 take:    4,
                 select:  { hotel_id: true, name: true, city: true, country: true, lat: true, lng: true },
@@ -582,12 +660,39 @@ export class DestinationsService {
     async autocomplete(query: string, locale?: string): Promise<AutocompleteResult[]> {
         if (!query || query.trim().length < 2) return [];
 
-        const key    = `${locale ?? 'en'}|${query.toLowerCase().trim()}`;
-        const cached = cacheGet(key);
-        if (cached) return cached;
+        const key = cacheKey(query, locale);
 
-        const data = await this.fetchAutocomplete(query.trim(), locale);
-        cacheSet(key, data);
-        return data;
+        const local = l1Get(key);
+        if (local) return local;
+
+        // Someone is already asking this exact question. Wait on their answer rather than
+        // starting a second identical geocode.
+        const pending = _inflight.get(key);
+        if (pending) return pending;
+
+        const work = (async () => {
+            const shared = await l2Get(key);
+            if (shared) {
+                l1Set(key, shared);
+                return shared;
+            }
+
+            const data = await this.fetchAutocomplete(query.trim(), locale);
+            // An empty answer is not stored. Nothing-matched and Mapbox-was-unreachable are
+            // the same empty array here, and five minutes of "no such place" bought from one
+            // failed call is the more expensive of the two mistakes.
+            if (data.length) {
+                l1Set(key, data);
+                l2Set(key, data);
+            }
+            return data;
+        })();
+
+        _inflight.set(key, work);
+        try {
+            return await work;
+        } finally {
+            _inflight.delete(key);
+        }
     }
 }

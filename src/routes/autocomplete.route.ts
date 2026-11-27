@@ -3,6 +3,7 @@ import { config } from '@/config';
 import { tgxGraphQL, getTgxConfig } from '@/lib/hotels/travelgatex';
 import { searchRateLimit } from '@/middleware/rate-limit.middleware';
 import { prisma } from '@/lib/prisma';
+import { logger } from '@/lib/logger';
 
 const router: Router = Router();
 
@@ -310,11 +311,39 @@ async function resolveTgxCode(cityName: string, countryCode?: string): Promise<s
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 /**
+ * Deprecated, and recording whether anyone still disagrees.
+ *
+ * This whole router was ported from v1 and its client side never came with it. Searched on
+ * 2026-11-27 across app-v2, the Flutter app and the staff console: nothing calls either
+ * endpoint. Every destination suggestion a traveller sees comes from `GET /hotels/destinations`
+ * and `DestinationsService`, which is the one that gained hotel suggestions, city-state
+ * handling and the shared cache — work that went in here first and was invisible to every
+ * client until it was moved.
+ *
+ * Not deleted, because "no caller in our repositories" is not "no caller": a released Android
+ * build is not something we can grep, and this answers a public URL. So it is marked, and it
+ * says so when used. A quiet fortnight in the logs is the evidence to remove it on; a line in
+ * them is a consumer we did not know about, which is exactly what we are checking for.
+ */
+function recordDeprecatedUse(req: Request, endpoint: string): void {
+    logger.warn({
+        message: '[autocomplete] deprecated endpoint used — see the note in autocomplete.route.ts',
+        endpoint,
+        // Enough to identify a caller, and nothing about who was typing.
+        userAgent: req.get('user-agent') ?? 'unknown',
+        appVersion: req.get('x-app-version') ?? undefined,
+    });
+}
+
+/**
  * POST /api/v2/autocomplete
  * Body: { query: string, locale?: 'en'|'ko'|'cn'|'ja' }
  * Returns city + country suggestions with optional TGX dest codes.
+ *
+ * @deprecated Use `GET /api/v2/hotels/destinations`. See `recordDeprecatedUse` above.
  */
 router.post('/', searchRateLimit, async (req: Request, res: Response, next: NextFunction) => {
+    recordDeprecatedUse(req, 'POST /autocomplete');
     try {
         const { query = '', locale } = req.body as { query?: string; locale?: string };
         if (!query || query.length < 2) {
@@ -342,8 +371,12 @@ router.post('/', searchRateLimit, async (req: Request, res: Response, next: Next
  *
  * A miss reaches TravelgateX, so this costs a supplier call per unseen city name and
  * carries the search budget like the rest of the supplier-facing routes (QA BG-10).
+ *
+ * @deprecated Nothing calls it. Doubly worth knowing about if something does, because unlike
+ * its sibling this one spends a supplier call to answer.
  */
 router.post('/resolve', searchRateLimit, async (req: Request, res: Response, next: NextFunction) => {
+    recordDeprecatedUse(req, 'POST /autocomplete/resolve');
     try {
         const { cityName, countryCode } = req.body as { cityName?: string; countryCode?: string };
         if (!cityName || typeof cityName !== 'string' || cityName.trim().length === 0) {
