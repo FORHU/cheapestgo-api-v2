@@ -18,7 +18,7 @@ import { mergeAdminBookings } from '@/lib/admin/normaliseBooking';
 import { prisma } from '@/lib/prisma';
 import { validateRoleChange } from '@/lib/auth/roleChange';
 import { suspendUser } from '@/lib/auth/suspension';
-import { orAccountNotFound } from '@/lib/admin/accountNotFound';
+import { orAccountNotFound, orAccountReferenced } from '@/lib/admin/accountNotFound';
 import { roleLabel } from '@/lib/auth/roles';
 import { logAdminAction } from '@/lib/admin/audit';
 import { createNotification } from '@/lib/admin/notify';
@@ -379,7 +379,7 @@ router.post('/customers', async (req: Request, res: Response, next: NextFunction
             return res.json({ success: true });
         }
         if (action === 'hard_delete') {
-            await orAccountNotFound(prisma.users.delete({ where: { id: userId } }));
+            await orAccountReferenced(orAccountNotFound(prisma.users.delete({ where: { id: userId } })));
             return res.json({ success: true });
         }
 
