@@ -16,13 +16,23 @@ datasource db {
 }
 
 model admin_audit_log {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  action      String
-  admin_id    String?  @db.Uuid
-  admin_email String?
-  target_id   String?
-  details     Json?    @default("{}")
-  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  action          String
+  admin_id        String?  @db.Uuid
+  admin_email     String?
+  /// The role the actor held at the time — `admin_id` alone goes stale the moment a role changes.
+  actor_role      String?
+  target_id       String?
+  details         Json?    @default("{}")
+  /// Why, for an action that asks the actor to say (a refund override, a manual intervention).
+  reason          String?
+  ip              String?
+  user_agent      String?
+  /// Groups every row one request produced — a refund can write more than one.
+  correlation_id  String?  @db.Uuid
+  previous_value  Json?
+  new_value       Json?
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
 }
 
 model admin_settings {

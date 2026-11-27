@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { AppError } from '@/middleware/error.middleware';
 import { createNotification } from '@/lib/admin/notify';
+import { logAdminAction, type AuditEvent } from '@/lib/admin/audit';
 import { STAYS_MAINTENANCE_KEY } from '@/lib/maintenance';
 import {
     tgxGraphQL, getTgxConfig, getTgxSettings, resolveTgxDestinationCode,
@@ -62,23 +63,12 @@ export class AdminSettingsService {
     // ─── Audit ────────────────────────────────────────────────────────────────
 
     /**
-     * Record what an admin did. Never throws: an action that succeeded must not be reported as
-     * failed because its audit row could not be written.
+     * Record what an admin did. Delegates to `logAdminAction` (#118) — this used to hold its own
+     * inline `prisma.admin_audit_log.create`, a second copy of the same write with no way to
+     * keep it in step with the first. Never throws, same as the function it now calls.
      */
-    async logAction(entry: { action: string; adminId?: string; adminEmail?: string; targetId?: string; details?: unknown }) {
-        try {
-            await prisma.admin_audit_log.create({
-                data: {
-                    action:      entry.action,
-                    admin_id:    entry.adminId ?? null,
-                    admin_email: entry.adminEmail ?? null,
-                    target_id:   entry.targetId ?? null,
-                    details:     (entry.details ?? {}) as Prisma.InputJsonValue,
-                },
-            });
-        } catch (err) {
-            console.warn('[admin/audit] could not record action:', (err as Error).message?.slice(0, 80));
-        }
+    async logAction(entry: AuditEvent & { details?: unknown }) {
+        await logAdminAction({ ...entry, details: entry.details as Record<string, unknown> | undefined });
     }
 
     // ─── Back-office search ───────────────────────────────────────────────────
