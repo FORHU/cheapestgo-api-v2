@@ -24,6 +24,7 @@ import googleRoutes        from './google.route';
 import emailRoutes         from './email.route';
 import golfRoutes          from './golf.route';
 import adminGolfRoutes     from './admin-golf.route';
+import adminAuditRoutes    from './admin-audit.route';
 
 const router: Router = Router();
 
@@ -41,8 +42,9 @@ router.use('/internal',       internalRoutes);
 router.use('/vouchers',       voucherRoutes);
 router.use('/golf',           golfRoutes);
 // Before '/admin', so that router's guard and routes never get the first look at these.
-router.use('/admin/golf',     adminGolfRoutes);
-router.use('/admin',          adminRoutes);
+router.use('/admin/golf',       adminGolfRoutes);
+router.use('/admin/audit-logs', adminAuditRoutes);
+router.use('/admin',            adminRoutes);
 router.use('/photos',         photosRoutes);
 router.use('/chat',           chatRoutes);
 router.use('/mobile',         mobileRoutes);
