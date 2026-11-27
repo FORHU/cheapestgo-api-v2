@@ -487,7 +487,13 @@ export class HotelsController {
         //
         // City is excluded on purpose (see `areaRung`), and so is a point rung, whose "bounds"
         // are a building.
-        const BOUNDED_RUNGS = new Set(['province', 'district', 'neighborhood', 'locality', 'state', 'county']);
+        //
+        // Country is in the set, which looks wrong until you ask which countries ever arrive here
+        // with bounds. The picker's own country list carries none; only the geocoder produces a
+        // country with a bbox, and only for a city-state, where the country's bounds *are* the
+        // city's. Singapore without this is a 50 km circle over a 50 km country, and the circle
+        // reaches Johor Bahru and Batam.
+        const BOUNDED_RUNGS = new Set(['country', 'province', 'district', 'neighborhood', 'locality', 'state', 'county']);
         if (body.rung && BOUNDED_RUNGS.has(body.rung) && Array.isArray(body.bbox) && body.bbox.length === 4) {
             body.areaRung = body.rung;
         }

@@ -139,3 +139,17 @@ of a few hundred priced candidates, so a country can only ever return a selectio
 presents one has to say so, or a traveller reads the head of a list as the whole of it.
 _Avoid_: adding an endpoint per anchor. Dates, guests, currency, filters and pricing are
 identical across all of them, so a second endpoint is the same logic twice.
+
+## City-State
+A place that is a city and a sovereign country at once — Singapore, Monaco, Vatican City,
+Bahrain, Qatar. The granularity ladder has no rung for it, so it is anchored at the **Country**
+rung: it is the coarser of the two answers, and the coarser one is the one that carries the
+place's own bounds.
+_Avoid_: anchoring it as a city. A city is searched by radius, deliberately, because a
+rectangle around Tokyo excludes Fuchu and includes Kawasaki. Singapore is 50km wide, so the
+same radius crosses two international borders — Johor Bahru lies 17km from the middle of the
+country and Batam 34km.
+_Avoid_: trusting its bounds as its borders. The geocoder's box for Singapore contains the
+north of Batam, and Batam is Indonesia. At this rung the stored country decides what the
+geometry cannot, which is sound here only because a country rung has exactly one right answer
+for which country a hotel belongs to.

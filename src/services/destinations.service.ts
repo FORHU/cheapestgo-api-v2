@@ -5,6 +5,7 @@ import { COUNTRY_SEARCH_LIST, extractCountryCode } from '@/lib/countries';
 import { DestinationsRepository } from '@/repositories/destinations.repository';
 import { matchCityEndonym } from '@/lib/cityEndonyms';
 import { logger } from '@/lib/logger';
+import { prisma } from '@/lib/prisma';
 
 /**
  * Destination autocomplete, ported from v1's `src/lib/server/search.ts`.
@@ -23,7 +24,17 @@ import { logger } from '@/lib/logger';
 export type DestinationRung = 'country' | 'province' | 'city' | 'district' | 'poi';
 
 export interface AutocompleteResult {
-    type:           'city' | 'country';
+    /**
+     * `hotel` is a named property rather than a place, and the clients already expect it:
+     * app-v2's `destination-input.tsx` routes one straight to `/property/{id}` instead of
+     * searching, which is the right answer when somebody has typed the hotel's name.
+     *
+     * Deliberately NOT `poi`. A landmark or an airport comes back from Mapbox with `rung: 'poi'`
+     * and its coordinates, which is everything the search needs, but it is typed `city` here —
+     * app-v2 groups the list by `country | city | hotel` and anything else is filtered out of
+     * every group and never drawn. Typing them `poi` would hide airports that work today.
+     */
+    type:           'city' | 'country' | 'hotel';
     rung:           DestinationRung;
     title:          string;
     subtitle:       string;
@@ -187,9 +198,17 @@ export class DestinationsService {
                 // a place whatever else the array claims — so it wins when the array agrees
                 // it is possible. Getting this wrong puts a city on the wrong rung of the
                 // granularity ladder and searches it as a district (ADR-0006).
+                // A city-state is both at once, and Mapbox says so: Singapore arrives as
+                // `place.8905` with place_type ["country","place"]. The id layer deciding alone read
+                // that as a plain city and threw the country's own bounds away, leaving a 50 km
+                // circle around a 50 km-wide country — Johor Bahru at 17 km, Senai at 33, Batam at
+                // 34, none of them culled, because SG is not a territory and all three sit inside
+                // its country box too. Country is the coarser fact and the one that keeps bounds.
                 const idLayer    = String(feature.id ?? '').split('.')[0];
                 const placeTypes: string[] = feature.place_type ?? [];
-                const placeType: string = placeTypes.includes(idLayer) ? idLayer : (placeTypes[0] ?? 'place');
+                const placeType: string = placeTypes.includes('country')
+                    ? 'country'
+                    : placeTypes.includes(idLayer) ? idLayer : (placeTypes[0] ?? 'place');
                 const rung = mapboxTypeToRung(placeType);
 
                 const center: [number, number] | undefined =
@@ -439,12 +458,61 @@ export class DestinationsService {
             // that city's real hotel spread.
         };
     }
+    /**
+     * Properties by name, from our own catalogue.
+     *
+     * Not from a supplier: these are the hotels we can price, so a name offered here always
+     * leads somewhere. Asking TravelgateX instead would cost a call per keystroke and could
+     * suggest a property the catalogue has never heard of.
+     *
+     * `id` carries the catalogue's `hotel_id` because that is what the clients already read —
+     * app-v2 pushes `/property/{d.id}`. A miss is silent: somebody typing a city is not told
+     * the hotel lookup failed, and a failure here must not take the places down with it.
+     */
+    private async fetchHotelSuggestions(query: string): Promise<AutocompleteResult[]> {
+        const q = query.trim();
+        if (q.length < 3) return [];   // "ho" matches thousands and means nothing
+
+        try {
+            const rows = await prisma.hotel_content.findMany({
+                where:   { name: { contains: q, mode: 'insensitive' }, images: { isEmpty: false } },
+                orderBy: { review_count: { sort: 'desc', nulls: 'last' } },
+                take:    4,
+                select:  { hotel_id: true, name: true, city: true, country: true, lat: true, lng: true },
+            });
+
+            return rows.filter(r => r.name).map(r => ({
+                type:        'hotel' as const,
+                rung:        'poi' as const,
+                title:       r.name!,
+                subtitle:    [r.city, r.country].filter(Boolean).join(', ') || 'Hotel',
+                countryCode: (r.country ?? '').slice(0, 2).toUpperCase(),
+                id:          r.hotel_id,
+                lat:         r.lat || undefined,
+                lng:         r.lng || undefined,
+            }));
+        } catch {
+            return [];
+        }
+    }
+
     private async fetchAutocomplete(query: string, locale?: string): Promise<AutocompleteResult[]> {
-        const countryResults = matchCountries(query);
-        const [cityResults, endonym] = await Promise.all([
+        const [cityResults, endonym, hotelResults] = await Promise.all([
             this.fetchCitiesFromMapbox(query, locale),
             this.endonymSuggestion(query),
+            this.fetchHotelSuggestions(query),
         ]);
+
+        // A city-state is one place, and it was offered twice: "Singapore - Country - Browse all
+        // hotels" sat directly above "Singapore - Singapore", one of them capped at 300 rows and
+        // the other searching the country's own bounds, with nothing on screen to tell a traveller
+        // which they were picking. The geocoded row is the better of the two — it is the only one
+        // carrying coordinates and bounds — so the bare list entry gives way to it.
+        const geocoded = new Set(
+            cityResults.filter(c => c.rung === 'country').map(c => c.countryCode.toUpperCase()),
+        );
+        const countryResults = matchCountries(query)
+            .filter(c => !geocoded.has(c.countryCode.toUpperCase()));
 
         // Fill gaps in Mapbox's index from the alias dictionary, matched against
         // the raw query rather than Mapbox's output.
@@ -455,6 +523,13 @@ export class DestinationsService {
             // Index the display title too: an alias may collide with the raw Mapbox
             // name even when that result carries a different canonical city.
             if (c.canonicalCity) names.push(c.title.toLowerCase());
+            // And the catalogue's own spellings of it. Singapore's inventory is filed "Singapur",
+            // so every `… singapore -> Singapur` alias compared unequal to the Mapbox row that
+            // already covered it and leaked back in as a separate suggestion — "Cbd Singapore"
+            // sat in the list under the real one, pointing at the same coordinates.
+            for (const n of resolveHotelDbCities(c.canonicalCity ?? c.title, c.countryCode)) {
+                names.push(n.toLowerCase());
+            }
             covered.set(c.countryCode, names);
         }
         const aliasResults = await this.fetchAliasSuggestions(query, covered);
@@ -467,7 +542,7 @@ export class DestinationsService {
             ...cityResults,
             ...aliasResults,
         ];
-        if (!allCities.length) return countryResults;
+        if (!allCities.length) return [...hotelResults, ...countryResults];
 
         // Destinations we stock sort to the top; the rest still show, below.
         const withHotels = await this.filterCitiesWithHotels(allCities);
@@ -476,7 +551,10 @@ export class DestinationsService {
             ...allCities.filter(c => !withHotels.has((c.canonicalCity ?? c.title).toLowerCase())),
         ];
 
-        return [...countryResults, ...sorted];
+        // A named property first. Typing a hotel's name is the least ambiguous thing a
+        // traveller can do, and ranked under the city it stands in the answer sits below the
+        // four-thousand-hotel alternative.
+        return [...hotelResults, ...countryResults, ...sorted];
     }
 
     /**
