@@ -6,6 +6,8 @@ import { JwtPayload, UserRole } from '@/types';
 import { currentRole } from '@/lib/auth/currentRole';
 import { readSessionToken } from '@/lib/auth/cookie';
 import { isRevoked } from '@/lib/auth/sessionRevocation';
+import { hasPermission, type Permission } from '@/lib/auth/permissions';
+import { logPermissionRefusal } from '@/lib/auth/permissionLog';
 
 export async function authenticate(req: Request, _res: Response, next: NextFunction) {
     const token = readSessionToken(req);
@@ -84,7 +86,10 @@ export async function withCurrentRole(req: Request, _res: Response, next: NextFu
 
 export function requireRole(...roles: string[]) {
     return async (req: Request, _res: Response, next: NextFunction) => {
-        if (!req.user) return next(new AppError(403, 'Forbidden', 'FORBIDDEN'));
+        // No session is 401, never 403 (#106) — unreachable in practice since `requireAuth`
+        // always runs first on a mounted router, but the two must stay distinguishable even
+        // defensively, so a router that ever forgets `requireAuth` fails the right way.
+        if (!req.user) return next(new AppError(401, 'Unauthorized', 'AUTH_REQUIRED'));
         try {
             if (!(await adoptCurrentRole(req, next))) return;
             if (!roles.includes(req.user.role)) return next(new AppError(403, 'Forbidden', 'FORBIDDEN'));
@@ -93,4 +98,41 @@ export function requireRole(...roles: string[]) {
             next(err);
         }
     };
+}
+
+/**
+ * The permission an endpoint actually requires (#106), checked against the role fresh from the
+ * database — same reasoning as `withCurrentRole`: a token's role can be a day stale.
+ *
+ * `resourceCheck` is the "not only the permission" half of #106: the permission says a role may
+ * ever do this action; the resource check says whether it may do it to *this* row (the
+ * conversation assigned to this agent, not any conversation). It runs only once the permission
+ * passes, so a caller who could never do this at all is refused before anything touches the
+ * resource.
+ */
+export function requirePermission(
+    permission: Permission,
+    resourceCheck?: (req: Request) => Promise<boolean>,
+) {
+    const mw = async (req: Request, _res: Response, next: NextFunction) => {
+        if (!req.user) return next(new AppError(401, 'Unauthorized', 'AUTH_REQUIRED'));
+        try {
+            if (!(await adoptCurrentRole(req, next))) return;
+
+            if (!(await hasPermission(req.user.role, permission))) {
+                void logPermissionRefusal(req.user, permission, req.originalUrl, 'permission');
+                return next(new AppError(403, 'Forbidden', 'FORBIDDEN', { required: permission }));
+            }
+            if (resourceCheck && !(await resourceCheck(req))) {
+                void logPermissionRefusal(req.user, permission, req.originalUrl, 'resource');
+                return next(new AppError(403, 'Forbidden', 'FORBIDDEN', { required: permission }));
+            }
+            next();
+        } catch (err) {
+            next(err);
+        }
+    };
+    // Read by the route-table audit test: which permission (if any) a given middleware checks.
+    mw.__permission = permission;
+    return mw;
 }
