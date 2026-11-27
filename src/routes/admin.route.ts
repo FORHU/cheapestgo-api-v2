@@ -1,12 +1,16 @@
 /**
- * Admin routes — all protected by requireAuth + requireRole('admin')
+ * Admin routes — protected by requireAuth + requireRole('admin'), being converted to
+ * requirePermission route by route (#106). The role check stays on `router.use` as the safety
+ * net until every route below names its own permission; a route with both is not yet done,
+ * one with only the permission is converted, and the role check comes off this file only once
+ * none are left with just it.
  *
  * GET /api/admin/stats    — aggregate counts and revenue
  * GET /api/admin/bookings — paginated list with optional search
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
-import { requireAuth, requireRole } from '@/middleware/auth.middleware';
+import { requireAuth, requireRole, requirePermission } from '@/middleware/auth.middleware';
 import { adminContentService } from '@/services/adminContent.service';
 import { adminSettingsService } from '@/services/adminSettings.service';
 import { adminStripeService } from '@/services/adminStripe.service';
@@ -95,7 +99,7 @@ const PAGE_SIZE = 20;
 
 // ── GET /api/admin/stats ──────────────────────────────────────────────────────
 
-router.get('/stats', async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/stats', requirePermission('dashboard.view'), async (_req: Request, res: Response, next: NextFunction) => {
     try {
         const [bookingCount, userCount, hotelDeals, revenue] = await Promise.all([
             (prisma as any).bookings.count().catch(async () => {
@@ -145,7 +149,7 @@ router.get('/stats', async (_req: Request, res: Response, next: NextFunction) =>
 
 // ── GET /api/admin/bookings ───────────────────────────────────────────────────
 
-router.get('/bookings', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/bookings', requirePermission('bookings.view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const page   = Math.max(1, parseInt((req.query.page as string) ?? '1', 10));
         const search = typeof req.query.q === 'string' ? req.query.q.trim() : '';
@@ -206,7 +210,7 @@ router.get('/bookings', async (req: Request, res: Response, next: NextFunction) 
 
 // ── GET /api/admin/users ─────────────────────────────────────────────────────
 
-router.get('/users', async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/users', requirePermission('users.view'), async (_req: Request, res: Response, next: NextFunction) => {
     try {
         const rows = await prisma.$queryRaw<any[]>`
             SELECT id, email, first_name, last_name, role, banned_at, created_at
@@ -232,7 +236,7 @@ router.get('/users', async (_req: Request, res: Response, next: NextFunction) =>
 
 // ── POST /api/admin/users/:id/ban ────────────────────────────────────────────
 
-router.post('/users/:id/ban', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/users/:id/ban', requirePermission('users.manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         await orAccountNotFound(suspendUser(req.params.id));
         return res.json({ ok: true });
@@ -243,7 +247,7 @@ router.post('/users/:id/ban', async (req: Request, res: Response, next: NextFunc
 
 // ── POST /api/admin/users/:id/unban ──────────────────────────────────────────
 
-router.post('/users/:id/unban', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/users/:id/unban', requirePermission('users.manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { id } = req.params;
         await orAccountNotFound(prisma.users.update({
@@ -269,7 +273,7 @@ router.post('/users/:id/unban', async (req: Request, res: Response, next: NextFu
  *
  * Recorded either way: who changed whose role, and to what.
  */
-router.post('/users/:id/promote', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/users/:id/promote', requirePermission('staff.manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const actor = req.user!;
         const change = validateRoleChange({
@@ -309,7 +313,7 @@ router.post('/users/:id/promote', async (req: Request, res: Response, next: Next
 
 // ── GET /api/admin/customers ──────────────────────────────────────────────────
 
-router.get('/customers', async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/customers', requirePermission('users.view'), async (_req: Request, res: Response, next: NextFunction) => {
     try {
         const rows = await prisma.$queryRaw<any[]>`
             SELECT
@@ -348,7 +352,7 @@ router.get('/customers', async (_req: Request, res: Response, next: NextFunction
 
 // ── POST /api/admin/customers ─────────────────────────────────────────────────
 
-router.post('/customers', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/customers', requirePermission('users.manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { action, userId } = req.body as { action: string; userId: string };
         if (!action || !userId) throw new AppError(400, 'action and userId are required', 'VALIDATION_ERROR');
@@ -470,7 +474,7 @@ router.post('/deals', async (req: Request, res: Response, next: NextFunction) =>
 // ── GET /api/admin/revenue ───────────────────────────────────────────────────
 // What each booking earned and what it cost to take. app-v2's revenue screen has been
 // calling this since it was written; it did not exist until now.
-router.get('/revenue', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/revenue', requirePermission('reports.view'), async (req: Request, res: Response, next: NextFunction) => {
     try { res.json(await adminRevenueService.read({ page: req.query.page, pageSize: req.query.pageSize })); }
     catch (err) { next(err); }
 });
@@ -707,7 +711,7 @@ const RUNNABLE_CRONS = new Set([
     'sync-flight-deals',
 ]);
 
-router.post('/run-cron', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/run-cron', requirePermission('system_settings.manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const cron = String(req.body?.cron ?? '');
         if (!RUNNABLE_CRONS.has(cron)) {
@@ -753,12 +757,12 @@ router.post('/run-cron', async (req: Request, res: Response, next: NextFunction)
  * it is logged with the admin who asked for it, and an already-refunded charge is reported
  * rather than refunded again.
  */
-router.get('/stripe', async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/stripe', requirePermission('payments.view'), async (_req: Request, res: Response, next: NextFunction) => {
     try { res.json({ success: true, ...(await adminStripeService.overview()) }); }
     catch (err) { next(err); }
 });
 
-router.post('/stripe', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/stripe', requirePermission('payments.refund.approve'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const bookingId = String(req.body?.bookingId ?? '');
         const reason = req.body?.reason === 'duplicate' || req.body?.reason === 'fraudulent'
@@ -794,7 +798,7 @@ router.post('/stripe', async (req: Request, res: Response, next: NextFunction) =
  * Read-only, and the thing an agent needs before they can answer the customer: what the recorded
  * terms give back, the penalty, and the deadline it was judged against.
  */
-router.get('/bookings/hotel/:reference/cancel-preview', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/bookings/hotel/:reference/cancel-preview', requirePermission('bookings.cancel'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const reference = String(req.params.reference ?? '').trim();
         if (!reference) throw new AppError(400, 'A booking reference is required.', 'VALIDATION_ERROR');
@@ -809,7 +813,7 @@ router.get('/bookings/hotel/:reference/cancel-preview', async (req: Request, res
  * customer's own cancellation uses: refunding a guest whose room the supplier still holds costs
  * us the room (ADR-0023).
  */
-router.post('/bookings/hotel/:reference/cancel', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/bookings/hotel/:reference/cancel', requirePermission('bookings.cancel'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const reference = String(req.params.reference ?? '').trim();
         if (!reference) throw new AppError(400, 'A booking reference is required.', 'VALIDATION_ERROR');
@@ -846,7 +850,7 @@ router.post('/bookings/hotel/:reference/cancel', async (req: Request, res: Respo
  * then refers to. It is a deliberate separate step for that reason: it is not read-only at the
  * supplier.
  */
-router.get('/bookings/flight/:id/cancel-quote', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/bookings/flight/:id/cancel-quote', requirePermission('bookings.cancel'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const id = String(req.params.id ?? '').trim();
         if (!id) throw new AppError(400, 'A booking id is required.', 'VALIDATION_ERROR');
@@ -865,7 +869,7 @@ router.get('/bookings/flight/:id/cancel-quote', async (req: Request, res: Respon
  * traveller paid; there is no local policy to override, and returning more than the airline
  * returned is a goodwill payment, not a cancellation. That case goes to Stripe by hand.
  */
-router.post('/bookings/flight/:id/cancel', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/bookings/flight/:id/cancel', requirePermission('bookings.cancel'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const id = String(req.params.id ?? '').trim();
         if (!id) throw new AppError(400, 'A booking id is required.', 'VALIDATION_ERROR');
@@ -926,7 +930,7 @@ export default router;
 // exactly one route in this service that moves money.
 
 /** GET /api/v2/admin/payments — one page of the payment table, filtered in the database. */
-router.get('/payments', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/payments', requirePermission('payments.view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const q = paymentListQuery.parse(req.query);
         res.json({ success: true, ...(await adminPaymentsService.list({
@@ -943,7 +947,7 @@ router.get('/payments', async (req: Request, res: Response, next: NextFunction) 
  * A list rather than an object: two records for one PaymentIntent is the double-write an
  * investigation is looking for, so the route reports it instead of choosing a winner.
  */
-router.get('/payments/:paymentIntentId', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/payments/:paymentIntentId', requirePermission('payments.view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const id = String(req.params.paymentIntentId ?? '').trim();
         if (!id) throw new AppError(400, 'A payment intent id is required.', 'VALIDATION_ERROR');
@@ -970,7 +974,7 @@ router.get('/payments/:paymentIntentId', async (req: Request, res: Response, nex
  * provider at the time, our own row, or looked for and not found. Nothing in the response
  * asserts that a service was delivered — see ADR-0003.
  */
-router.get('/payments/:paymentIntentId/evidence', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/payments/:paymentIntentId/evidence', requirePermission('payments.view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const id = String(req.params.paymentIntentId ?? '').trim();
         if (!id) throw new AppError(400, 'A payment intent id is required.', 'VALIDATION_ERROR');
@@ -997,7 +1001,7 @@ router.get('/payments/:paymentIntentId/evidence', async (req: Request, res: Resp
  * handlers behind these events are not all idempotent, and replaying one by hand could book or
  * refund twice.
  */
-router.get('/payment-webhooks', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/payment-webhooks', requirePermission('payments.view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const q = webhookListQuery.parse(req.query);
         const limit = Math.min(q.limit ?? 50, 200);
@@ -1048,7 +1052,7 @@ router.get('/payment-webhooks', async (req: Request, res: Response, next: NextFu
  * of what was known *then*. Handed back as an API path, not a signed link: access is the admin
  * session on the download route below, and every download is audited.
  */
-router.post('/payments/:paymentIntentId/evidence/export', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/payments/:paymentIntentId/evidence/export', requirePermission('payments.view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const id = String(req.params.paymentIntentId ?? '').trim();
         if (!id) throw new AppError(400, 'A payment intent id is required.', 'VALIDATION_ERROR');
@@ -1090,7 +1094,7 @@ router.post('/payments/:paymentIntentId/evidence/export', async (req: Request, r
  * Admin session only (the router-wide guard). Looked up by id and payment together, and the
  * download is audited like the view is: who took a customer's evidence out is itself evidence.
  */
-router.get('/payments/:paymentIntentId/evidence/exports/:exportId', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/payments/:paymentIntentId/evidence/exports/:exportId', requirePermission('payments.view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const id = String(req.params.paymentIntentId ?? '').trim();
         const exportId = z.string().uuid().safeParse(req.params.exportId);

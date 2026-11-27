@@ -81,6 +81,10 @@ vi.mock('@/lib/support/attachments',         () => ({ MAX_ATTACHMENT_BYTES: 1024
 vi.mock('@/lib/support/attachmentStorage',   () => ({ attachmentsConfigured: vi.fn() }));
 vi.mock('@/lib/support/availability',        () => ({ getSupportHours: vi.fn(), saveSupportHours: vi.fn() }));
 
+// Not under test here — every route exercised below is one `admin` already holds in the real
+// seed (#106); stubbed so a prisma mock without `role_permissions` doesn't 500 on it.
+vi.mock('@/lib/auth/permissions', () => ({ hasPermission: vi.fn(async (role: string) => role === 'admin') }));
+
 import adminRouter from '@/routes/admin.route';
 import adminSupportRouter from '@/routes/admin-support.route';
 import { errorMiddleware } from '@/middleware/error.middleware';
