@@ -8,6 +8,10 @@ import { checkName, clampName } from '@/lib/users/names';
 import { verifyGoogleIdToken } from '@/lib/auth/googleIdToken';
 import { isRevoked } from '@/lib/auth/sessionRevocation';
 import { assertPasswordAcceptable } from '@/lib/auth/password';
+import { logAdminAction } from '@/lib/admin/audit';
+
+/** Staff only (#118) — a customer login here would be most of the table's volume for none of its purpose. */
+const isStaff = (role: unknown): boolean => role === 'admin' || role === 'support_agent';
 
 export class AuthService {
     private repo = new AuthRepository();
@@ -40,12 +44,35 @@ export class AuthService {
 
     async login(email: string, password: string) {
         const user = await this.repo.findByEmail(email);
+        // Not logged when there's no account at all: that's indistinguishable from a typo, and
+        // logging every unknown address is a way for an outsider to fill the staff audit log
+        // with noise. Once an account is found, its role is what decides whether this matters.
         if (!user || !user.password_hash) throw new AppError(401, 'Invalid credentials', 'INVALID_CREDENTIALS');
 
         const valid = await bcrypt.compare(password, user.password_hash);
-        if (!valid) throw new AppError(401, 'Invalid credentials', 'INVALID_CREDENTIALS');
+        if (!valid) {
+            if (isStaff(user.role)) {
+                void logAdminAction({
+                    action: 'login_failed', adminId: user.id, adminEmail: user.email,
+                    actorRole: user.role, reason: 'wrong password',
+                });
+            }
+            throw new AppError(401, 'Invalid credentials', 'INVALID_CREDENTIALS');
+        }
 
-        if (user.banned_at) throw new AppError(403, 'Account suspended', 'ACCOUNT_BANNED');
+        if (user.banned_at) {
+            if (isStaff(user.role)) {
+                void logAdminAction({
+                    action: 'login_failed', adminId: user.id, adminEmail: user.email,
+                    actorRole: user.role, reason: 'account suspended',
+                });
+            }
+            throw new AppError(403, 'Account suspended', 'ACCOUNT_BANNED');
+        }
+
+        if (isStaff(user.role)) {
+            void logAdminAction({ action: 'login', adminId: user.id, adminEmail: user.email, actorRole: user.role });
+        }
 
         return { user: this.sanitize(user), ...this.generateTokens(user) };
     }

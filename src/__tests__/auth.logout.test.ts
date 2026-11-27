@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import express, { type RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
 import type { Server } from 'http';
@@ -10,6 +10,10 @@ vi.mock('@/middleware/rate-limit.middleware', () => ({
 }));
 vi.mock('@/lib/prisma', () => ({ prisma: {} }));
 vi.mock('@/lib/redis', () => ({ redis: {} }));
+
+const audit = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/admin/audit', () => ({ logAdminAction: audit }));
+
 vi.mock('@/config', () => ({
     config: {
         API_URL: 'http://localhost:4000',
@@ -36,6 +40,8 @@ beforeAll(async () => {
 
 afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
 
+beforeEach(() => { audit.mockClear(); });
+
 describe('POST /auth/logout', () => {
     it.each([
         ['missing', undefined],
@@ -50,5 +56,27 @@ describe('POST /auth/logout', () => {
         expect(await response.json()).toEqual({ success: true });
         expect(response.headers.get('set-cookie')).toContain('access_token=');
         expect(response.headers.get('set-cookie')).toContain('refresh_token=');
+        expect(audit).not.toHaveBeenCalled();
+    });
+
+    it('logs the logout for a staff session (#118)', async () => {
+        // No cookie-parser mounted on this bare test app — the bearer-header path
+        // `readSessionToken` falls back to is what `/logout` actually sees here.
+        const token = jwt.sign({ sub: 'admin-1', email: 'a@x.com', role: 'admin' }, 'test-secret');
+        const response = await fetch(`${baseUrl}/logout`, {
+            method: 'POST', headers: { authorization: `Bearer ${token}` },
+        });
+
+        expect(response.status).toBe(200);
+        expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+            action: 'logout', adminId: 'admin-1', adminEmail: 'a@x.com', actorRole: 'admin',
+        }));
+    });
+
+    it('does not log an ordinary customer logging out', async () => {
+        const token = jwt.sign({ sub: 'user-1', email: 'c@x.com', role: 'user' }, 'test-secret');
+        await fetch(`${baseUrl}/logout`, { method: 'POST', headers: { authorization: `Bearer ${token}` } });
+
+        expect(audit).not.toHaveBeenCalled();
     });
 });

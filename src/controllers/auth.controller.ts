@@ -1,9 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
 import { z } from 'zod';
+import { config } from '@/config';
 import { AuthService } from '@/services/auth.service';
 import {
-    BASE_COOKIE_OPTIONS, SESSION_COOKIE, LEGACY_SESSION_COOKIE, SESSION_MAX_AGE_MS,
+    BASE_COOKIE_OPTIONS, SESSION_COOKIE, LEGACY_SESSION_COOKIE, SESSION_MAX_AGE_MS, readSessionToken,
 } from '@/lib/auth/cookie';
+import { logAdminAction } from '@/lib/admin/audit';
+import type { JwtPayload } from '@/types';
 
 // Normalised here, at the boundary, and again where it is stored and looked up
 // (`normaliseEmail`): the address is the account's identity, and `Ana@Example.com` and
@@ -71,8 +75,23 @@ export class AuthController {
         } catch (err) { next(err); }
     };
 
-    logout = async (_req: Request, res: Response, next: NextFunction) => {
+    logout = async (req: Request, res: Response, next: NextFunction) => {
         try {
+            // No `requireAuth` on this route — signing out with an expired or invalid cookie
+            // must still succeed. So the token is read for logging only, best-effort: a token
+            // that fails to verify is simply not logged, the same as one that was never there.
+            const token = readSessionToken(req);
+            if (token) {
+                try {
+                    const payload = jwt.verify(token, config.JWT_SECRET) as JwtPayload;
+                    if (payload.role === 'admin' || payload.role === 'support_agent') {
+                        void logAdminAction({
+                            action: 'logout', adminId: payload.sub, adminEmail: payload.email, actorRole: payload.role,
+                        });
+                    }
+                } catch { /* an invalid or expired token logging out is not worth recording */ }
+            }
+
             // Both names: a session issued before the rename is still in the browser under
             // the old one, and clearing only the new one would leave someone signed in
             // after they asked to be signed out.
