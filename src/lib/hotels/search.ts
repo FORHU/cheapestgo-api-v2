@@ -149,6 +149,19 @@ export async function getInstantHotelCatalog(body: HotelSearchParams): Promise<a
                 images: { isEmpty: false },
                 ...NOT_DELISTED,
             };
+
+            // A country's bounds are not its borders. The geocoder's box for Singapore runs to
+            // 1.115 N and 104.10 E, which is the northern half of Batam: Indonesian hotels,
+            // inside the box, in a search for a country they are not in. Geometry cannot settle
+            // that and the stored country can, so at this one rung it does — a country rung has
+            // exactly one right answer for which country a result belongs to, which is why the
+            // rule stops here and does not reach a province whose own border may be contested.
+            if (body.areaRung === 'country' && countryCode) {
+                where.country = {
+                    in:   storedCountryCodes(resolveIsoCode(countryCode) || countryCode),
+                    mode: 'insensitive',
+                };
+            }
         } else if (body.lat && body.lng) {
             // Prefer radius search — works correctly across admin boundaries (e.g. Jeju/Seogwipo,
             // London/Greater London, etc.) without any hardcoding.
