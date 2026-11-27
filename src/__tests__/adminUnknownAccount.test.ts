@@ -120,3 +120,29 @@ describe.each([
         expect((await act('u1')).status).toBe(200);
     });
 });
+
+describe('POST /admin/customers {hard_delete} — an account still referenced elsewhere (#144)', () => {
+    const referenced = () => new Prisma.PrismaClientKnownRequestError(
+        'Foreign key constraint violated',
+        { code: 'P2003', clientVersion: 'test' },
+    );
+
+    it('answers 409 ACCOUNT_REFERENCED, not a bare 500, when deleting the row violates a foreign key', async () => {
+        db.users.delete.mockImplementation(async () => { throw referenced(); });
+
+        const res = await post('/customers', { action: 'hard_delete', userId: 'u1' });
+
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ error: 'ACCOUNT_REFERENCED' });
+    });
+
+    it('leaves ban/unban/promote answering exactly as before — only hard_delete gained a new case', async () => {
+        db.users.update.mockImplementation(async () => { throw referenced(); });
+
+        // Not routed through orAccountReferenced, so an update hitting the same Prisma error
+        // code is not this ticket's concern and should fall through to the generic handler,
+        // unchanged from before this fix.
+        const res = await post('/users/u1/ban');
+        expect(res.status).toBe(500);
+    });
+});
