@@ -8,6 +8,7 @@ import { checkName, clampName } from '@/lib/users/names';
 import { verifyGoogleIdToken } from '@/lib/auth/googleIdToken';
 import { isRevoked } from '@/lib/auth/sessionRevocation';
 import { assertPasswordAcceptable } from '@/lib/auth/password';
+import { permissionsForRole } from '@/lib/auth/permissions';
 
 export class AuthService {
     private repo = new AuthRepository();
@@ -98,10 +99,16 @@ export class AuthService {
         }
     }
 
+    /**
+     * `/auth/me` (#107). `permissions` is read the same way the role above it is — fresh from
+     * the database on every call, never cached in the token — so granting or revoking one
+     * reaches a console on its very next request, not its next sign-in.
+     */
     async getUser(id: string) {
         const user = await this.repo.findById(id);
         if (!user) throw new AppError(404, 'User not found', 'NOT_FOUND');
-        return this.sanitize(user);
+        const permissions = [...await permissionsForRole(user.role)];
+        return { ...this.sanitize(user), permissions };
     }
 
     private generateTokens(user: { id: string; email: string; role: string }) {
