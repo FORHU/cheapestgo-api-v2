@@ -362,7 +362,14 @@ router.post('/customers', async (req: Request, res: Response, next: NextFunction
             return res.json({ success: true });
         }
         if (action === 'hard_delete') {
-            await orAccountNotFound(prisma.users.delete({ where: { id: userId } }));
+            const actor = req.user!;
+            // The row is gone after this — captured from the delete's own return rather than a
+            // second read, since `email` would otherwise be unrecoverable from the log later.
+            const deleted = await orAccountNotFound(prisma.users.delete({ where: { id: userId } }));
+            void logAdminAction({
+                action: 'customer_hard_deleted', adminId: actor.sub, adminEmail: actor.email,
+                targetId: userId, previousValue: { email: deleted.email, role: deleted.role },
+            });
             return res.json({ success: true });
         }
 
