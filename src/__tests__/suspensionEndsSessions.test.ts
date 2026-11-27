@@ -98,7 +98,11 @@ vi.mock('@react-pdf/renderer',               () => ({ renderToBuffer: vi.fn() })
 
 // Not under test here — every route exercised below is one `admin` already holds in the real
 // seed (#106); stubbed so a prisma mock without `role_permissions` doesn't 500 on it.
-vi.mock('@/lib/auth/permissions', () => ({ hasPermission: vi.fn(async (role: string) => role === 'admin') }));
+vi.mock('@/lib/auth/permissions', () => ({
+    hasPermission: vi.fn(async (role: string) => role === 'admin'),
+    // /auth/me now reads this too (#107); the list itself isn't what this suite checks.
+    permissionsForRole: vi.fn(async () => new Set()),
+}));
 
 import authRouter from '@/routes/auth.route';
 import adminRouter from '@/routes/admin.route';
