@@ -295,6 +295,18 @@ export class AdminSettingsService {
         await this.saveSettings(next);
         console.log(`[supplier-health] ${status} streak=${streak} ${detail}${switched ? ` — maintenance ${switched}` : ''}`);
 
+        // A supplier config change (#118) whichever caller triggered it — the scheduled job has
+        // no actor to name, and the event matters the same regardless: it is what decides
+        // whether the site sells hotels at all.
+        if (switched) {
+            void logAdminAction({
+                action:        'stays_maintenance_toggled',
+                previousValue: { maintenance: maintenanceOn },
+                newValue:      { maintenance: switched === 'on' },
+                reason:        `${streak} consecutive ${status} checks — ${detail}`,
+            });
+        }
+
         return {
             ok: true,
             status,
