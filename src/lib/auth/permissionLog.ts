@@ -1,12 +1,11 @@
-import { logger } from '@/lib/logger';
+import { logAdminAction } from '@/lib/admin/audit';
 
 /**
- * A refused permission check, logged somewhere rather than nowhere.
+ * A refused permission check, written to the audit log (#118) rather than only a stdout line.
  *
- * #118 replaces this with a real audit row — actor and role, resource, ip, user agent,
- * correlation id, queryable and immutable. Until it lands, #106's own "done when" only asks
- * that a refusal be logged, not where; this is the smallest thing that satisfies that without
- * inventing a schema #118 would then have to migrate away from.
+ * `logAdminAction` already mirrors every row to stdout as a structured line, so this doesn't
+ * keep a separate logger beside it — that would be the exact duplicate-writer problem #118
+ * already consolidated away once, in `adminSettingsService.logAction`.
  */
 export async function logPermissionRefusal(
     user: { sub: string; email?: string; role?: string },
@@ -14,5 +13,11 @@ export async function logPermissionRefusal(
     path: string,
     reason: 'permission' | 'resource',
 ) {
-    logger.warn('permission_refused', { userId: user.sub, role: user.role, permission, path, reason });
+    await logAdminAction({
+        action:     'permission_refused',
+        adminId:    user.sub,
+        adminEmail: user.email,
+        targetId:   path,
+        details:    { permission, role: user.role, reason },
+    });
 }
